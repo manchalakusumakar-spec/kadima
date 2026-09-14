@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import pwd
 import shutil
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -82,6 +83,17 @@ def main():
         if b'=' in item:
             k,v=item.split(b'=',1)
             env[os.fsdecode(k)] = os.fsdecode(v)
+    # Check local exposure while the engine is still running. The maintenance
+    # window prevents normal new entries between this check and service stop.
+    db = Path(env.get('KADIMA_DATA_DIR', '/var/lib/kadima'))/'kadima.db'
+    if not db.is_file():
+        raise SystemExit('Local position database is unavailable. No services stopped.')
+    with sqlite3.connect(db.as_uri()+'?mode=ro', uri=True) as local:
+        if local.execute("SELECT 1 FROM positions WHERE status != 'closed' LIMIT 1").fetchone():
+            raise SystemExit('Local positions/orders remain unresolved. No services stopped.')
+        if local.execute("SELECT 1 FROM sqlite_master WHERE name='execution_orders'").fetchone():
+            if local.execute("SELECT 1 FROM execution_orders WHERE state != 'terminal' LIMIT 1").fetchone():
+                raise SystemExit('Pending execution intents remain. No services stopped.')
     argv=Path('/proc/'+pid+'/cmdline').read_bytes().split(b'\0')
     python=os.fsdecode(argv[0])
     if not Path(python).is_absolute() or 'python' not in Path(python).name:
