@@ -40,7 +40,17 @@ def main():
     env=procs[0].get('pm2_env',{})
     token=env.get('KADIMA_API_TOKEN') or env.get('env',{}).get('KADIMA_API_TOKEN')
     if not token:
-        token=getpass.getpass('Existing KADIMA API token (hidden; stays on server): ').strip()
+        # Recover only the known legacy dashboard credential locally.
+        # Never print it or include it in shell arguments.
+        try:
+            legacy = TARGET.read_text()
+            match = re.search(r'''const\s+API_TOKEN\s*=\s*["']([0-9a-fA-F]{64})["']\s*;''', legacy)
+            if match:
+                token = match.group(1)
+        except OSError:
+            pass
+    if not token:
+        sys.exit('KADIMA token not found in PM2 or the existing dashboard. No files changed.')
     if not token:
         sys.exit('API token is missing. No files changed.')
     req=urllib.request.Request('http://127.0.0.1:8080/state',headers={'Authorization':'Bearer '+token})
