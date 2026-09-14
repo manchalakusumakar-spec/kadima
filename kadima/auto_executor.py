@@ -37,7 +37,14 @@ DESIGN, AS AGREED WITH THE TRADER (2026-08-20 session):
     since gamma blasts and Bull Shield's trend-confirmation are different
     phenomena and only the former has been observed clustering late.
 
-    Exit: below 10% gain, the existing fixed 30% stop-loss on premium is
+    Optional forecast trail: when config.FORECAST_TRAIL_ENABLED is True,
+    trailing exits require a valid 30-minute projection whose remaining
+    upside is strictly below the peak-to-stop giveback amount. Missing or
+    stale forecasts defer trailing exits and are logged. Initial protection,
+    daily loss handling, EOD and manual exits retain their existing behavior.
+    Default disabled until a real forecast producer is integrated.
+
+    Exit (default): below 10% gain, the existing fixed 30% stop-loss on premium is
     the only protection. At or above 10% gain, a trailing stop takes
     over: exits once price has given back >=30% of the PEAK GAIN reached
     (not 30% of premium, not fixed points -- a percentage of the gain
@@ -101,7 +108,7 @@ from typing import Optional
 
 from . import (alerts, audit, capital_guard, entry_quality, exit_manager,
               killswitch, risk_budget, storage, strike_selector)
-from . import angel_orders
+from . import angel_orders, forecast_trail
 from .config import (DAILY_LOSS_LIMIT_INR, IST, MAX_CONCURRENT_POSITIONS,
                      MAX_LOTS_PER_SIGNAL, ORDER_PLACEMENT_ENABLED)
 from .instrument_master import get_lot_size
@@ -338,6 +345,17 @@ class AutoExecutor:
         self._lock = threading.Lock()
         self._reconcile_blocked = True   # stays True until reconcile_on_startup() runs
         self._stop = threading.Event()
+        self._profit_projections: dict[int, forecast_trail.Projection] = {}
+
+    def set_profit_projection(self, projection: forecast_trail.Projection) -> None:
+        """Called by a 30-minute forecast producer; no order or HTTP endpoint."""
+        with self._lock:
+            pos = self.state.positions.get(str(projection.signal_id))
+            if pos is None or pos.status != "open":
+                raise ValueError("Projection must identify an open position")
+            if projection.token != pos.token or projection.exchange != pos.exchange:
+                raise ValueError("Projection contract does not match position")
+            self._profit_projections[projection.signal_id] = projection
 
     # -------------------------------------------------------- startup
     def reconcile_on_startup(self) -> None:
@@ -624,9 +642,33 @@ class AutoExecutor:
             elif force_close:
                 reason = "eod_force_close"
             elif pos.trail_active:
-                giveback = pos.peak_price - ltp
-                if peak_gain > 0 and giveback >= (GIVEBACK_TRAIL_PCT / 100.0) * peak_gain:
-                    reason = f"trail_giveback_{GIVEBACK_TRAIL_PCT:.0f}pct_of_peak_gain"
+                if getattr(config, "FORECAST_TRAIL_ENABLED", False):
+                    # Persist the high-water mark before allowing the model
+                    # to defer a trailing exit; preserve it across restarts.
+                    storage.upsert_position(pos)
+                    with self._lock:
+                        projection = self._profit_projections.get(pos.signal_id)
+                    previous_stop = pos.peak_price - peak_gain * (GIVEBACK_TRAIL_PCT / 100.0)
+                    decision = forecast_trail.evaluate(
+                        entry=pos.entry_price, peak=pos.peak_price,
+                        previous_stop=previous_stop, ltp=ltp,
+                        quantity=pos.remaining_qty,
+                        giveback_fraction=GIVEBACK_TRAIL_PCT / 100.0,
+                        token=pos.token, exchange=pos.exchange,
+                        signal_id=pos.signal_id, now=now, projection=projection)
+                    audit.log("forecast_trail_decision", signal_id=pos.signal_id,
+                              stop=decision.stop, breached=decision.breached,
+                              should_exit=decision.should_exit,
+                              reason=decision.reason, risk_inr=decision.risk_amount,
+                              projected_profit_inr=decision.projected_profit,
+                              horizon_minutes=30,
+                              model_id=projection.model_id if projection else None)
+                    if decision.should_exit:
+                        reason = decision.reason
+                else:
+                    giveback = pos.peak_price - ltp
+                    if peak_gain > 0 and giveback >= (GIVEBACK_TRAIL_PCT / 100.0) * peak_gain:
+                        reason = f"trail_giveback_{GIVEBACK_TRAIL_PCT:.0f}pct_of_peak_gain"
             else:
                 loss_pct = ((pos.entry_price - ltp) / pos.entry_price * 100.0
                            if pos.entry_price else 0.0)
@@ -661,6 +703,7 @@ class AutoExecutor:
 
         with self._lock:
             self.state.positions.pop(str(pos.signal_id), None)
+            self._profit_projections.pop(pos.signal_id, None)
         storage.close_position(pos.signal_id, pos.exit_price,
                                pos.exit_ts.isoformat(), pos.exit_reason,
                                pos.exit_order_id)
