@@ -30,33 +30,91 @@ def blob(data):
     return hashlib.sha1(b'blob '+str(len(data)).encode()+b'\0'+data).hexdigest()
 
 
-PREFLIGHT = '''
+PREFLIGHT = r'''
 import json
-from kadima import config, storage
-from kadima.session import SESSION
-c = storage.conn()
-if c.execute("SELECT 1 FROM positions WHERE status != 'closed' LIMIT 1").fetchone():
-    raise RuntimeError('Local positions or orders remain unresolved')
-if c.execute("SELECT 1 FROM sqlite_master WHERE name='execution_orders'").fetchone():
-    if c.execute("SELECT 1 FROM execution_orders WHERE state != 'terminal' LIMIT 1").fetchone():
-        raise RuntimeError('Pending execution intents remain')
-SESSION.ensure()
-for name in ('position','orderBook'):
-    r = getattr(SESSION.api,name)()
-    if not isinstance(r,dict) or r.get('status') is not True:
-        raise RuntimeError('Broker preflight unavailable')
-    rows=r.get('data') or []
-    if not isinstance(rows,list):
-        raise RuntimeError('Broker preflight invalid')
-    for row in rows:
-        if name=='position':
-            if float(row.get('netqty') or 0) != 0:
-                raise RuntimeError('Broker positions are not flat')
-        elif str(row.get('orderstatus') or row.get('status') or '').lower() not in {
-            'complete','completed','filled','cancelled','canceled','rejected'}:
-            raise RuntimeError('Broker has pending or unknown orders')
-print('KADIMA_PREFLIGHT_OK')
+import re
+import sys
+stage = 'imports'
+reason = 'exception'
+broker_code = None
+try:
+    from kadima import config, storage
+    from kadima.session import SESSION
+    import SmartApi
+    import pyotp
+    stage = 'local_state'
+    c = storage.conn()
+    if c.execute("SELECT 1 FROM positions WHERE status != 'closed' LIMIT 1").fetchone():
+        reason = 'local_positions_unresolved'
+        raise RuntimeError()
+    if c.execute("SELECT 1 FROM sqlite_master WHERE name='execution_orders'").fetchone():
+        if c.execute("SELECT 1 FROM execution_orders WHERE state != 'terminal' LIMIT 1").fetchone():
+            reason = 'local_orders_pending'
+            raise RuntimeError()
+    stage = 'broker_login'
+    SESSION.ensure()
+    for name in ('position','orderBook'):
+        stage = 'broker_positions' if name == 'position' else 'broker_orders'
+        r = getattr(SESSION.api,name)()
+        if not isinstance(r,dict) or r.get('status') is not True:
+            reason = 'broker_response_unsuccessful'
+            code = str(r.get('errorcode') or '') if isinstance(r,dict) else ''
+            if re.fullmatch(r'[A-Z]{1,4}[0-9]{1,6}', code):
+                broker_code = code
+            raise RuntimeError()
+        rows = r.get('data')
+        if rows is None:
+            rows = []
+        if not isinstance(rows,list):
+            reason = 'broker_response_invalid'
+            raise RuntimeError()
+        for row in rows:
+            if name == 'position':
+                if float(row.get('netqty') or 0) != 0:
+                    reason = 'broker_positions_not_flat'
+                    raise RuntimeError()
+            elif str(row.get('orderstatus') or row.get('status') or '').lower() not in {
+                'complete','completed','filled','cancelled','canceled','rejected'}:
+                reason = 'broker_orders_pending_or_unknown'
+                raise RuntimeError()
+    print('KADIMA_PREFLIGHT_OK')
+except Exception as exc:
+    error = type(exc).__name__
+    if error not in {'ModuleNotFoundError','ImportError','PermissionError',
+                     'FileNotFoundError','RuntimeError','ValueError','OperationalError'}:
+        error = 'OtherError'
+    # Never include exception messages, broker payloads or credentials.
+    print('KADIMA_DIAGNOSTIC ' + json.dumps(dict(stage=stage, reason=reason,
+          error=error, broker_code=broker_code)), flush=True)
+    sys.exit(1)
 '''
+
+
+STAGES = {'imports','local_state','broker_login','broker_positions','broker_orders'}
+REASONS = {'exception','local_positions_unresolved','local_orders_pending',
+           'broker_response_unsuccessful','broker_response_invalid',
+           'broker_positions_not_flat','broker_orders_pending_or_unknown'}
+ERRORS = {'ModuleNotFoundError','ImportError','PermissionError','FileNotFoundError',
+          'RuntimeError','ValueError','OperationalError','OtherError'}
+
+
+def failure_summary(exc, operation):
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return operation + ': timed out'
+    if isinstance(exc, subprocess.CalledProcessError):
+        # Child output can contain SDK secrets. Render only validated diagnostics.
+        for line in (exc.stdout or '').splitlines():
+            if not line.startswith('KADIMA_DIAGNOSTIC '):
+                continue
+            try:
+                d = json.loads(line[len('KADIMA_DIAGNOSTIC '):])
+                if d.get('stage') in STAGES and d.get('reason') in REASONS and d.get('error') in ERRORS:
+                    return d['stage'] + ': ' + d['reason'] + ' (' + d['error'] + ')'
+            except (ValueError, TypeError, AttributeError):
+                pass
+        return operation + ': child command failed (exit ' + str(exc.returncode) + ')'
+    error = type(exc).__name__
+    return operation + ': ' + (error if error in ERRORS else 'OtherError')
 
 
 def main():
@@ -112,15 +170,18 @@ def main():
             shutil.copy2(target,saved)
     (backup/'manifest.json').write_text(json.dumps(manifest,indent=2))
     copied=False
+    operation='stop_services'
     try:
         run(['systemctl','stop',*active],timeout=60)
         def as_user():
             os.initgroups(user.pw_name,user.pw_gid)
             os.setgid(user.pw_gid)
             os.setuid(user.pw_uid)
+        operation='broker_preflight'
         check=run([python,'-c',PREFLIGHT],cwd=REPO,env=env,preexec_fn=as_user,timeout=60)
         if 'KADIMA_PREFLIGHT_OK' not in check.stdout:
             raise RuntimeError('Read-only broker preflight did not confirm flat state')
+        operation='replace_source'
         for name in manifest:
             target=REPO/name
             target.parent.mkdir(parents=True,exist_ok=True)
@@ -129,10 +190,15 @@ def main():
             os.chown(temporary,user.pw_uid,user.pw_gid)
             os.replace(temporary,target)
             copied=True
+        operation='start_services'
         run(['systemctl','start',*active],timeout=60)
+        operation='verify_services'
         for unit in active:
             run(['systemctl','is-active','--quiet',unit])
-    except Exception:
+    except Exception as exc:
+        detail = failure_summary(exc, operation)
+        (backup/'install-status.json').write_text(json.dumps({'failed_check':detail}))
+        print('Failed check:', detail)
         # Maintenance window + flat broker preflight ensure this rollback is
         # before a market entry cycle. Never roll back or replace the database.
         if copied:
