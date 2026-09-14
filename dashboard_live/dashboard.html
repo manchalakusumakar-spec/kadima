@@ -3,9 +3,216 @@
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2312102a'/%3E%3Ctext x='6' y='25' fill='%23e8c878' font-size='26'%3EK%3C/text%3E%3C/svg%3E">
 <style>
 :root{color-scheme:dark;--bg:#12102a;--panel:#1d1838;--gold:#e8c878;--text:#ede6f5;--muted:#b5abc9;--green:#5fe0a0;--red:#ff8181;--line:#e8c87833}*{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at top,#2a214b,var(--bg) 65%);color:var(--text);font:16px/1.5 system-ui,sans-serif}main{max-width:1550px;margin:auto;padding:24px}header{display:flex;align-items:center;justify-content:space-between;gap:16px;border-bottom:1px solid var(--line);padding-bottom:22px}h1{font:600 34px Georgia,serif;letter-spacing:.13em;color:var(--gold);margin:0}h2{font:600 19px Georgia,serif;letter-spacing:.04em;color:var(--gold);margin:0 0 14px}h3{font-size:16px;margin:0 0 10px}.subtitle,.muted,small{color:var(--muted);font-size:14px}button,input,select{font:inherit;color:var(--text);background:#27203f;border:1px solid var(--line);border-radius:7px;padding:9px 13px}button{cursor:pointer}button:hover{border-color:var(--gold)}button:disabled{opacity:.45;cursor:default}button.primary{background:var(--gold);color:#171128}.toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.statusbar{display:flex;gap:10px;flex-wrap:wrap;padding:16px 0}.badge{border:1px solid var(--line);border-radius:5px;padding:7px 10px;font-size:14px}.good{color:var(--green)}.bad{color:var(--red)}.warn{color:var(--gold)}.grid{display:grid;gap:16px}.stats{grid-template-columns:repeat(4,minmax(0,1fr))}.panel,.card{background:linear-gradient(130deg,#231c40,#19162f);border:1px solid var(--line);border-radius:11px;padding:20px;min-width:0}.value{font:500 26px ui-monospace,monospace;margin:10px 0;overflow-wrap:anywhere}.sections{grid-template-columns:1fr 1fr;margin-top:18px}.wide{grid-column:1/-1}.indices{grid-template-columns:repeat(auto-fit,minmax(205px,1fr))}.index{border:1px solid var(--line);padding:16px;border-radius:8px}.index .value{color:var(--gold)}.index dl{font-size:14px}.index dl div{display:flex;justify-content:space-between;gap:8px}dt{color:var(--muted)}dd{margin:0}progress{width:100%;accent-color:var(--gold);height:7px}.table-wrap{overflow:auto;width:100%}table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;padding:12px 9px;border-bottom:1px solid #ffffff12;vertical-align:top}th{color:var(--muted);font-weight:500;white-space:nowrap}td{overflow-wrap:anywhere}.empty{padding:18px;color:var(--muted);border:1px dashed var(--line);border-radius:7px}.split{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}.wall{display:flex;gap:7px;flex-wrap:wrap}.wall span{padding:5px 8px;background:#ffffff08;font:14px ui-monospace,monospace;border-radius:4px}.news{list-style:none;padding:0;margin:0}.news li{border-bottom:1px solid var(--line);padding:12px 0}a{color:var(--gold)}.chart{height:105px;width:100%}.chartbox{border:1px solid var(--line);padding:15px;border-radius:8px}.auth{position:fixed;inset:0;background:#100d23f5;z-index:20;display:grid;place-items:center;padding:20px}.auth[hidden]{display:none}.auth form{width:min(440px,100%);border:1px solid var(--line);border-radius:14px;background:var(--panel);padding:30px}.auth label,.auth input{display:block;width:100%;margin:14px 0}.notice{margin:12px 0;color:var(--gold);font-size:14px}#exitMessage{min-height:24px}footer{padding:25px 0;color:var(--muted);font-size:14px}@media(max-width:900px){.stats,.sections{grid-template-columns:1fr 1fr}.sections>.panel{grid-column:1/-1}}@media(max-width:580px){main{padding:14px}.stats{grid-template-columns:1fr 1fr}.value{font-size:21px}header{align-items:flex-start;flex-direction:column}.panel{padding:14px}h1{font-size:29px}}
+
+/* Decorative KADIMA rain: isolated from dashboard data and controls. */
+#kadimaRain{position:fixed;inset:0;overflow:hidden;pointer-events:none;z-index:0;user-select:none}
+#kadimaRain span{position:absolute;top:0;color:#4dff91;font:600 19px/1.3 ui-monospace,monospace;white-space:pre;text-align:center;opacity:.28;text-shadow:0 0 8px #28ff75;animation:kadimaFall var(--duration) linear infinite;animation-delay:var(--delay);will-change:transform}
+#kadimaRain.paused span{animation-play-state:paused}
+body>main{position:relative;z-index:1}
+@keyframes kadimaFall{from{transform:translateY(-100%)}to{transform:translateY(100vh)}}
+@media(prefers-reduced-motion:reduce){#kadimaRain{display:none}#matrixToggle{display:none}}
 </style></head><body>
+<div id="kadimaRain" aria-hidden="true"><span style="left:0.00%;--duration:14s;--delay:-0s">K
+A
+D
+I
+M
+A
+K
+A
+D
+I
+M
+A</span><span style="left:5.56%;--duration:21s;--delay:-11s">K
+A
+D
+I
+M
+A
+K
+A
+D
+I
+M
+A</span><span style="left:11.11%;--duration:15s;--delay:-22s">K
+A
+D
+I
+M
+A
+K
+A
+D
+I
+M
+A</span><span style="left:16.67%;--duration:22s;--delay:-6s">K
+A
+D
+I
+M
+A
+K
+A
+D
+I
+M
+A</span><span style="left:22.22%;--duration:16s;--delay:-17s">K
+A
+D
+I
+M
+A
+K
+A
+D
+I
+M
+A</span><span style="left:27.78%;--duration:23s;--delay:-1s">K
+A
+D
+I
+M
+A
+K
+A
+D
+I
+M
+A</span><span style="left:33.33%;--duration:17s;--delay:-12s">K
+A
+D
+I
+M
+A
+K
+A
+D
+I
+M
+A</span><span style="left:38.89%;--duration:24s;--delay:-23s">K
+A
+D
+I
+M
+A
+K
+A
+D
+I
+M
+A</span><span style="left:44.44%;--duration:18s;--delay:-7s">K
+A
+D
+I
+M
+A
+K
+A
+D
+I
+M
+A</span><span style="left:50.00%;--duration:25s;--delay:-18s">K
+A
+D
+I
+M
+A
+K
+A
+D
+I
+M
+A</span><span style="left:55.56%;--duration:19s;--delay:-2s">K
+A
+D
+I
+M
+A
+K
+A
+D
+I
+M
+A</span><span style="left:61.11%;--duration:26s;--delay:-13s">K
+A
+D
+I
+M
+A
+K
+A
+D
+I
+M
+A</span><span style="left:66.67%;--duration:20s;--delay:-24s">K
+A
+D
+I
+M
+A
+K
+A
+D
+I
+M
+A</span><span style="left:72.22%;--duration:14s;--delay:-8s">K
+A
+D
+I
+M
+A
+K
+A
+D
+I
+M
+A</span><span style="left:77.78%;--duration:21s;--delay:-19s">K
+A
+D
+I
+M
+A
+K
+A
+D
+I
+M
+A</span><span style="left:83.33%;--duration:15s;--delay:-3s">K
+A
+D
+I
+M
+A
+K
+A
+D
+I
+M
+A</span><span style="left:88.89%;--duration:22s;--delay:-14s">K
+A
+D
+I
+M
+A
+K
+A
+D
+I
+M
+A</span><span style="left:94.44%;--duration:16s;--delay:-25s">K
+A
+D
+I
+M
+A
+K
+A
+D
+I
+M
+A</span></div>
 <div id="auth" class="auth"><form id="loginForm"><h1>KADIMA</h1><p>Celestial Watch · Dashboard sign-in</p><label for="password">Dashboard password</label><input id="password" type="password" autocomplete="current-password" required><button class="primary" type="submit">Sign in</button><p id="loginError" role="alert" class="bad"></p><p class="muted">Use the dashboard password created during installation.</p></form></div>
-<main><header><div><h1>KADIMA</h1><div class="subtitle">CELESTIAL WATCH · LIVE OPERATIONS</div></div><div class="toolbar"><span id="clock"></span><button id="refresh">Refresh</button><button id="logout">Sign out</button></div></header>
+<main><header><div><h1>KADIMA</h1><div class="subtitle">CELESTIAL WATCH · LIVE OPERATIONS</div></div><div class="toolbar"><span id="clock"></span><button id="matrixToggle" aria-pressed="false">Pause animation</button><button id="refresh">Refresh</button><button id="logout">Sign out</button></div></header>
 <div id="statusbar" class="statusbar" aria-live="polite"></div>
 <div class="grid stats" id="ledger"></div>
 <div class="grid sections">
@@ -71,5 +278,6 @@ $('refresh').onclick=()=>Object.keys(feeds).forEach(poll);$('focus').onchange=re
 $('positions').onclick=async e=>{const b=e.target.closest('[data-exit]');if(!b||b.disabled||busyExit)return;const id=b.dataset.exit;if(!/^[0-9]+$/.test(id)||!online('dashboard')||!fresh(feeds.dashboard.data.ts))return;busyExit=true;renderPositions();$('exitMessage').textContent='Sending exit request…';try{const d=await request('manual_exit/'+id,{method:'POST',body:JSON.stringify({reason:'manual_exit_dashboard'})});$('exitMessage').textContent=d.ok?'Exit request processed by engine; check refreshed position status.':'Exit not confirmed by engine.'}catch(e){$('exitMessage').textContent=e.message+'. Outcome unconfirmed; verify position before retrying.'}finally{busyExit=false;poll('dashboard')}};
 setInterval(()=>{$('clock').textContent=new Intl.DateTimeFormat('en-IN',{timeZone:'Asia/Kolkata',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(new Date())+' IST';renderAll();if(authenticated&&!document.hidden)for(const [k,f]of Object.entries(feeds))if(Date.now()>=(f.next||0))poll(k)},1000);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&authenticated)Object.keys(feeds).forEach(poll)});
+$('matrixToggle').onclick=()=>{const paused=$('kadimaRain').classList.toggle('paused');$('matrixToggle').setAttribute('aria-pressed',String(paused));$('matrixToggle').textContent=paused?'Resume animation':'Pause animation'};
 renderAll();request('session').then(()=>{authenticated=true;$('auth').hidden=true;Object.keys(feeds).forEach(poll)}).catch(()=>{});
 </script></body></html>
