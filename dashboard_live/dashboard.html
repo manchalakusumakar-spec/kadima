@@ -11,6 +11,7 @@
 body>main{position:relative;z-index:1}
 @keyframes kadimaFall{from{transform:translateY(-100%)}to{transform:translateY(100vh)}}
 @media(prefers-reduced-motion:reduce){#kadimaRain{display:none}#matrixToggle{display:none}}
+.scroll-window{height:360px;overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:var(--gold) transparent;overflow-anchor:none}.scroll-window:focus-visible{outline:2px solid var(--gold);outline-offset:4px}.scroll-tools{display:flex;align-items:center;gap:12px;margin:10px 0}.scroll-tools small{flex:1}.scroll-tools button{font-size:13px;padding:5px 9px}@media(max-width:580px){.scroll-window{height:300px}}
 </style></head><body>
 <div id="kadimaRain" aria-hidden="true"><span style="left:0.00%;--duration:14s;--delay:-0s">K
 A
@@ -219,10 +220,10 @@ A</span></div>
 <section class="panel wide"><div class="split"><h2>The Five Pillars</h2><span id="market" class="muted">Market state unavailable</span></div><div class="indices grid" id="indices"></div></section>
 <section class="panel wide"><div class="split"><h2>Open Positions · Entry, Stop & Targets</h2><span id="positionsTime" class="muted"></span></div><div id="positions"></div><div id="exitMessage" role="status"></div><p class="muted">Prices are reported by the execution engine. Its current API can substitute entry/peak prices when broker quotes fail; quote freshness is unverified. Targets are engine-calculated levels, not profit forecasts.</p></section>
 <section class="panel"><div class="split"><h2>Master Checklist</h2><select id="focus" aria-label="Checklist index"><option>NIFTY</option><option>BANKNIFTY</option><option>SENSEX</option><option>MIDCPNIFTY</option><option>BANKEX</option></select></div><div id="checklist"></div></section>
-<section class="panel"><h2>Gamma Scanner · Top 20</h2><p class="muted">Backend gamma scores out of 100; these are not probabilities. Last known scores remain visible with their source time and freshness status.</p><div id="gamma"></div></section>
+<section class="panel"><h2>Gamma Scanner · Top 20</h2><p class="muted">Backend gamma scores out of 100; these are not probabilities. Last known scores remain visible with their source time and freshness status.</p><div class="scroll-tools"><small>Auto-scroll · hover or focus to pause</small><button id="gammaScrollToggle" aria-controls="gammaScroll" aria-pressed="false">Pause scrolling</button></div><div id="gammaScroll" class="scroll-window" tabindex="0" role="region" aria-label="Gamma Scanner scrolling content"><div id="gamma"></div></div></section>
 <section class="panel wide"><h2>Observed Price History · 5-Minute Samples</h2><p class="muted">Collected while this page is open. No predicted prices or invented confidence values.</p><div id="history" class="grid indices"></div></section>
-<section class="panel"><h2>Macro & Event Watch</h2><div id="macro"></div></section>
-<section class="panel"><h2>News</h2><ul id="news" class="news"></ul></section>
+<section class="panel"><h2>Macro & Event Watch</h2><div class="scroll-tools"><small>Auto-scroll · hover or focus to pause</small><button id="macroScrollToggle" aria-controls="macroScroll" aria-pressed="false">Pause scrolling</button></div><div id="macroScroll" class="scroll-window" tabindex="0" role="region" aria-label="Macro & Event Watch scrolling content"><div id="macro"></div></div></section>
+<section class="panel"><h2>News</h2><div class="scroll-tools"><small>Auto-scroll · hover or focus to pause</small><button id="newsScrollToggle" aria-controls="newsScroll" aria-pressed="false">Pause scrolling</button></div><div id="newsScroll" class="scroll-window" tabindex="0" role="region" aria-label="News scrolling content"><ul id="news" class="news"></ul></div></section>
 <section class="panel wide"><div class="split"><h2>F&O Universe</h2><span id="universeCount" class="muted"></span></div><div id="universe" class="wall"></div></section>
 <section class="panel wide"><h2>Data Coverage</h2><div id="coverage" class="muted"></div></section>
 </div><footer>All times IST · State and positions refresh every 4 seconds; scanner and macro every 20 seconds. Source updates, response times and fetch times are shown separately. Recent source update means within 2 minutes; it does not guarantee a live exchange tick. Unknown timestamps are never replaced with the current time.</footer></main>
@@ -279,5 +280,27 @@ $('positions').onclick=async e=>{const b=e.target.closest('[data-exit]');if(!b||
 setInterval(()=>{$('clock').textContent=new Intl.DateTimeFormat('en-IN',{timeZone:'Asia/Kolkata',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(new Date())+' IST';renderAll();if(authenticated&&!document.hidden)for(const [k,f]of Object.entries(feeds))if(Date.now()>=(f.next||0))poll(k)},1000);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&authenticated)Object.keys(feeds).forEach(poll)});
 $('matrixToggle').onclick=()=>{const paused=$('kadimaRain').classList.toggle('paused');$('matrixToggle').setAttribute('aria-pressed',String(paused));$('matrixToggle').textContent=paused?'Resume animation':'Pause animation'};
+
+const reducedScroll=window.matchMedia('(prefers-reduced-motion: reduce)');
+const scrollingPanels=['gamma','macro','news'].map(id=>{
+const box=$(id+'Scroll'),button=$(id+'ScrollToggle');
+const state={box,button,paused:false,holdUntil:performance.now()+2000,endUntil:0};
+button.onclick=()=>{state.paused=!state.paused;button.setAttribute('aria-pressed',String(state.paused));button.textContent=state.paused?'Resume scrolling':'Pause scrolling'};
+for(const event of ['wheel','touchstart','pointerdown','keydown'])box.addEventListener(event,()=>{state.holdUntil=performance.now()+8000;state.endUntil=0},{passive:true});
+return state;
+});
+function scrollStep(state,now,seconds){
+const box=state.box,max=box.scrollHeight-box.clientHeight;
+if(document.hidden||reducedScroll.matches||state.paused||box.matches(':hover')||box.contains(document.activeElement)||now<state.holdUntil||max<=1){state.endUntil=0;return}
+if(box.scrollTop>=max-1){
+if(!state.endUntil)state.endUntil=now+2500;
+if(now>=state.endUntil){box.scrollTop=0;state.endUntil=0;state.holdUntil=now+2000}
+}else{state.endUntil=0;box.scrollTop=Math.min(max,box.scrollTop+seconds*16)}
+}
+let scrollPrevious=performance.now();
+function scrollFrame(now){const seconds=Math.min((now-scrollPrevious)/1000,.1);scrollPrevious=now;for(const state of scrollingPanels)scrollStep(state,now,seconds);requestAnimationFrame(scrollFrame)}
+requestAnimationFrame(scrollFrame);
+
 renderAll();request('session').then(()=>{authenticated=true;$('auth').hidden=true;Object.keys(feeds).forEach(poll)}).catch(()=>{});
 </script></body></html>
+
