@@ -303,9 +303,6 @@ def enforce(executor, ranked, direction: str, requested_lots: int):
 
     Returns (allowed_lots, reason).
     """
-    if config.in_no_auto_exit_window():
-        audit.log("capital_guard_bypassed_no_auto_exit_window", symbol=ranked.quote.symbol, requested_lots=requested_lots)
-        return requested_lots, "no_auto_exit_window_capital_cap_bypassed"
 
     q = ranked.quote
     allowed, why = max_affordable_lots(
@@ -322,8 +319,6 @@ def enforce(executor, ranked, direction: str, requested_lots: int):
         requested_lots=requested_lots,
         allowed_lots=allowed,
         reason=why,
-        equity=round(available_equity(), 2),
-        buffered_ceiling=round(_buffered_ceiling(), 2),
         already_deployed=deployed_capital(executor.state.positions),
     )
     return allowed, why
@@ -351,3 +346,4 @@ def get_capital_for_signal(kind: str, tier: str) -> float:
     if net <= 0.0:
         return 0.0
     return min(max(net, lo), hi)
+

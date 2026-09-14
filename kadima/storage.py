@@ -11,6 +11,7 @@ multi-day tick backtests.
 from __future__ import annotations
 
 import os
+from contextlib import nullcontext
 import sqlite3
 import threading
 from datetime import datetime
@@ -186,11 +187,11 @@ def insert_signal(index_name: str, tier: str, score: float,
 
 
 # ---------------------------------------------------------------- positions
-def upsert_position(pos) -> None:
+def upsert_position(pos, _connection=None) -> None:
     """pos is an auto_executor.Position. Imported lazily by callers to
     avoid a circular import (auto_executor imports storage)."""
-    c = conn()
-    with c:
+    c = _connection if _connection is not None else conn()
+    with (c if _connection is None else nullcontext()):
         c.execute(
             "INSERT INTO positions (signal_id, kind, index_name, direction, "
             "symbol, token, exchange, entry_price, entry_ts, lots, lot_size, "
@@ -198,6 +199,8 @@ def upsert_position(pos) -> None:
             "exit_price, exit_ts, exit_reason, exit_order_id) "
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(signal_id) DO UPDATE SET "
+            "entry_price=excluded.entry_price, entry_ts=excluded.entry_ts, "
+            "remaining_qty=excluded.remaining_qty, "
             "status=excluded.status, peak_price=excluded.peak_price, "
             "trail_active=excluded.trail_active, exit_price=excluded.exit_price, "
             "exit_ts=excluded.exit_ts, exit_reason=excluded.exit_reason, "
@@ -234,7 +237,7 @@ def load_open_positions() -> list[dict]:
         "token, exchange, entry_price, entry_ts, lots, lot_size, "
         "remaining_qty, order_id, status, peak_price, trail_active, "
         "exit_price, exit_ts, exit_reason, exit_order_id "
-        "FROM positions WHERE status='open'"
+        "FROM positions WHERE status IN ('open','entry_pending','exit_pending','order_unknown')"
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -245,5 +248,6 @@ def recent_candles(token: str, interval: int, limit: int = 200):
         "SELECT * FROM candles WHERE token=? AND interval=? AND closed=1 "
         "ORDER BY start_ts DESC LIMIT ?", (token, interval, limit)).fetchall()
     return list(reversed(rows))
+
 
 

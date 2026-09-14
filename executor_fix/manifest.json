@@ -1,0 +1,43 @@
+{
+  "kadima/alerts.py": [
+    "b94fe1672a30eeb4ac183c8f42bf365271ee3609"
+  ],
+  "kadima/angel_orders.py": [
+    "dd52523e5b5b4741592452015de3a206f685afd0"
+  ],
+  "kadima/auto_executor.py": [
+    "b97d03f359135173d49e6a5eb5cdaf30b8aa4cc8",
+    "5f797fad4a96546ebfd130943b4de99290ff2efd"
+  ],
+  "kadima/capital_guard.py": [
+    "fa2037c39883c412ae426e37e07121cd0e8f2c91"
+  ],
+  "kadima/control_api.py": [
+    "dda766d3ed57fb7701fd4bdb367be82a0fb4106d"
+  ],
+  "kadima/engine.py": [
+    "a1be6464db4990815bec5abf4e20c168cb5319aa"
+  ],
+  "kadima/exit_manager.py": [
+    "d5b7d46ecde3a0c960555ce977cd87087482c17d"
+  ],
+  "kadima/forecast_trail.py": [
+    "fcbeeace5355c349caac701521541303af7821a2",
+    null
+  ],
+  "kadima/option_chain.py": [
+    "bba28daca258437742531a3dec594292d880e79c"
+  ],
+  "kadima/rate_limiter.py": [
+    "83dc77d40cfc1d15c7929a4d17e23b407db53b16"
+  ],
+  "kadima/session.py": [
+    "7fb14d476447ea5550b7b8f3724453f80d7accfd"
+  ],
+  "kadima/storage.py": [
+    "35611465714705635a104ad3f312719a9bc843ea"
+  ],
+  "kadima/execution_ledger.py": [
+    null
+  ]
+}

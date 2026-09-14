@@ -82,3 +82,4 @@ def evaluate(*, entry, peak, previous_stop, ltp, quantity, giveback_fraction,
     reason = ("forecast_trailing_exit" if exit_now else
               "stop_not_breached" if not breached else "forecast_upside_at_least_stop_risk")
     return Decision(stop, breached, exit_now, reason, risk, profit)
+

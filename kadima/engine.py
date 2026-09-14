@@ -162,7 +162,7 @@ class Engine:
         threading.Thread(target=self._persist_last_known_loop, daemon=True,
                          name="last-known-persist").start()
         mode = "LIVE ORDERS ENABLED" if ORDER_PLACEMENT_ENABLED else "advisory mode — no orders"
-        alerts.send(f"🟢 KADIMA engine started ({mode}).")
+        alerts.enqueue(f"🟢 KADIMA engine started ({mode}).")
 
     def stop(self) -> None:
         self._stop.set()
@@ -187,7 +187,7 @@ class Engine:
         except Exception as exc:                        # noqa: BLE001
             audit.log("last_known_persist_on_stop_failed", error=str(exc))
         audit.log("engine_stopped")
-        alerts.send("🔴 KADIMA engine stopped.")
+        alerts.enqueue("🔴 KADIMA engine stopped.")
 
     # ------------------------------------------------------------------ ticks
     def _on_tick(self, tick: dict) -> None:
@@ -240,6 +240,8 @@ class Engine:
                             st.chain.rebuild_ladder(st.spot)
                             polled = st.chain.poll()
                             if polled:
+                                auto_executor.EXECUTOR.state.premium_tracker.record_chain(st.chain)
+                            if polled:
                                 self._score_gamma(st)
                         except Exception as exc:        # noqa: BLE001
                             audit.log("oi_loop_error", index=st.name,
@@ -252,18 +254,18 @@ class Engine:
         """Separate signal stream from Bull Shield's _score() above — same
         tier convention, different factors. Costs zero extra network calls:
         st.chain has already been polled this cycle by the caller."""
-        prev_tier = st.gamma_result.tier if st.gamma_result else "NONE"
+        previous = (st.gamma_result.tier, st.gamma_result.direction) if st.gamma_result else None
         result = gamma.score(st.name, st.chain, st.gamma_history, st.spot,
                              days_to_expiry=self._dte(st), snap=gamma.GammaSnapshot(
                                  above_vwap=st.snap.above_vwap, ema_bull=st.snap.ema_bull))
         st.gamma_result = result
 
-        if result.tier == prev_tier:
-            return  # only alert on a tier transition, same discipline as Bull Shield
-
-        audit.log("gamma_tier_change", index=st.name, tier=result.tier,
-                  score=result.score, direction=result.direction,
-                  components=result.components.as_dict())
+        episode_changed = previous != (result.tier, result.direction)
+        if episode_changed:
+            st._gamma_entry_signal = None
+            audit.log("gamma_tier_change", index=st.name, tier=result.tier,
+                      score=result.score, direction=result.direction,
+                      components=result.components.as_dict())
 
         if result.tier != "CONFIRMED":
             return  # WATCH/ACTIVE are visible via /state; only CONFIRMED alerts,
@@ -287,15 +289,19 @@ class Engine:
         payload = {"index": st.name, "tier": result.tier, "score": result.score,
                    "direction": result.direction, "spot": st.spot,
                    "components": result.components.as_dict()}
-        sid = storage.insert_signal(st.name, result.tier, result.score,
-                                    result.direction, json.dumps(payload, default=str),
-                                    kind="gamma_blast")
-        audit.log("gamma_signal_emitted", signal_id=sid, **payload)
-        alerts.send(
-            f"🌊 <b>GAMMA {result.tier}</b> — {st.name} {result.direction}\n"
-            f"Score {result.score}% · Spot {st.spot}\n"
-            f"<code>signal #{sid}</code>",
-            key=f"{st.name}:gamma:{result.tier}")
+        sid = getattr(st, "_gamma_entry_signal", None)
+        if sid is None:
+            sid = storage.insert_signal(st.name, result.tier, result.score,
+                                        result.direction, json.dumps(payload, default=str),
+                                        kind="gamma_blast")
+            audit.log("gamma_signal_emitted", signal_id=sid, **payload)
+            alerts.enqueue(
+                f"🌊 <b>GAMMA {result.tier}</b> — {st.name} {result.direction}\n"
+                f"Score {result.score}% · Spot {st.spot}\n"
+                f"<code>signal #{sid}</code>",
+                key=f"{st.name}:gamma:{result.tier}")
+    
+            st._gamma_entry_signal = sid
 
         auto_executor.EXECUTOR.evaluate_and_enter(
             index_name=st.name, direction=result.direction, chain=st.chain,
@@ -473,5 +479,6 @@ class Engine:
                 audit.log("market_close_shutdown")
                 self.stop()
                 return
+
 
 

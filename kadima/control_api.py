@@ -139,6 +139,10 @@ def modify_order(order_id: str, body: ModifyOrderBody, authorization: Optional[s
     )
     # modifyOrder() is confirmed live in angel_orders.py from the
     # deployed screenshots.
+    from . import execution_ledger
+    tracked = [r for r in execution_ledger.pending() if r['order_id'] == order_id]
+    if tracked and body.quantity is not None and body.quantity != tracked[0]['quantity']:
+        raise HTTPException(status_code=409, detail='tracked_order_quantity_change_not_supported')
     result = ANGEL_ORDERS.modify_order(order_id, price=body.price, quantity=body.quantity)
     if not getattr(result, "ok", False):
         raise HTTPException(status_code=409, detail=str(result))
@@ -267,6 +271,9 @@ def _position_view(pos) -> dict:
 
     return {
         "signal_id": pos.signal_id,
+        "status": pos.status,
+        "entry_order_id": pos.order_id,
+        "exit_order_id": pos.exit_order_id,
         "index": pos.index,
         "direction": pos.direction,
         "symbol": pos.symbol,
@@ -293,7 +300,7 @@ def dashboard_data(authorization: Optional[str] = Header(None)):
     if EXECUTOR is None:
         raise HTTPException(status_code=503, detail="executor_not_registered")
 
-    open_positions = [p for p in EXECUTOR.state.positions.values() if p.status == "open"]
+    open_positions = [p for p in EXECUTOR.state.positions.values() if p.status != "closed"]
     position_views = [_position_view(p) for p in open_positions]
 
     deployed = capital_guard.deployed_capital(EXECUTOR.state.positions)
@@ -366,3 +373,4 @@ def macro_snapshot(authorization: Optional[str] = Header(None)):
                 "economic_calendar": []}
     except (OSError, json.JSONDecodeError) as exc:
         raise HTTPException(status_code=503, detail=f"macro_snapshot_unavailable: {exc}")
+

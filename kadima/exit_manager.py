@@ -195,11 +195,13 @@ def realized_pnl_today() -> float:
     lot's contract multiplier happens to be (65 for NIFTY, etc.) -- never
     caught until wiring this in for real and reading it against the
     actual schema."""
-    c = storage.conn()
+    from . import execution_ledger
+    c = execution_ledger.connection()
     today = now_ist().strftime("%Y-%m-%d")
     rows = c.execute(
         "SELECT entry_price, exit_price, lots, lot_size FROM positions "
-        "WHERE exit_ts LIKE ? AND status = 'closed'",
+        "WHERE exit_ts LIKE ? AND status = 'closed' AND NOT EXISTS "
+        "(SELECT 1 FROM execution_orders e WHERE e.signal_id=positions.signal_id)",
         (f"{today}%",),
     ).fetchall()
 
@@ -208,6 +210,8 @@ def realized_pnl_today() -> float:
         if r["entry_price"] is None or r["exit_price"] is None:
             continue
         total += (r["exit_price"] - r["entry_price"]) * r["lots"] * r["lot_size"]
+    total += c.execute("SELECT COALESCE(SUM(pnl),0) FROM execution_fills "
+                       "WHERE ts LIKE ? AND dry_run=0", (f"{today}%",)).fetchone()[0]
     return total
 
 
@@ -223,5 +227,6 @@ def max_lots_allowed(requested_lots: int) -> int:
             )
         return capped
     return requested_lots
+
 
 

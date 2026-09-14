@@ -168,15 +168,15 @@ class OptionChain:
         """One REST refresh. Returns False if the sample was lost."""
         if not self.quotes:
             return False
-        SESSION.ensure()
         tokens = list(self.quotes.keys())
         payload = {"mode": "FULL",
                    "exchangeTokens": {self.index.opt_exchange: tokens}}
         try:
-            resp = SESSION.api.getMarketData(**payload)
-        except TypeError:
-            resp = SESSION.api.getMarketData("FULL",
-                                             {self.index.opt_exchange: tokens})
+            SESSION.ensure()
+            try:
+                resp = SESSION.api.getMarketData(**payload)
+            except TypeError:
+                resp = SESSION.api.getMarketData("FULL", {self.index.opt_exchange: tokens})
         except Exception as exc:                        # noqa: BLE001
             audit.log("oi_poll_failed", index=self.index.name, error=str(exc))
             self.velocity.mark_degraded()
@@ -189,11 +189,18 @@ class OptionChain:
             return False
 
         fetched = resp.get("data", {}).get("fetched", [])
+        received = {str(row.get('symbolToken')) for row in fetched}
+        if not set(tokens).issubset(received):
+            self.velocity.mark_degraded()
+            audit.log('oi_poll_incomplete', index=self.index.name,
+                      expected=len(tokens), received=len(received))
+            return False
         for row in fetched:
             token = str(row.get("symbolToken"))
             q = self.quotes.get(token)
             if not q:
                 continue
+            q.iv = q.delta = q.gamma = q.theta = q.vega = None
             q.ltp = _f(row.get("ltp"))
             q.oi = _i(row.get("opnInterest"))
             q.oi_change = _i(row.get("netChangeOpnInterest"))
@@ -256,5 +263,6 @@ def _i(v):
         return int(float(v))
     except (TypeError, ValueError):
         return None
+
 
 

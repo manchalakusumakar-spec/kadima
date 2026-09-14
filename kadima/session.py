@@ -12,6 +12,7 @@ import time
 from datetime import datetime, timedelta
 
 from . import audit
+from .rate_limiter import protect_quote_api
 from .config import (ANGEL_API_KEY, ANGEL_CLIENT_ID, ANGEL_PASSWORD,
                      ANGEL_TOTP_SECRET, IST)
 
@@ -50,6 +51,7 @@ class Session:
         self.refresh_token: str | None = None
         self.feed_token: str | None = None
         self._logged_in_at: datetime | None = None
+        self._retry_after = 0.0
 
     # ------------------------------------------------------------------ login
     def _login(self) -> None:
@@ -98,6 +100,7 @@ class Session:
             raise RuntimeError(f"SmartAPI login failed: {resp}")
 
         data = resp["data"]
+        protect_quote_api(api)
         self.api = api
         self.jwt = data["jwtToken"]
         self.refresh_token = data["refreshToken"]
@@ -111,19 +114,23 @@ class Session:
         return datetime.now(IST) - self._logged_in_at > _REFRESH_AFTER
 
     def ensure(self, force: bool = False) -> "Session":
-        with self._lock:
+        # One login attempt per caller, with a shared cooldown after failure.
+        # Avoid sleeping through 31 seconds of retries while holding the lock.
+        if not self._lock.acquire(timeout=1.0):
+            raise RuntimeError('SmartAPI session refresh in progress')
+        try:
             if force or self.api is None or self._stale():
-                for attempt in range(5):
-                    try:
-                        self._login()
-                        return self
-                    except Exception as exc:            # noqa: BLE001
-                        wait = min(2 ** attempt, 30)
-                        audit.log("login_retry", attempt=attempt,
-                                  error=str(exc), wait_sec=wait)
-                        time.sleep(wait)
-                raise RuntimeError("SmartAPI login failed after 5 attempts")
+                if time.monotonic() < self._retry_after:
+                    raise RuntimeError('SmartAPI login retry cooldown')
+                try:
+                    self._login()
+                except Exception:
+                    self._retry_after = time.monotonic() + 5.0
+                    audit.log('login_retry_deferred', wait_sec=5)
+                    raise RuntimeError('SmartAPI login unavailable') from None
             return self
+        finally:
+            self._lock.release()
 
     # --------------------------------------------------------------- teardown
     def logout(self) -> None:
@@ -139,5 +146,6 @@ class Session:
 
 
 SESSION = Session()
+
 
 

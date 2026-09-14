@@ -52,6 +52,7 @@ class ExecutorIntegration(unittest.TestCase):
         tree=ast.parse((Path(__file__).parents[1]/'kadima/auto_executor.py').read_text())
         cls=next(x for x in tree.body if isinstance(x,ast.ClassDef) and x.name=='AutoExecutor')
         method=next(x for x in cls.body if isinstance(x,ast.FunctionDef) and x.name=='check_exits')
+        method.decorator_list=[]
         calls=[]
         pos=SimpleNamespace(status='open',token='T',exchange='NFO',signal_id=1,
                             peak_price=140,entry_price=100,trail_active=True,
@@ -64,7 +65,7 @@ class ExecutorIntegration(unittest.TestCase):
                 FIXED_STOPLOSS_PCT=30,storage=SimpleNamespace(upsert_position=lambda p:None),
                 audit=SimpleNamespace(log=lambda *a,**k:None))
         exec(compile(ast.Module(body=[method],type_ignores=[]),'<isolated-exit>','exec'),ns)
-        selfobj=SimpleNamespace(_lock=threading.Lock(),state=SimpleNamespace(positions={'1':pos}),
+        selfobj=SimpleNamespace(_positions_verified=True,_reconcile_blocked=False,_lock=threading.Lock(),state=SimpleNamespace(positions={'1':pos}),
                                 _profit_projections={1:p} if p else {},
                                 _close_position=lambda pos,ltp,reason:calls.append(reason))
         ns['check_exits'](selfobj)
@@ -79,3 +80,4 @@ class ExecutorIntegration(unittest.TestCase):
         self.assertEqual(self.run_cycle(p=projection(180),hour=16),['eod_force_close'])
 
 if __name__=='__main__':unittest.main()
+
