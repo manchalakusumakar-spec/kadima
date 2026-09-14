@@ -375,6 +375,8 @@ class AutoExecutor:
                            source_signal_id: int, tier: str, score: float) -> None:
         """snap: indicators.Snapshot from the calling IndexState, used for
         real VWAP (not a stub) in the entry-quality check."""
+        if not getattr(chain, '_entry_guard', lambda: True)():
+            return self._reject('stock_signal_expired_or_replaced', index_name, direction)
         if self._reconcile_blocked:
             return self._reject("startup_reconcile_not_complete", index_name, direction)
         if killswitch.engaged():
@@ -494,12 +496,17 @@ class AutoExecutor:
             allocation, limit_price, stop, lot_size, allowed_lots)
         if allowed_lots < 1 or pricing_ltp <= stop:
             return self._reject('fresh_quote_exceeds_risk_or_invalidates_stop', index_name, direction)
-        if time.monotonic() - chain._last_poll > 30:
-            return self._reject('option_chain_expired_before_submission', index_name, direction)
+        clock = time.monotonic()
+        if (not 0 <= clock - chain._last_poll <= 30
+                or not 0 <= clock - chain._spot_received_at <= 30
+                or not 0 <= clock - chain._alignment_at <= 240):
+            return self._reject('entry_data_expired_before_submission', index_name, direction)
         quantity = allowed_lots * lot_size
 
         if killswitch.engaged() or not in_market_hours() or past_signal_cutoff():
             return self._reject('entry_gate_changed_before_submission', index_name, direction)
+        if not getattr(chain, '_entry_guard', lambda: True)():
+            return self._reject('stock_signal_changed_before_submission', index_name, direction)
         pos = Position(
             signal_id=source_signal_id, kind=kind, index=index_name, direction=direction,
             symbol=chosen_quote.symbol, token=chosen_quote.token,
@@ -647,6 +654,8 @@ class AutoExecutor:
                 self.refresh_orders()
                 if time.monotonic() - self._last_reconcile >= 30:
                     self.reconcile_on_startup()
+                from . import forecast_connection
+                forecast_connection.refresh(self)
                 self.check_exits()
             except Exception as exc:                    # noqa: BLE001
                 audit.log("position_monitor_loop_error", error=str(exc))

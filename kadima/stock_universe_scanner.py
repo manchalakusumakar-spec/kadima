@@ -44,14 +44,9 @@ MEMORY-CONSCIOUS BY DESIGN, not just by hope:
     discipline comes from keeping stage 2's working set small, not from
     avoiding persistence altogether.
 
-OBSERVE-ONLY, NOT WIRED TO LIVE TRADING (2026-08-23):
-    Scores and logs CONFIRMED-tier gamma activity across the stock
-    universe. Does NOT call auto_executor.evaluate_and_enter() and does
-    NOT place any order — deliberately, on the trader's own agreed
-    sequencing: watch this behave sensibly against a real trading day
-    before connecting it to anything that touches capital. This matches
-    exactly how the original 4-index gamma scanner and the whole trading
-    pipeline were validated before ever being wired to real orders.
+CONFIRMED signals are now handed to the central engine through stock_handoff.
+This process never imports AutoExecutor or places orders. Central execution
+adds fresh candle/alignment, structural stop, liquidity and shared-slot gates.
 """
 
 from __future__ import annotations
@@ -61,11 +56,12 @@ import math
 import os
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta
 
 from . import alerts, audit, gamma_blast_scanner as gamma, killswitch, strike_selector
-from .config import IST
+from .config import IST, MARKET_CLOSE
+from . import stock_handoff
 from .instrument_master import stock_universe
 from .option_chain import OptionChain
 from .rate_limiter import QUOTE
@@ -97,7 +93,9 @@ class _TrackedStock:
     chain: OptionChain
     history: gamma.GammaHistory
     spot: float | None = None
-    days_to_expiry: float = 2.0
+    days_to_expiry: float = 0.0
+    spot_at: str | None = None
+    session_vwap: float | None = None
     last_seen_in_shortlist: datetime = field(default_factory=lambda: datetime.now(IST))
 
 
@@ -247,6 +245,7 @@ class UniverseScanner:
         stale = [name for name, t in self._tracked.items()
                 if t.last_seen_in_shortlist < cutoff]
         for name in stale:
+            stock_handoff.invalidate(name, end_episode=True)
             del self._tracked[name]
             self._last_score.pop(name, None)
             audit.log("universe_stock_demoted", name=name)
@@ -256,24 +255,46 @@ class UniverseScanner:
         for name, tracked in list(self._tracked.items()):
             spot_map_token = tracked.chain.index.token
             if not QUOTE.wait_and_allow(timeout_sec=2.0):
+                stock_handoff.invalidate(name)
                 continue
             try:
                 SESSION.ensure()
                 resp = SESSION.api.getMarketData(
-                    mode="LTP", exchangeTokens={tracked.chain.index.exchange: [spot_map_token]})
+                    mode="FULL", exchangeTokens={tracked.chain.index.exchange: [spot_map_token]})
                 fetched = (resp or {}).get("data", {}).get("fetched", [])
-                if fetched:
-                    tracked.spot = float(fetched[0]["ltp"])
+                matching = [x for x in fetched if str(x.get('symbolToken')) == str(spot_map_token)]
+                if not resp.get('status') or len(matching) != 1:
+                    raise ValueError('Missing underlying quote')
+                tracked.spot = float(matching[0]['ltp'])
+                if not math.isfinite(tracked.spot) or tracked.spot <= 0:
+                    raise ValueError('Invalid underlying quote')
+                tracked.spot_at = now_ist().isoformat()
+                avg = matching[0].get('avgPrice')
+                tracked.session_vwap = float(avg) if avg is not None else None
+                if tracked.session_vwap is not None and not math.isfinite(tracked.session_vwap):
+                    tracked.session_vwap = None
             except Exception as exc:                    # noqa: BLE001
-                audit.log("universe_spot_poll_failed", name=name, error=str(exc))
+                stock_handoff.invalidate(name)
+                audit.log("universe_spot_poll_failed", name=name, error=type(exc).__name__)
                 continue
 
             if not tracked.spot:
                 continue
 
+            try:
+                expiry = datetime.strptime(self.scrips.nearest_expiry(tracked.chain.index), '%d%b%Y')
+                expiry = expiry.replace(tzinfo=IST,hour=MARKET_CLOSE[0],minute=MARKET_CLOSE[1])
+                tracked.days_to_expiry = (expiry - now_ist()).total_seconds() / 86400
+                if tracked.days_to_expiry <= 0:
+                    raise ValueError('Expired contract')
+            except (TypeError, ValueError):
+                stock_handoff.invalidate(name)
+                continue
             tracked.chain.rebuild_ladder(tracked.spot)
             if not tracked.chain.poll():
+                stock_handoff.invalidate(name)
                 continue
+            chain_at = now_ist().isoformat()
 
             result = gamma.score(name, tracked.chain, tracked.history,
                                  tracked.spot, tracked.days_to_expiry)
@@ -299,11 +320,17 @@ class UniverseScanner:
                                           pick.as_dict(), tracked.chain.pcr(),
                                           tracked.chain.max_pain())
 
-            if result.tier == "CONFIRMED":
-                audit.log("universe_gamma_confirmed", name=name, score=result.score,
-                          direction=result.direction, spot=tracked.spot,
-                          note="OBSERVE-ONLY -- not wired to auto_executor, "
-                               "see module docstring")
+            try:
+                sid = stock_handoff.publish(name,result.direction,result.tier,result.score,{
+                    'index': asdict(tracked.chain.index), 'spot': tracked.spot,
+                    'spot_at': tracked.spot_at, 'session_vwap': tracked.session_vwap,
+                    'chain_at': chain_at, 'days_to_expiry': tracked.days_to_expiry,
+                    'score': result.score, 'quotes': [asdict(q) for q in tracked.chain.quotes.values()]})
+                if sid is not None:
+                    audit.log('universe_gamma_handoff',name=name,signal_id=sid,score=result.score)
+            except (ValueError,TypeError):
+                stock_handoff.invalidate(name)
+                audit.log('universe_handoff_invalid',name=name)
 
     # ---------------------------------------------------------- snapshot
     def _save_snapshot(self) -> None:
@@ -331,6 +358,7 @@ class UniverseScanner:
             "ts": now_ist().isoformat(),
             "tracked": rows,
             "prices": self._last_universe_quotes,
+            "execution": "central_executor_gated",
             "coverage": {
                 "expected": len(self.universe),
                 "priced": len(self._last_universe_quotes),
@@ -389,4 +417,5 @@ def main() -> int:
 if __name__ == "__main__":
     import sys
     sys.exit(main())
+
 

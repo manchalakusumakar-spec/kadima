@@ -313,6 +313,8 @@ def dashboard_data(authorization: Optional[str] = Header(None)):
     return {
         "ts": now_ist().isoformat(),
         "positions": position_views,
+        "forecast_connection": getattr(EXECUTOR, "forecast_connection_status", {"status": "not_checked"}),
+        "stock_execution": {"mode": "central_executor_gated", "shared_slot": True},
         "session": {
             "realized_gain_today_inr": round(realized_today, 0),
             "capital_deployed_inr": None if deployed == float("inf") else round(deployed, 0),
@@ -321,7 +323,7 @@ def dashboard_data(authorization: Optional[str] = Header(None)):
             "daily_loss_used_inr": round(daily_loss_used, 0),
             "daily_loss_limit_inr": config.DAILY_LOSS_LIMIT_INR,
             "position_slots_used": len(open_positions),
-            "position_slots_max": config.MAX_CONCURRENT_POSITIONS,
+            "position_slots_max": min(1, config.MAX_CONCURRENT_POSITIONS),
         },
     }
 

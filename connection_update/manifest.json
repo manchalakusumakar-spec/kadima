@@ -1,0 +1,23 @@
+{
+  "kadima/auto_executor.py": [
+    "1934e1a7260be924c6287185139318420a96aa1c"
+  ],
+  "kadima/engine.py": [
+    "7e8f79f9c9aa57bc369db50196bb9f79d6457d16"
+  ],
+  "kadima/control_api.py": [
+    "9316136ce3d715fbeaf3a1fe07ef3b3047f94420"
+  ],
+  "kadima/stock_universe_scanner.py": [
+    "7318bab05c4daecc7060b635c880fed0024dc69e"
+  ],
+  "kadima/stock_handoff.py": [
+    null
+  ],
+  "kadima/stock_execution.py": [
+    null
+  ],
+  "kadima/forecast_connection.py": [
+    null
+  ]
+}

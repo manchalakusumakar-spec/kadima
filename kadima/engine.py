@@ -19,6 +19,7 @@ from datetime import datetime
 
 from . import alerts, audit, indicators, killswitch, last_known, storage, strike_selector
 from . import auto_executor
+from .stock_execution import StockExecutionWorker
 from . import gamma_blast_scanner as gamma
 from .candles import Candle, CandleBuilder
 from .config import (EMA_FAST, EMA_SLOW, GAMMA_EXPIRY_ONLY, GAMMA_INDICES,
@@ -104,6 +105,7 @@ class Engine:
             self.states[name] = st
             self.token_to_index[idx.token] = name
 
+        self.stock_worker = StockExecutionWorker(auto_executor.EXECUTOR, self.scrips)
         self._seed_last_known()
 
     def _seed_last_known(self) -> None:
@@ -153,6 +155,7 @@ class Engine:
         # try to open a second position on top of one we can't yet see.
         auto_executor.EXECUTOR.reconcile_on_startup()
         auto_executor.EXECUTOR.start_monitor_thread()
+        self.stock_worker.start()
         for name, idx in GAMMA_INDICES.items():
             self.feed.subscribe(EXCHANGE_TYPE[idx.exchange], [idx.token])
         self.feed.start()
@@ -166,6 +169,7 @@ class Engine:
 
     def stop(self) -> None:
         self._stop.set()
+        self.stock_worker.stop()
         self.feed.stop()
         auto_executor.EXECUTOR.stop()
         # Explicit daily logout, not just an abandoned session. The feed

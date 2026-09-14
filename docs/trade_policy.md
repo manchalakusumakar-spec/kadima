@@ -39,7 +39,8 @@ The installer requires a maintenance window (19:00–08:00 IST), matching source
 
 Legacy restored positions without the new fields retain the old emergency percentage fallback. The flat-only installer prevents opening the amended deployment with such a position. New entries cannot use that fallback.
 
-**Still pending:** the F&O stock scanner is alerts-only and still shortlists 20. It needs fresh underlying candles/indicators plus a durable handoff to this same central executor before stock auto-entry can be enabled. Creating a second independent executor would violate the shared position limit. No real 30-minute forecast producer has been found or connected, so normal trailing remains the operational fallback.
+**Subsequent connection update:** [stock_forecast_connection.md](stock_forecast_connection.md) adds the durable stock-to-central-executor path and broker candle preparation. The actual 30-minute forecast producer remains missing; a validated file adapter is ready, and ordinary trailing remains the fallback until the real producer is connected.
+
 
 ## Verification
 
