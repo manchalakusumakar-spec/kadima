@@ -232,7 +232,7 @@ def _position_view(pos) -> dict:
     ltp_map = _poll_ltp(pos.exchange, [pos.token])
     ltp = ltp_map.get(pos.token, pos.peak_price or pos.entry_price)
 
-    fixed_stop = pos.entry_price * (1 - FIXED_STOPLOSS_PCT / 100.0)
+    fixed_stop = getattr(pos, 'structural_stop', None) or pos.entry_price * (1 - FIXED_STOPLOSS_PCT / 100.0)
     peak = pos.peak_price or pos.entry_price
     if pos.trail_active:
         trail_stop = peak - (GIVEBACK_TRAIL_PCT / 100.0) * (peak - pos.entry_price)
@@ -240,7 +240,8 @@ def _position_view(pos) -> dict:
     else:
         effective_stop = fixed_stop
 
-    risk = pos.entry_price - fixed_stop
+    effective_stop = max(effective_stop, getattr(pos, 'effective_stop', None) or 0)
+    risk = max(0, pos.entry_price - fixed_stop)
     targets = {
         "T1": pos.entry_price + risk * 1,
         "T2": pos.entry_price + risk * 2,

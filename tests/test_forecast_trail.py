@@ -5,7 +5,7 @@ from types import SimpleNamespace
 import threading
 import unittest
 from kadima.forecast_trail import Projection, evaluate
-from kadima import forecast_trail
+from kadima import forecast_trail, trade_policy
 
 NOW=datetime(2026,9,14,7,tzinfo=timezone.utc)
 
@@ -42,7 +42,7 @@ class Policy(unittest.TestCase):
                   projection(129,target_at=NOW+timedelta(minutes=5)),
                   projection(float('nan')),projection(129,generated_at=NOW+timedelta(seconds=1))]:
             d=decision(projection=p)
-            self.assertFalse(d.should_exit); self.assertIsNone(d.projected_profit)
+            self.assertTrue(d.should_exit); self.assertIsNone(d.projected_profit)
     def test_invalid_prices(self):
         for x in [float('nan'),float('inf'),0,-1]:
             with self.assertRaises(ValueError):decision(ltp=x)
@@ -56,12 +56,12 @@ class ExecutorIntegration(unittest.TestCase):
         calls=[]
         pos=SimpleNamespace(status='open',token='T',exchange='NFO',signal_id=1,
                             peak_price=140,entry_price=100,trail_active=True,
-                            remaining_qty=50,swing_level=None,direction='PE')
+                            remaining_qty=50,swing_level=None,direction='PE', structural_stop=90, effective_stop=120)
         cfg=SimpleNamespace(FORECAST_TRAIL_ENABLED=enabled,in_no_auto_exit_window=lambda:False)
-        ns=dict(config=cfg,forecast_trail=forecast_trail,now_ist=lambda:NOW.replace(hour=hour),
+        ns=dict(config=cfg,forecast_trail=forecast_trail,trade_policy=trade_policy,now_ist=lambda:NOW.replace(hour=hour),
                 _poll_ltp=lambda *a:{'T':ltp},EOD_FORCE_CLOSE_HHMM=(15,38),
                 exit_manager=SimpleNamespace(realized_pnl_today=lambda:-1000 if daily else 0),
-                DAILY_LOSS_LIMIT_INR=500,GIVEBACK_FLOOR_PCT=10,GIVEBACK_TRAIL_PCT=50,
+                DAILY_LOSS_LIMIT_INR=500,GIVEBACK_FLOOR_PCT=5,GIVEBACK_TRAIL_PCT=50,
                 FIXED_STOPLOSS_PCT=30,storage=SimpleNamespace(upsert_position=lambda p:None),
                 audit=SimpleNamespace(log=lambda *a,**k:None))
         exec(compile(ast.Module(body=[method],type_ignores=[]),'<isolated-exit>','exec'),ns)
@@ -73,9 +73,11 @@ class ExecutorIntegration(unittest.TestCase):
     def test_forecast_controls_trail(self):
         self.assertEqual(self.run_cycle(),['forecast_trailing_exit'])
         self.assertEqual(self.run_cycle(p=projection(180)),[])
-        self.assertEqual(self.run_cycle(p=None),[])
+        self.assertEqual(self.run_cycle(p=None),['ordinary_trail_fallback:forecast_unavailable'])
+    def test_structure_overrides_optimistic_forecast(self):
+        self.assertEqual(self.run_cycle(p=projection(180),ltp=89),["structural_stop_breached"])
     def test_default_and_hard_exits(self):
-        self.assertEqual(self.run_cycle(enabled=False),['trail_giveback_50pct_of_peak_gain'])
+        self.assertEqual(self.run_cycle(enabled=False),['dynamic_profit_trail_breached'])
         self.assertEqual(self.run_cycle(p=projection(180),daily=True),['daily_loss_limit_breached'])
         self.assertEqual(self.run_cycle(p=projection(180),hour=16),['eod_force_close'])
 

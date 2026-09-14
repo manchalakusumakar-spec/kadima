@@ -43,7 +43,7 @@ stub('utils', now_ist=lambda:NOW, in_market_hours=lambda:True, past_signal_cutof
 session = stub('session', SESSION=types.SimpleNamespace(ensure=Mock(), api=Mock()))
 limiter = lambda:types.SimpleNamespace(wait_and_allow=lambda **kw:True, allow=lambda:True)
 stub('rate_limiter', ORDER_STATUS=limiter(), ORDER_WRITE=limiter(), QUOTE=limiter())
-exit_manager = stub('exit_manager', GAIN_ACTIVATION_PCT=.1, GIVEBACK_PCT=.5,
+exit_manager = stub('exit_manager', GAIN_ACTIVATION_PCT=.05, GIVEBACK_PCT=.5,
                     INITIAL_SL_PCT=.3, realized_pnl_today=lambda:0)
 storage = importlib.import_module(PKG+'.storage')
 orders = importlib.import_module(PKG+'.angel_orders')
@@ -241,8 +241,15 @@ class Lifecycle(unittest.TestCase):
                                    _last_poll=time.monotonic())
         pkg.strike_selector.rank=lambda *args:[types.SimpleNamespace(rejected=False,quote=q)]
         pkg.risk_budget.select_within_budget=lambda *args,**kw:types.SimpleNamespace(candidate=q,lots=1)
+        q.stop_price=90
+        config.STRIKES_EACH_SIDE=5
+        chain.atm=10000
+        chain.scrips=types.SimpleNamespace(strikes_around=lambda *a:[{'token':'T'}])
+        self.ex._structure=lambda *args:(9980,1)
+        chain._spot_received_at=chain._alignment_at=time.monotonic()
+        snap=types.SimpleNamespace(vwap=9990,ema_fast=10000,ema_slow=9990,rsi=60)
         def enter(sid):
-            self.ex.evaluate_and_enter('INDEX','CE',chain,10000,None,1,'gamma_blast',sid,'CONFIRMED',90)
+            self.ex.evaluate_and_enter('INDEX','CE',chain,10000,snap,1,'gamma_blast',sid,'CONFIRMED',90)
         with ThreadPoolExecutor(4) as pool:
             list(pool.map(enter,range(20,28)))
         self.assertEqual(self.place.call_count,1)

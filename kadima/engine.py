@@ -196,6 +196,7 @@ class Engine:
             return
         st = self.states[name]
         st.spot = tick["ltp"]
+        st.chain._spot_received_at = time.monotonic()
         st.last_updated = now_ist()
         st.is_live_tick = True
         st.builder.add_tick(tick["ts"], tick["ltp"], tick["volume"])
@@ -225,6 +226,7 @@ class Engine:
             rows, session_vwap=st.builder.session_vwap(),
             ema_fast_p=EMA_FAST, ema_slow_p=EMA_SLOW,
             ma_long_p=MA_LONG, rsi_p=RSI_PERIOD)
+        st.chain._alignment_at = time.monotonic()
         self._score(st)
         self._evaluate()
 
@@ -242,6 +244,7 @@ class Engine:
                             if polled:
                                 auto_executor.EXECUTOR.state.premium_tracker.record_chain(st.chain)
                             if polled:
+                                auto_executor.EXECUTOR.update_structure(st.name, st.chain, st.spot)
                                 self._score_gamma(st)
                         except Exception as exc:        # noqa: BLE001
                             audit.log("oi_loop_error", index=st.name,

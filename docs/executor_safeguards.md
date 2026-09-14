@@ -1,5 +1,8 @@
 # Executor safeguards
 
+Subsequent stop/entry amendments are documented in [trade_policy.md](trade_policy.md).
+The historical strategy-preservation statements below describe the original safeguards patch.
+
 This patch replaces assumed fills with a persisted order lifecycle. It does not
 change trading mode, credentials, strategy thresholds, signal cutoffs or the
 existing 15:38 end-of-day setting. That schedule still needs independent review

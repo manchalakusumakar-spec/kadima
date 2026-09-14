@@ -147,13 +147,17 @@ class OptionChain:
         self.spot: float | None = None
         self.atm: float | None = None
         self._last_poll = 0.0
+        self._expiry = None
 
     # -------------------------------------------------------------- ladder
     def rebuild_ladder(self, spot: float) -> None:
         step = self.index.strike_step
         atm = round(spot / step) * step
-        if atm == self.atm:
+        expiry = self.scrips.nearest_expiry(self.index)
+        if atm == self.atm and expiry == self._expiry:
             return
+        self._expiry = expiry
+        self._last_poll = 0.0
         self.atm = atm
         contracts = self.scrips.strikes_around(
             self.index, atm, STRIKES_EACH_SIDE)
@@ -263,6 +267,7 @@ def _i(v):
         return int(float(v))
     except (TypeError, ValueError):
         return None
+
 
 
 

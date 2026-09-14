@@ -76,7 +76,7 @@ def evaluate(*, entry, peak, previous_stop, ltp, quantity, giveback_fraction,
     elif abs((p.target_at - p.generated_at).total_seconds() - 1800) > 1:
         reason = "forecast_horizon_not_30_minutes"
     if reason:
-        return Decision(stop, breached, False, reason, risk)
+        return Decision(stop, breached, breached, 'ordinary_trail_fallback:' + reason, risk)
     profit = max(0.0, p.expected_premium - ltp) * quantity
     exit_now = breached and profit < risk
     reason = ("forecast_trailing_exit" if exit_now else

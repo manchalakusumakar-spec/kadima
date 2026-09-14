@@ -1,8 +1,8 @@
 """Automatic entry evaluation, confirmed-fill tracking and position monitoring.
 
 See docs/executor_safeguards.md for lifecycle, recovery, limitations and tests.
-Strategy constants below retain the existing deployment values. Installation
-neither enables live orders nor enables forecast-conditioned trailing.
+Shared policy lives in trade_policy.py. Installation preserves live-order and
+forecast feature flags; no model forecast is fabricated.
 """
 
 from __future__ import annotations
@@ -19,7 +19,7 @@ from typing import Optional
 
 from . import (alerts, audit, capital_guard, entry_quality, exit_manager,
               killswitch, risk_budget, storage, strike_selector)
-from . import angel_orders, forecast_trail, execution_ledger
+from . import angel_orders, forecast_trail, execution_ledger, trade_policy
 from .config import (DAILY_LOSS_LIMIT_INR, IST, MAX_CONCURRENT_POSITIONS,
                      MAX_LOTS_PER_SIGNAL, ORDER_PLACEMENT_ENABLED)
 from .instrument_master import get_lot_size
@@ -31,14 +31,10 @@ from .utils import in_market_hours, now_ist, past_signal_cutoff
 # ---------------------------------------------------------------- config
 MIN_PROJECTED_RETURN_PCT = 10.0   # entry criterion, not a target
 
-# Exit-math percentages are DERIVED from exit_manager.py's constants, not
-# re-declared here with their own literal values. exit_manager.py is the
-# canonical source (it says so in its own docstring) — two copies of the
-# same number is how they silently drift apart the first time one gets
-# recalibrated (per the 30-sample rule) and the other doesn't.
+# Shared profit-trail constants; fixed percentage retained only for legacy restores.
 GIVEBACK_FLOOR_PCT = exit_manager.GAIN_ACTIVATION_PCT * 100.0   # trail only protects gains above this
 GIVEBACK_TRAIL_PCT = exit_manager.GIVEBACK_PCT * 100.0          # exit once this much of the PEAK GAIN is lost
-FIXED_STOPLOSS_PCT = exit_manager.INITIAL_SL_PCT * 100.0        # protects the position below the floor
+FIXED_STOPLOSS_PCT = exit_manager.INITIAL_SL_PCT * 100.0        # legacy restored positions only
 
 # Existing settings retained; these are not exchange-calendar assertions.
 EOD_FORCE_CLOSE_HHMM = (15, 38)
@@ -126,9 +122,10 @@ class Position:
     exit_ts: Optional[datetime] = None
     exit_reason: Optional[str] = None
     exit_order_id: Optional[str] = None
-    swing_level: Optional[float] = None   # premium-level proxy from entry,
-                                          # used by the invalidation-based
-                                          # stop-loss (dynamic_stop.py)
+    structural_stop: Optional[float] = None
+    effective_stop: Optional[float] = None
+    allocated_capital: Optional[float] = None
+    swing_level: Optional[float] = None  # confirmed underlying pivot
 
 
 class ExecutorState:
@@ -332,6 +329,45 @@ class AutoExecutor:
 
         return dict(result, signal_id=signal_id)
 
+    def _structure(self, chain, direction, spot):
+        now = now_ist()
+        try:
+            expiry = datetime.strptime(chain.scrips.nearest_expiry(chain.index), '%d%b%Y')
+            expiry = expiry.replace(tzinfo=now.tzinfo, hour=config.MARKET_CLOSE[0],
+                                    minute=config.MARKET_CLOSE[1])
+            days = (expiry - now).total_seconds() / 86400
+            bars = storage.recent_candles(chain.index.token, 5, limit=100)
+            level = trade_policy.swing(bars, direction, spot, now)
+            if days <= 0 or level is None:
+                return None
+            return level, days
+        except (AttributeError, TypeError, ValueError):
+            return None
+
+    @serialized
+    def update_structure(self, index_name, chain, spot):
+        """Use confirmed bars and existing fresh chain polls; no extra broker calls."""
+        if not 0 <= time.monotonic() - getattr(chain, '_last_poll', 0) <= 30:
+            return
+        for pos in list(self.state.positions.values()):
+            if pos.index != index_name or pos.status != 'open':
+                continue
+            result = self._structure(chain, pos.direction, spot)
+            quote = chain.quotes.get(pos.token)
+            if result is None or quote is None:
+                continue
+            level, days = result
+            improves = pos.swing_level is None or (level > pos.swing_level if pos.direction == 'CE'
+                                                   else level < pos.swing_level)
+            if not improves:
+                continue
+            stop = trade_policy.premium_stop(spot, level, quote.strike, quote.ltp, days, pos.direction)
+            if stop is not None:
+                pos.swing_level = level
+                pos.structural_stop = max(pos.structural_stop or 0, stop)
+                pos.effective_stop = max(pos.effective_stop or 0, pos.structural_stop)
+                storage.upsert_position(pos)
+
     # -------------------------------------------------------- entry
     @serialized
     def evaluate_and_enter(self, index_name: str, direction: str, chain, spot: float,
@@ -358,16 +394,35 @@ class AutoExecutor:
             return self._reject("signal_already_submitted", index_name, direction)
         with self._lock:
             open_count = len(self.state.positions)
-        if open_count >= MAX_CONCURRENT_POSITIONS:
+        if open_count >= min(1, MAX_CONCURRENT_POSITIONS):
             return self._reject("max_concurrent_positions", index_name, direction)
 
+        if not 0 <= time.monotonic() - getattr(chain, '_spot_received_at', 0) <= 30:
+            return self._reject('underlying_quote_stale', index_name, direction)
+        if not 0 <= time.monotonic() - getattr(chain, '_alignment_at', 0) <= 240:
+            return self._reject('alignment_snapshot_stale', index_name, direction)
+        if not trade_policy.eligible(kind, tier, score, direction, snap, spot):
+            return self._reject('eligibility_alignment_or_gamma_score', index_name, direction)
+        structure = self._structure(chain, direction, spot)
+        if structure is None:
+            return self._reject('fresh_structure_or_valid_expiry_unavailable', index_name, direction)
+        swing_level, days_to_expiry = structure
+
         last_poll = getattr(chain, '_last_poll', 0)
-        if not last_poll or time.monotonic() - last_poll > 30:
+        if not last_poll or not 0 <= time.monotonic() - last_poll <= 30:
             return self._reject('option_chain_stale', index_name, direction)
         self.state.premium_tracker.record_chain(chain)
+        # The ladder may straddle an expiry refresh; confirm selected tokens
+        # against the current instrument-master expiry, not a symbol guess.
+        try:
+            current_contracts = chain.scrips.strikes_around(
+                chain.index, chain.atm, config.STRIKES_EACH_SIDE)
+            valid_tokens = {str(c['token']) for c in current_contracts}
+        except (AttributeError, TypeError, KeyError):
+            return self._reject('contract_expiry_unverifiable', index_name, direction)
 
         ranked = [r for r in strike_selector.rank(chain, direction, spot, days_to_expiry)
-                  if not r.rejected]
+                  if not r.rejected and str(r.quote.token) in valid_tokens]
         if not ranked:
             return self._reject("no_tradeable_strike", index_name, direction)
 
@@ -376,14 +431,16 @@ class AutoExecutor:
                 symbol=r.quote.symbol, token=r.quote.token, strike=r.quote.strike,
                 option_type=r.quote.opt_type, ltp=r.quote.ltp, bid=r.quote.bid,
                 ask=r.quote.ask, delta=r.quote.delta, volume=r.quote.volume,
-                open_interest=r.quote.oi)
+                open_interest=r.quote.oi,
+                stop_price=trade_policy.premium_stop(spot, swing_level, r.quote.strike,
+                                                    r.quote.ltp, days_to_expiry, direction))
             for r in ranked
         ]
 
-        max_risk_inr = capital_guard.get_capital_for_signal(kind, tier)
+        allocation = capital_guard.get_capital_for_signal(kind, tier)
 
         verdict = risk_budget.select_within_budget(
-            candidates, spot, max_risk_inr=max_risk_inr, max_lots=MAX_LOTS_PER_SIGNAL)
+            candidates, spot, allocated_capital=allocation, max_lots=MAX_LOTS_PER_SIGNAL)
         if verdict.candidate is None:
             return self._reject(f"risk_budget_{verdict.reason}", index_name, direction)
 
@@ -399,14 +456,6 @@ class AutoExecutor:
                 index_name, direction)
 
         day_high, day_low, base_30min = self.state.premium_tracker.snapshot(chosen_quote.token)
-        # swing_level is a PREMIUM-level proxy, not true pivot detection:
-        # day_low for CE (a break back below today's low invalidates a
-        # bullish premium thesis), day_high for PE (mirror case). This is
-        # an honest approximation of entry_quality.py's structural-stop
-        # input using what's actually tracked -- flagged here, not hidden,
-        # since a real pivot detector would be more precise but is out of
-        # scope for this pass.
-        swing_level = day_low if direction == "CE" else day_high
         ctx = entry_quality.EntryContext(
             ltp=chosen_quote.ltp,
             premium_day_high=day_high or chosen_quote.ltp,
@@ -414,10 +463,11 @@ class AutoExecutor:
             premium_base_30min=base_30min,
             spot=spot,
             vwap=snap.vwap if snap and snap.vwap else spot,
-            swing_level=swing_level,
+            swing_level=verdict.candidate.stop_price,
             target_premium=None,
             direction=direction,
             spread_pct=chosen_quote.spread_pct,
+            stop_override=verdict.candidate.stop_price,
         )
         eq_verdict = entry_quality.evaluate_entry(ctx)
         if not eq_verdict.allowed:
@@ -439,6 +489,13 @@ class AutoExecutor:
             return self._reject("fresh_entry_quote_unavailable", index_name, direction)
 
         limit_price = round(pricing_ltp * (1 + LIMIT_ORDER_BUFFER_PCT / 100.0), 1)
+        stop = verdict.candidate.stop_price
+        allowed_lots = trade_policy.lots_within_allocation(
+            allocation, limit_price, stop, lot_size, allowed_lots)
+        if allowed_lots < 1 or pricing_ltp <= stop:
+            return self._reject('fresh_quote_exceeds_risk_or_invalidates_stop', index_name, direction)
+        if time.monotonic() - chain._last_poll > 30:
+            return self._reject('option_chain_expired_before_submission', index_name, direction)
         quantity = allowed_lots * lot_size
 
         if killswitch.engaged() or not in_market_hours() or past_signal_cutoff():
@@ -448,7 +505,8 @@ class AutoExecutor:
             symbol=chosen_quote.symbol, token=chosen_quote.token,
             exchange=chain.index.opt_exchange, entry_price=0.0,
             entry_ts=now_ist(), lots=allowed_lots, lot_size=lot_size,
-            remaining_qty=0, status='entry_pending', swing_level=swing_level)
+            remaining_qty=0, status='entry_pending', swing_level=swing_level,
+            structural_stop=stop, effective_stop=stop, allocated_capital=allocation)
         with self._lock:
             self.state.positions[str(source_signal_id)] = pos
         result = execution_ledger.submit(pos, 'BUY', quantity, limit_price)
@@ -495,8 +553,6 @@ class AutoExecutor:
         daily_loss_breached = exit_manager.realized_pnl_today() <= -DAILY_LOSS_LIMIT_INR
 
         for pos in open_positions:
-            if config.in_no_auto_exit_window() and not (force_close or daily_loss_breached):
-                continue
             ltp = ltp_by_token.get(pos.token)
             if ltp is None:
                 audit.log("position_ltp_unavailable", signal_id=pos.signal_id,
@@ -523,50 +579,34 @@ class AutoExecutor:
                 audit.log("trail_activated", signal_id=pos.signal_id,
                           gain_pct=round(gain_pct, 1))
 
+            # Flat-only installer prevents introducing unprotected legacy positions.
+            # Keep legacy emergency protection for a pre-amendment restore only.
+            structural = pos.structural_stop or pos.entry_price * (1 - FIXED_STOPLOSS_PCT / 100)
+            pos.effective_stop, active = trade_policy.ratchet(
+                pos.entry_price, pos.peak_price, pos.effective_stop, structural)
+            pos.trail_active = pos.trail_active or active
+            storage.upsert_position(pos)
             reason = None
             if daily_loss_breached:
-                reason = "daily_loss_limit_breached"
+                reason = 'daily_loss_limit_breached'
             elif force_close:
-                reason = "eod_force_close"
-            elif pos.trail_active:
-                if getattr(config, "FORECAST_TRAIL_ENABLED", False):
-                    # Persist the high-water mark before allowing the model
-                    # to defer a trailing exit; preserve it across restarts.
-                    storage.upsert_position(pos)
-                    with self._lock:
-                        projection = self._profit_projections.get(pos.signal_id)
-                    previous_stop = pos.peak_price - peak_gain * (GIVEBACK_TRAIL_PCT / 100.0)
+                reason = 'eod_force_close'
+            elif ltp <= structural:
+                reason = 'structural_stop_breached'
+            elif pos.trail_active and ltp <= pos.effective_stop:
+                reason = 'dynamic_profit_trail_breached'
+                if getattr(config, 'FORECAST_TRAIL_ENABLED', False):
+                    projection = self._profit_projections.get(pos.signal_id)
                     decision = forecast_trail.evaluate(
                         entry=pos.entry_price, peak=pos.peak_price,
-                        previous_stop=previous_stop, ltp=ltp,
-                        quantity=pos.remaining_qty,
-                        giveback_fraction=GIVEBACK_TRAIL_PCT / 100.0,
+                        previous_stop=pos.effective_stop, ltp=ltp,
+                        quantity=pos.remaining_qty, giveback_fraction=0.5,
                         token=pos.token, exchange=pos.exchange,
                         signal_id=pos.signal_id, now=now, projection=projection)
-                    audit.log("forecast_trail_decision", signal_id=pos.signal_id,
-                              stop=decision.stop, breached=decision.breached,
-                              should_exit=decision.should_exit,
-                              reason=decision.reason, risk_inr=decision.risk_amount,
-                              projected_profit_inr=decision.projected_profit,
-                              horizon_minutes=30,
-                              model_id=projection.model_id if projection else None)
-                    if decision.should_exit:
-                        reason = decision.reason
-                else:
-                    giveback = pos.peak_price - ltp
-                    if peak_gain > 0 and giveback >= (GIVEBACK_TRAIL_PCT / 100.0) * peak_gain:
-                        reason = f"trail_giveback_{GIVEBACK_TRAIL_PCT:.0f}pct_of_peak_gain"
-            else:
-                loss_pct = ((pos.entry_price - ltp) / pos.entry_price * 100.0
-                           if pos.entry_price else 0.0)
-                if pos.swing_level is not None:
-                    swing_broken = (
-                        ltp < pos.swing_level if pos.direction == "CE"
-                        else ltp > pos.swing_level)
-                    if swing_broken and loss_pct > 0:
-                        reason = f"swing_level_invalidated_{loss_pct:.0f}pct"
-                if reason is None and loss_pct >= FIXED_STOPLOSS_PCT:
-                    reason = f"fixed_stoploss_{FIXED_STOPLOSS_PCT:.0f}pct"
+                    audit.log('forecast_trail_decision', signal_id=pos.signal_id,
+                              reason=decision.reason, stop=decision.stop,
+                              should_exit=decision.should_exit)
+                    reason = decision.reason if decision.should_exit else None
 
             if reason:
                 self._close_position(pos, ltp, reason)
