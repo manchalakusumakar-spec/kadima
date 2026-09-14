@@ -17,13 +17,16 @@ BASE=Path(__file__).resolve().parent
 ORIGIN='https://18-61-12-184.sslip.io'
 TARGET=Path('/var/www/html/dashboard.html')
 def run(args, **kwargs):
+    if args and args[0] == 'sudo':
+        args = ['sudo', '-n', *args[1:]]
     return subprocess.run(args,check=True,**kwargs)
 def main():
     if os.geteuid()==0:
         sys.exit('Run as ubuntu, without sudo; the installer uses sudo where required.')
     if getpass.getuser()!='ubuntu':
         sys.exit('This installer is configured for the ubuntu account.')
-    run(['sudo','-v'])
+    if subprocess.run(['sudo', '-n', 'true'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode:
+        sys.exit('Passwordless sudo is unavailable. No files changed; ask your server administrator to run the installation.')
     python=Path('/home/ubuntu/kadima-py/venv/bin/python3')
     if not python.exists():
         python=Path('/home/ubuntu/kadima-py/.venv/bin/python3')
