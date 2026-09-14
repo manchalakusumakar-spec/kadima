@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import os
 from typing import Optional
+from .forecast_observer import read_report as read_forecast_report
 
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
@@ -314,6 +315,7 @@ def dashboard_data(authorization: Optional[str] = Header(None)):
         "ts": now_ist().isoformat(),
         "positions": position_views,
         "forecast_connection": getattr(EXECUTOR, "forecast_connection_status", {"status": "not_checked"}),
+        "forecaster": read_forecast_report(),
         "stock_execution": {"mode": "central_executor_gated", "shared_slot": True},
         "session": {
             "realized_gain_today_inr": round(realized_today, 0),

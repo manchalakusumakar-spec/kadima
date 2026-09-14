@@ -1,0 +1,226 @@
+"""Guarded maintenance deployment. Run with sudo -n python3 install.py.
+
+Stops the engine/scanner/macro services only after source and local-state
+checks. Uses the engine's existing interpreter/environment for a read-only
+broker preflight; never sends orders, changes credentials or trading flags.
+"""
+import hashlib
+import json
+import os
+from pathlib import Path
+import pwd
+import shutil
+import sqlite3
+import subprocess
+import sys
+import tempfile
+from datetime import datetime
+from zoneinfo import ZoneInfo
+
+REPO = Path('/home/ubuntu/kadima-py')
+PACKAGE = Path(__file__).resolve().parents[1]
+UNITS = ['kadima.service', 'kadima-universe-scanner.service', 'kadima-macro-watch.service']
+
+
+def run(args, **kwargs):
+    return subprocess.run(args, check=True, text=True, capture_output=True, **kwargs)
+
+
+def blob(data):
+    return hashlib.sha1(b'blob '+str(len(data)).encode()+b'\0'+data).hexdigest()
+
+
+PREFLIGHT = r'''
+import json
+import re
+import sys
+stage = 'imports'
+reason = 'exception'
+broker_code = None
+try:
+    from kadima import config, storage
+    from kadima.session import SESSION
+    import SmartApi
+    import pyotp
+    stage = 'local_state'
+    c = storage.conn()
+    if c.execute("SELECT 1 FROM positions WHERE status != 'closed' LIMIT 1").fetchone():
+        reason = 'local_positions_unresolved'
+        raise RuntimeError()
+    if c.execute("SELECT 1 FROM sqlite_master WHERE name='execution_orders'").fetchone():
+        if c.execute("SELECT 1 FROM execution_orders WHERE state != 'terminal' LIMIT 1").fetchone():
+            reason = 'local_orders_pending'
+            raise RuntimeError()
+    stage = 'broker_login'
+    SESSION.ensure()
+    for name in ('position','orderBook'):
+        stage = 'broker_positions' if name == 'position' else 'broker_orders'
+        r = getattr(SESSION.api,name)()
+        if not isinstance(r,dict) or r.get('status') is not True:
+            reason = 'broker_response_unsuccessful'
+            code = str(r.get('errorcode') or '') if isinstance(r,dict) else ''
+            if re.fullmatch(r'[A-Z]{1,4}[0-9]{1,6}', code):
+                broker_code = code
+            raise RuntimeError()
+        rows = r.get('data')
+        if rows is None:
+            rows = []
+        if not isinstance(rows,list):
+            reason = 'broker_response_invalid'
+            raise RuntimeError()
+        for row in rows:
+            if name == 'position':
+                if float(row.get('netqty') or 0) != 0:
+                    reason = 'broker_positions_not_flat'
+                    raise RuntimeError()
+            elif str(row.get('orderstatus') or row.get('status') or '').lower() not in {
+                'complete','completed','filled','cancelled','canceled','rejected'}:
+                reason = 'broker_orders_pending_or_unknown'
+                raise RuntimeError()
+    print('KADIMA_PREFLIGHT_OK')
+except Exception as exc:
+    error = type(exc).__name__
+    if error not in {'ModuleNotFoundError','ImportError','PermissionError',
+                     'FileNotFoundError','RuntimeError','ValueError','OperationalError'}:
+        error = 'OtherError'
+    # Never include exception messages, broker payloads or credentials.
+    print('KADIMA_DIAGNOSTIC ' + json.dumps(dict(stage=stage, reason=reason,
+          error=error, broker_code=broker_code)), flush=True)
+    sys.exit(1)
+'''
+
+
+STAGES = {'imports','local_state','broker_login','broker_positions','broker_orders'}
+REASONS = {'exception','local_positions_unresolved','local_orders_pending',
+           'broker_response_unsuccessful','broker_response_invalid',
+           'broker_positions_not_flat','broker_orders_pending_or_unknown'}
+ERRORS = {'ModuleNotFoundError','ImportError','PermissionError','FileNotFoundError',
+          'RuntimeError','ValueError','OperationalError','OtherError'}
+
+
+def failure_summary(exc, operation):
+    if isinstance(exc, subprocess.TimeoutExpired):
+        return operation + ': timed out'
+    if isinstance(exc, subprocess.CalledProcessError):
+        # Child output can contain SDK secrets. Render only validated diagnostics.
+        for line in (exc.stdout or '').splitlines():
+            if not line.startswith('KADIMA_DIAGNOSTIC '):
+                continue
+            try:
+                d = json.loads(line[len('KADIMA_DIAGNOSTIC '):])
+                if d.get('stage') in STAGES and d.get('reason') in REASONS and d.get('error') in ERRORS:
+                    return d['stage'] + ': ' + d['reason'] + ' (' + d['error'] + ')'
+            except (ValueError, TypeError, AttributeError):
+                pass
+        return operation + ': child command failed (exit ' + str(exc.returncode) + ')'
+    error = type(exc).__name__
+    return operation + ': ' + (error if error in ERRORS else 'OtherError')
+
+
+def main():
+    if os.geteuid() != 0:
+        raise SystemExit('Run with sudo -n python3 '+str(Path(__file__).resolve()))
+    hour = datetime.now(ZoneInfo('Asia/Kolkata')).hour
+    if 8 <= hour < 19:
+        raise SystemExit('Maintenance installer runs only from 19:00 to 08:00 IST. No files changed.')
+    manifest = json.loads((PACKAGE/'forecaster_update/manifest.json').read_text())
+    # Validate every source before stopping any service.
+    for name, allowed in manifest.items():
+        target = REPO/name
+        source = PACKAGE/name
+        compile(source.read_text(), str(source), 'exec')
+        current = blob(target.read_bytes()) if target.exists() else None
+        new = blob(source.read_bytes())
+        if current not in allowed and current != new:
+            raise SystemExit('Unexpected local version: '+name+'. No files changed.')
+    pid = run(['systemctl','show','kadima.service','-p','MainPID','--value']).stdout.strip()
+    if not pid.isdigit() or int(pid) == 0:
+        raise SystemExit('Engine must be running so its existing environment can be verified. No files changed.')
+    env = {}
+    for item in Path('/proc/'+pid+'/environ').read_bytes().split(b'\0'):
+        if b'=' in item:
+            k,v=item.split(b'=',1)
+            env[os.fsdecode(k)] = os.fsdecode(v)
+    # Check local exposure while the engine is still running. The maintenance
+    # window prevents normal new entries between this check and service stop.
+    db = Path(env.get('KADIMA_DATA_DIR', '/var/lib/kadima'))/'kadima.db'
+    if not db.is_file():
+        raise SystemExit('Local position database is unavailable. No services stopped.')
+    with sqlite3.connect(db.as_uri()+'?mode=ro', uri=True) as local:
+        if local.execute("SELECT 1 FROM positions WHERE status != 'closed' LIMIT 1").fetchone():
+            raise SystemExit('Local positions/orders remain unresolved. No services stopped.')
+        if local.execute("SELECT 1 FROM sqlite_master WHERE name='execution_orders'").fetchone():
+            if local.execute("SELECT 1 FROM execution_orders WHERE state != 'terminal' LIMIT 1").fetchone():
+                raise SystemExit('Pending execution intents remain. No services stopped.')
+    argv=Path('/proc/'+pid+'/cmdline').read_bytes().split(b'\0')
+    python=os.fsdecode(argv[0])
+    if not Path(python).is_absolute() or 'python' not in Path(python).name:
+        raise SystemExit('Engine interpreter could not be verified. No files changed.')
+    user=pwd.getpwnam('ubuntu')
+    if Path('/proc/'+pid).stat().st_uid != user.pw_uid:
+        raise SystemExit('Unexpected engine owner. No files changed.')
+    active=[u for u in UNITS if subprocess.run(['systemctl','is-active','--quiet',u]).returncode==0]
+    backup=Path(tempfile.mkdtemp(prefix='kadima-forecaster-backup-',dir='/home/ubuntu'))
+    os.chmod(backup,0o700)
+    for name in manifest:
+        target=REPO/name
+        if target.exists():
+            saved=backup/name
+            saved.parent.mkdir(parents=True,exist_ok=True)
+            shutil.copy2(target,saved)
+    (backup/'manifest.json').write_text(json.dumps(manifest,indent=2))
+    copied=False
+    operation='stop_services'
+    try:
+        run(['systemctl','stop',*active],timeout=60)
+        def as_user():
+            os.initgroups(user.pw_name,user.pw_gid)
+            os.setgid(user.pw_gid)
+            os.setuid(user.pw_uid)
+        operation='broker_preflight'
+        check=run([python,'-c',PREFLIGHT],cwd=REPO,env=env,preexec_fn=as_user,timeout=60)
+        if 'KADIMA_PREFLIGHT_OK' not in check.stdout:
+            raise RuntimeError('Read-only broker preflight did not confirm flat state')
+        operation='replace_source'
+        for name in manifest:
+            target=REPO/name
+            target.parent.mkdir(parents=True,exist_ok=True)
+            temporary=target.with_name(target.name+'.executor-new')
+            shutil.copy2(PACKAGE/name,temporary)
+            os.chown(temporary,user.pw_uid,user.pw_gid)
+            os.replace(temporary,target)
+            copied=True
+        operation='start_services'
+        run(['systemctl','start',*active],timeout=60)
+        operation='verify_services'
+        for unit in active:
+            run(['systemctl','is-active','--quiet',unit])
+    except Exception as exc:
+        detail = failure_summary(exc, operation)
+        (backup/'install-status.json').write_text(json.dumps({'failed_check':detail}))
+        print('Failed check:', detail)
+        # Maintenance window + flat broker preflight ensure this rollback is
+        # before a market entry cycle. Never roll back or replace the database.
+        if copied:
+            run(['systemctl','stop',*active],timeout=60)
+            for name,allowed in manifest.items():
+                target=REPO/name
+                old=backup/name
+                if old.exists():
+                    shutil.copy2(old,target)
+                elif target.exists():
+                    target.unlink()
+        subprocess.run(['systemctl','start',*active],capture_output=True,timeout=60)
+        print('Install stopped; original source restored where needed. Check service status.')
+        print('Broker/local preflight must confirm no positions or pending orders.')
+        print('Backup:',backup)
+        raise SystemExit(1)
+    print('Installed checklist forecaster in observation mode; services active.')
+    print('Backup:',backup)
+    print('Live fill handling still requires observation in the next session; no test orders sent.')
+    print('Configure a private OpenAI API key with forecaster_update/configure.py. Forecasts start with fresh market inputs.')
+    print('Forecast observations cannot defer exits. Existing trading flags and stops are preserved.')
+
+
+if __name__=='__main__':
+    main()

@@ -158,6 +158,7 @@ class OptionChain:
             return
         self._expiry = expiry
         self._last_poll = 0.0
+        self._forecast_sample = None
         self.atm = atm
         contracts = self.scrips.strikes_around(
             self.index, atm, STRIKES_EACH_SIDE)
@@ -222,6 +223,13 @@ class OptionChain:
              "delta": q.delta, "gamma": q.gamma, "theta": q.theta,
              "vega": q.vega} for q in self.quotes.values()])
         self._last_poll = time.monotonic()
+        # Publish a completed immutable-by-convention sample for the observer.
+        # Never expose a half-refreshed ladder while poll mutates quote objects.
+        self._forecast_sample = dict(mono=self._last_poll, expiry=self._expiry,
+            quotes=[dict(token=q.token,symbol=q.symbol,strike=q.strike,opt_type=q.opt_type,
+                ltp=q.ltp,oi=q.oi,oi_change=q.oi_change,volume=q.volume,iv=q.iv,
+                delta=q.delta,gamma=q.gamma,theta=q.theta,vega=q.vega,bid=q.bid,ask=q.ask)
+                for q in self.quotes.values()])
         return True
 
     # ------------------------------------------------------------- analytics

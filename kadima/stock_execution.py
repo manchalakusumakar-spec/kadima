@@ -53,6 +53,7 @@ class StockExecutionWorker:
         self._last_history = 0.0
         self._attempted = {}  # at most one latest snapshot per underlying
         self._cache = {}      # only most recently prepared underlying
+        self.forecast_state = None
 
     def history(self, index):
         now = now_ist()
@@ -147,13 +148,21 @@ class StockExecutionWorker:
                 opt_exchange=pos.exchange,opt_symbol_root=pos.index,strike_step=step,weight=0)
             prices = _poll_ltp(index.exchange,[index.token])
             spot = prices.get(index.token)
+            spot_at = now_ist()
             if spot is None:
                 continue
-            self.history(index)
+            bars = self.history(index)
             chain = OptionChain(index,self.scrips)
             chain.rebuild_ladder(spot)
             if chain.poll():
                 self.executor.update_structure(pos.index,chain,spot)
+                # One held-stock snapshot, published only after a complete poll.
+                # No additional broker request; VWAP remains explicitly missing.
+                snap = indicators.compute(bars[3],session_vwap=None)
+                snap.vwap = None
+                self.forecast_state = SimpleNamespace(name=pos.index,spot=spot,last_updated=spot_at,
+                    is_live_tick=True,chain=chain,snap=snap,tier='HELD',score=0,
+                    direction=pos.direction,gamma_result=None)
 
     def run(self):
         while not self._stop.is_set():

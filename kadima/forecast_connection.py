@@ -22,6 +22,8 @@ def read_projections(path=PATH):
         if len(raw) > 1_000_000:
             return [], 'oversize'
         data = json.loads(raw)
+        if isinstance(data, dict) and data.get('mode') == 'observation':
+            return [], 'observation_only'
         if data.get('schema_version') != 1 or not isinstance(data.get('projections'), list):
             return [], 'invalid_schema'
         if len(data['projections']) > 20:
