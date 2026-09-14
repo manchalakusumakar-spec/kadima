@@ -57,6 +57,7 @@ OBSERVE-ONLY, NOT WIRED TO LIVE TRADING (2026-08-23):
 from __future__ import annotations
 
 import json
+import math
 import os
 import threading
 import time
@@ -133,19 +134,8 @@ class UniverseScanner:
             for stock in batch:
                 by_exchange.setdefault(stock["spot_exchange"], []).append(stock["spot_token"])
 
-            if not QUOTE.wait_and_allow(timeout_sec=3.0):
-                audit.log("universe_stage1_rate_limited", batch_start=i)
-                continue
-
-            try:
-                SESSION.ensure()
-                resp = SESSION.api.getMarketData(mode="FULL", exchangeTokens=by_exchange)
-            except Exception as exc:                    # noqa: BLE001
-                audit.log("universe_stage1_poll_failed", error=str(exc), batch_start=i)
-                continue
-
-            if not resp or not resp.get("status"):
-                continue
+            # Retry only unresolved tokens with endpoint-specific spacing.
+            resp = self._fetch_screen_batch(by_exchange, i)
 
             by_token = {str(s["spot_token"]): s for s in batch}
             for row in resp.get("data", {}).get("fetched", []):
@@ -157,8 +147,11 @@ class UniverseScanner:
                 pct_change = row.get("percentChange")
                 if ltp is not None:
                     try:
+                        if not math.isfinite(float(ltp)) or float(ltp) <= 0:
+                            continue
                         quotes[stock["name"]] = {
                             "ltp": float(ltp),
+                            "received_at": row["_received_at"],
                             "pct_change": (float(pct_change) if pct_change is not None else None),
                         }
                     except (TypeError, ValueError):
@@ -170,10 +163,51 @@ class UniverseScanner:
                 except (TypeError, ValueError):
                     continue
 
-        if quotes:
-            self._last_universe_quotes = quotes
+        self._last_universe_quotes = quotes
         moves.sort(key=lambda m: m[0], reverse=True)
         return [stock for _, stock in moves[:MAX_SHORTLIST]]
+
+    def _fetch_screen_batch(self, by_exchange: dict, batch_start: int) -> dict:
+        pending = {ex: list(tokens) for ex, tokens in by_exchange.items()}
+        fetched = {}
+        for attempt in range(3):
+            # Other services may consume the account's allowance too.
+            if self._stop.wait((1.25, 2.5, 5.0)[attempt]):
+                break
+            if not QUOTE.wait_and_allow(timeout_sec=3.0):
+                continue
+            try:
+                SESSION.ensure()
+                response = SESSION.api.getMarketData(
+                    mode="FULL", exchangeTokens=pending)
+                rows = ((response or {}).get("data") or {}).get("fetched") or []
+                if not (response or {}).get("status"):
+                    rows = []
+                expected = {str(t) for tokens in pending.values() for t in tokens}
+                for row in rows:
+                    token = str(row.get("symbolToken"))
+                    try:
+                        price = float(row.get("ltp"))
+                    except (TypeError, ValueError):
+                        continue
+                    if token in expected and math.isfinite(price) and price > 0:
+                        fetched[token] = dict(row, _received_at=now_ist().isoformat())
+            except Exception:
+                # Do not write broker responses or credentials to logs.
+                audit.log("universe_stage1_request_failed",
+                          batch_start=batch_start, attempt=attempt + 1)
+            pending = {
+                ex: [t for t in tokens if str(t) not in fetched]
+                for ex, tokens in pending.items()
+            }
+            pending = {ex: tokens for ex, tokens in pending.items() if tokens}
+            if not pending:
+                break
+        missing = sum(map(len, pending.values()))
+        if missing:
+            audit.log("universe_stage1_incomplete", batch_start=batch_start,
+                      missing=missing, received=len(fetched))
+        return {"data": {"fetched": list(fetched.values())}}
 
     # ---------------------------------------------------------- promotion
     def _promote(self, stock: dict) -> None:
@@ -297,6 +331,13 @@ class UniverseScanner:
             "ts": now_ist().isoformat(),
             "tracked": rows,
             "prices": self._last_universe_quotes,
+            "coverage": {
+                "expected": len(self.universe),
+                "priced": len(self._last_universe_quotes),
+                "missing": sorted({s["name"] for s in self.universe}
+                                  - set(self._last_universe_quotes)),
+                "gamma_limit": MAX_SHORTLIST,
+            },
         }
         try:
             with _SNAPSHOT_LOCK:
