@@ -1,9 +1,11 @@
 """Deployment boundaries: unknown versions stop before mutation; inventory is read-only."""
 import importlib.util
+import io
 import json
 from pathlib import Path
 import tempfile
 import unittest
+import urllib.error
 from unittest.mock import patch
 
 ROOT=Path(__file__).resolve().parents[1]
@@ -16,6 +18,33 @@ def module(name,path):
 
 
 class DeploymentTools(unittest.TestCase):
+    def test_backend_restart_delay_then_ready(self):
+        upgrade=module('dashboard_upgrade','dashboard_live/upgrade.py')
+        with patch.object(upgrade.urllib.request,'urlopen',side_effect=[
+                urllib.error.URLError('connection refused'),io.BytesIO(b'{"dashboard_limit":20}')]) as fetch, \
+                patch.object(upgrade.time,'sleep'):
+            self.assertEqual(upgrade.wait_for_backend('request')['dashboard_limit'],20)
+            self.assertEqual(fetch.call_count,2)
+
+    def test_backend_auth_failure_is_not_retried(self):
+        upgrade=module('dashboard_upgrade','dashboard_live/upgrade.py')
+        with patch.object(upgrade.urllib.request,'urlopen',side_effect=
+                urllib.error.HTTPError('local',401,'unauthorized',{},None)) as fetch:
+            with self.assertRaises(urllib.error.HTTPError):upgrade.wait_for_backend('request')
+            self.assertEqual(fetch.call_count,1)
+
+    def test_backend_restart_wait_is_bounded(self):
+        upgrade=module('dashboard_upgrade','dashboard_live/upgrade.py')
+        with patch.object(upgrade.urllib.request,'urlopen',side_effect=urllib.error.URLError('refused')), \
+                patch.object(upgrade.time,'monotonic',side_effect=[0,31]),patch.object(upgrade.time,'sleep') as sleep:
+            with self.assertRaisesRegex(ValueError,'ready'):upgrade.wait_for_backend('request')
+            sleep.assert_not_called()
+
+    def test_wrong_backend_schema_refused(self):
+        upgrade=module('dashboard_upgrade','dashboard_live/upgrade.py')
+        with patch.object(upgrade.urllib.request,'urlopen',return_value=io.BytesIO(b'{"ok":true}')):
+            with self.assertRaisesRegex(ValueError,'backend required'):upgrade.wait_for_backend('request')
+
     def test_unknown_dashboard_source_refused_without_overwrite(self):
         upgrade=module('dashboard_upgrade','dashboard_live/upgrade.py')
         with tempfile.TemporaryDirectory() as tmp:

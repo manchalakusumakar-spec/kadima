@@ -94,14 +94,16 @@ credential changes or live-configuration changes were performed.
   external fill deltas are accounted for. Account-wide realized/unrealized
   loss reconciliation still requires live validation.
 - Exact exchange/broker session, expiry cutoffs, static-IP registration,
-  deployed process manager, source hashes and resource headroom are unverified.
+  runtime process ownership and market-session resource headroom are unverified.
   Existing session/cutoff values were not asserted correct or changed.
 - Real browser rendering and live dashboard/gateway wiring must be verified
   before release. The browser fixture is fully intercepted and never uses the
   real dashboard or a live trading account.
-  In this build environment Chromium was unavailable and the supported browser
-  download timed out/returned 502. JavaScript syntax passed, but screenshot and
-  browser-interaction tests are explicitly **not reported as passed**.
+  GitHub CI at `4f0ca45d85ce38debe559bc3ee77b47d0978a9c0` passed the automated
+  desktop/mobile Playwright checks and captured screenshots:
+  [verified run](https://github.com/manchalakusumakar-spec/kadima/actions/runs/35013522130).
+  Local Chromium download failed. Visual inspection of those screenshots and
+  authenticated live dashboard interactions are still unverified.
 
 No system can guarantee catching every move, a +5% minimum capture, no losses,
 or unlimited realized profit. Fees, slippage and gaps remain relevant.
@@ -150,6 +152,53 @@ identify the real engine owner; the historical PM2 dashboard installation
 and systemd engine installer must not be assumed to refer to the same live
 process. Unattended activation remains NO-GO while blockers remain.
 
+### Reviewed EC2 inventory — 16 September 2026, 01:01 IST
+
+The supplied report identified all 33 backend paths as accepted versions:
+12 already matched the release, 12 were older reviewed files and nine new
+modules were absent. The engine, stock scanner, macro watcher and dashboard
+systemd services were active; PM2 also reported `kadima-bridge` online.
+The local ledger reported zero open positions and zero pending execution
+intents. This does **not** establish that the broker account is flat.
+Celestial was disabled and its API was not installed.
+
+The installed gateway matched reviewed blob
+`2fe07e07086493a86ed0d9df5a34a7e950c40d16`. A read-only HTTPS retrieval of the
+actual `/dashboard.html` returned 32,809 bytes with Git blob
+`ec46796858d2597c216fe48b49fbb565bae81c9e`, exactly matching the report. Review
+against the earlier dashboard source found only gold colour substitutions,
+a `kadima-gold-polish` CSS block for shadows, borders, focus/hover and reduced
+motion styling, and trailing whitespace removal. No script or API behaviour
+changed. That exact installed HTML hash is now accepted by the updater.
+
+The backend installer now verifies the engine's working directory and
+`run.py` entrypoint before stopping services. Its broker preflight requires
+an explicit, finite zero net quantity for every position row; missing fields
+cannot be mistaken for a flat account. The dashboard updater allows up to
+30 seconds for a restarted backend connection to become available, while
+rejecting authentication or incompatible API responses immediately.
+
+### Source installation after inventory review
+
+Run during **19:00–08:00 IST**, using the reviewed checkout above. The backend
+step checks local and broker exposure, backs up source, and restarts the three
+backend services. The next step updates the two dashboard files with its own
+backup and gateway restart. The sequence stops at the first failure; a backend
+success followed by a dashboard failure is a partial installation, not a
+completed release. Each installer has its own source rollback. Neither changes
+the rollout flag, broker gate, credentials or stored trading configuration.
+
+```bash
+sudo -n python3 "$kadima_review_dir/executor_fix/install.py" &&
+sudo -n python3 "$kadima_review_dir/dashboard_live/upgrade.py" --apply &&
+sudo -n python3 "$kadima_review_dir/tools/deployment_report.py"
+```
+
+Check the final report for matching backend hashes, active services and a
+responsive Celestial API. Sign in to the dashboard again and verify the
+display and disabled rollout status. Do not use live order buttons as a test.
+Source installation is not approval to activate unattended trading.
+
 ## APIs (authenticated control service, port 8081)
 
 | Method / path | Meaning |
@@ -187,13 +236,16 @@ the API cannot prove an external collector actually checked a source.
 
 ## Offline verification
 
-Validation performed locally for the follow-up: 157 Python tests passed,
+Validation performed locally for the follow-up: 163 Python tests passed,
 including real authenticated FastAPI/control-gateway requests with
 broker boundaries mocked or login forbidden. All Python source compiled; actual
 engine/control/scanner imports passed with socket connections forbidden, and
-dashboard JavaScript syntax is checked separately. Browser rendering was
-blocked as noted above. GitHub workflow status must be inspected at the actual
-release commit. No AWS/broker live test is claimed.
+dashboard JavaScript syntax is checked separately. The 157-test backend release
+also passed GitHub's desktop/mobile browser fixture at the commit linked above.
+Six further installer regressions cover process ownership, malformed position
+quantities, bounded startup waits and immediate auth/schema refusal. Inspect
+GitHub workflow status at the actual release commit. No AWS/broker live test
+is claimed.
 
 ```bash
 python3 -m pip install -r requirements.txt httpx

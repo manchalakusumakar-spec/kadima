@@ -14,6 +14,7 @@ import shutil
 import subprocess
 import tempfile
 import time
+import urllib.error
 import urllib.request
 
 BASE=Path(__file__).resolve().parent
@@ -48,6 +49,25 @@ def atomic_copy(source,target):
     os.replace(temporary,target)
 
 
+def wait_for_backend(request):
+    """Allow a bounded restart delay; reject auth/schema failures immediately."""
+    deadline=time.monotonic()+30
+    while True:
+        try:
+            with urllib.request.urlopen(request,timeout=2) as response:
+                backend=json.load(response)
+        except urllib.error.HTTPError:
+            raise
+        except (urllib.error.URLError,TimeoutError,ConnectionError):
+            if time.monotonic()>=deadline:
+                raise ValueError('Backend did not become ready') from None
+            time.sleep(1)
+            continue
+        if not isinstance(backend,dict) or backend.get('dashboard_limit')!=20:
+            raise ValueError('Updated Celestial backend required first')
+        return backend
+
+
 def main(apply=False):
     if os.geteuid()!=0:raise SystemExit('Run with sudo -n python3 dashboard_live/upgrade.py')
     manifest=json.loads((BASE/'upgrade_manifest.json').read_text())
@@ -57,8 +77,7 @@ def main(apply=False):
     config=json.loads(original_config)
     request=urllib.request.Request('http://127.0.0.1:8081/api/kadima/config',
         headers={'Authorization':'Bearer '+config['api_token']})
-    with urllib.request.urlopen(request,timeout=10) as r:backend=json.load(r)
-    if backend.get('dashboard_limit')!=20:raise ValueError('Updated Celestial backend required first')
+    wait_for_backend(request)
     pid=run(['systemctl','show',UNIT,'-p','MainPID','--value']).stdout.strip()
     if not pid.isdigit() or int(pid)==0:raise ValueError('Existing gateway must be running')
     process=Path('/proc')/pid

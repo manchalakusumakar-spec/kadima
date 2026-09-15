@@ -31,6 +31,20 @@ def blob(data):
     return hashlib.sha1(b'blob '+str(len(data)).encode()+b'\0'+data).hexdigest()
 
 
+def engine_interpreter(process, repo):
+    """Confirm the service really executes this checkout before replacing it."""
+    argv=[os.fsdecode(v) for v in (process/'cmdline').read_bytes().split(b'\0') if v]
+    if not argv or not Path(argv[0]).is_absolute() or 'python' not in Path(argv[0]).name:
+        raise SystemExit('Engine interpreter could not be verified. No files changed.')
+    if (process/'cwd').resolve()!=repo.resolve():
+        raise SystemExit('Engine uses a different checkout. No files changed.')
+    args=argv[1:]
+    if args and args[0]=='-u':args=args[1:]
+    if len(args)!=1 or (repo/args[0]).resolve()!=(repo/'run.py').resolve():
+        raise SystemExit('Unexpected engine entrypoint. No files changed.')
+    return argv[0]
+
+
 def validate_dependencies(package, target, manifest):
     """Check local package imports against the resulting release before stopping."""
     todo = list(manifest)
@@ -65,6 +79,7 @@ def validate_dependencies(package, target, manifest):
 
 PREFLIGHT = r'''
 import json
+import math
 import re
 import sys
 stage = 'imports'
@@ -102,8 +117,19 @@ try:
             reason = 'broker_response_invalid'
             raise RuntimeError()
         for row in rows:
+            if not isinstance(row,dict):
+                reason = 'broker_response_invalid'
+                raise RuntimeError()
             if name == 'position':
-                if float(row.get('netqty') or 0) != 0:
+                raw = row.get('netqty')
+                if raw is None or isinstance(raw,bool) or not str(raw).strip():
+                    reason = 'broker_response_invalid'
+                    raise RuntimeError()
+                quantity = float(raw)
+                if not math.isfinite(quantity):
+                    reason = 'broker_response_invalid'
+                    raise RuntimeError()
+                if quantity != 0:
                     reason = 'broker_positions_not_flat'
                     raise RuntimeError()
             elif str(row.get('orderstatus') or row.get('status') or '').lower() not in {
@@ -186,10 +212,7 @@ def main():
         if local.execute("SELECT 1 FROM sqlite_master WHERE name='execution_orders'").fetchone():
             if local.execute("SELECT 1 FROM execution_orders WHERE state != 'terminal' LIMIT 1").fetchone():
                 raise SystemExit('Pending execution intents remain. No services stopped.')
-    argv=Path('/proc/'+pid+'/cmdline').read_bytes().split(b'\0')
-    python=os.fsdecode(argv[0])
-    if not Path(python).is_absolute() or 'python' not in Path(python).name:
-        raise SystemExit('Engine interpreter could not be verified. No files changed.')
+    python=engine_interpreter(Path('/proc')/pid,REPO)
     user=pwd.getpwnam('ubuntu')
     if Path('/proc/'+pid).stat().st_uid != user.pw_uid:
         raise SystemExit('Unexpected engine owner. No files changed.')
