@@ -19,6 +19,7 @@ from datetime import datetime
 
 from . import alerts, audit, indicators, killswitch, last_known, storage, strike_selector
 from . import auto_executor
+from .trade_policy import SHIELD_MIN_SCORE
 from .stock_execution import StockExecutionWorker
 from .forecast_observer import ForecastObserver
 from . import gamma_blast_scanner as gamma
@@ -44,12 +45,7 @@ WEIGHTS = {
 }
 TIER_WATCH = 30.0
 TIER_ACTIVE = 50.0
-TIER_CONFIRMED = 80.0    # raised from 65.0 on 2026-09-06 per trader instruction: require higher-conviction signals before auto-execution (was lowered from 90.0 on 2026-08-21)
-                         # instruction. WATCH/ACTIVE scaled down proportionally
-                         # (same ratio as the original 40/70/90 spacing) rather
-                         # than left at their old absolute values, which would
-                         # have put ACTIVE (70) ABOVE the new CONFIRMED (65) —
-                         # a broken, unreachable-in-order tier hierarchy.
+TIER_CONFIRMED = SHIELD_MIN_SCORE  # Both CE and PE; other entry gates still apply.
 
 EXCHANGE_TYPE = {"NSE": 1, "NFO": 2, "BSE": 3, "BFO": 4}
 
@@ -490,6 +486,7 @@ class Engine:
                 audit.log("market_close_shutdown")
                 self.stop()
                 return
+
 
 
 

@@ -54,7 +54,7 @@ class ExecutorIntegration(unittest.TestCase):
         method=next(x for x in cls.body if isinstance(x,ast.FunctionDef) and x.name=='check_exits')
         method.decorator_list=[]
         calls=[]
-        pos=SimpleNamespace(status='open',token='T',exchange='NFO',signal_id=1,
+        pos=SimpleNamespace(status='open',exit_reason=None,token='T',exchange='NFO',signal_id=1,
                             peak_price=140,entry_price=100,trail_active=True,
                             remaining_qty=50,swing_level=None,direction='PE', structural_stop=90, effective_stop=120)
         cfg=SimpleNamespace(FORECAST_TRAIL_ENABLED=enabled,in_no_auto_exit_window=lambda:False)
@@ -82,4 +82,5 @@ class ExecutorIntegration(unittest.TestCase):
         self.assertEqual(self.run_cycle(p=projection(180),hour=16),['eod_force_close'])
 
 if __name__=='__main__':unittest.main()
+
 

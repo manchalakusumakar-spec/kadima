@@ -311,6 +311,8 @@ class AutoExecutor:
             pos = self.state.positions.get(str(signal_id))
             if pos is None:
                 return {"ok": False, "reason": "position_not_found", "signal_id": signal_id}
+            if pos.status == "entry_pending":
+                return dict(execution_ledger.request_entry_exit(pos, reason), signal_id=signal_id)
             if pos.status != "open":
                 return {"ok": False, "reason": f"position_not_open (status={pos.status})", "signal_id": signal_id}
 
@@ -536,7 +538,7 @@ class AutoExecutor:
             return
         with self._lock:
             open_positions = [p for p in self.state.positions.values()
-                              if p.status == "open"]
+                              if p.status in ("open", "entry_pending") and p.remaining_qty > 0]
         if not open_positions:
             return
 
@@ -593,11 +595,14 @@ class AutoExecutor:
                 pos.entry_price, pos.peak_price, pos.effective_stop, structural)
             pos.trail_active = pos.trail_active or active
             storage.upsert_position(pos)
-            reason = None
+            # A queued exit remains binding after cancellation, restart or rebound.
+            reason = pos.exit_reason
             if daily_loss_breached:
                 reason = 'daily_loss_limit_breached'
             elif force_close:
                 reason = 'eod_force_close'
+            elif reason:
+                pass
             elif ltp <= structural:
                 reason = 'structural_stop_breached'
             elif pos.trail_active and ltp <= pos.effective_stop:
@@ -620,6 +625,8 @@ class AutoExecutor:
 
     @serialized
     def _close_position(self, pos: Position, ltp: float, reason: str) -> dict:
+        if pos.status == 'entry_pending':
+            return execution_ledger.request_entry_exit(pos, reason)
         if pos.status != 'open' or pos.remaining_qty <= 0:
             return {'ok': False, 'reason': 'position_not_open_or_order_pending'}
         if execution_ledger.pending(pos.signal_id):
@@ -666,5 +673,6 @@ class AutoExecutor:
 
 
 EXECUTOR = AutoExecutor()
+
 
 

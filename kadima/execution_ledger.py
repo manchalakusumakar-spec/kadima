@@ -51,6 +51,30 @@ def seen(signal_id):
                                 (signal_id,)).fetchone() is not None
 
 
+def request_entry_exit(pos, reason):
+    """Latch an exit before cancelling a BUY; never sell an unknown final quantity.
+
+    Cancellation acceptance is not a fill/cancel confirmation. The monitor keeps
+    refreshing the order book and exits the final owned quantity once terminal.
+    exit_reason is persisted with the position and survives restart and rebound.
+    """
+    rows = pending(pos.signal_id)
+    if len(rows) != 1 or rows[0]['side'] != 'BUY':
+        return {'ok': False, 'reason': 'entry_order_unresolved', 'pending': True}
+    pos.exit_reason = pos.exit_reason or reason
+    storage.upsert_position(pos)
+    order_id = rows[0]['order_id']
+    if order_id:
+        angel_orders.cancel_order(order_id)
+    audit.log('entry_exit_queued', signal_id=pos.signal_id, order_id=order_id,
+              owned_qty=pos.remaining_qty, reason=pos.exit_reason)
+    alerts.enqueue(f"Exit queued for {pos.symbol}; waiting for entry cancellation "
+                   f"and final filled quantity. Check broker if delayed.",
+                   key=f"entry-exit:{pos.signal_id}")
+    return {'ok': True, 'reason': 'exit_queued_awaiting_entry_terminal',
+            'pending': True, 'order_id': order_id}
+
+
 def submit(pos, side, quantity, price):
     """Persist before sending; ambiguous responses retain a blocking intent."""
     c = connection()
@@ -197,7 +221,7 @@ def refresh(positions):
         # Bound entry exposure: cancel the unfilled remainder after 30 seconds.
         # Cancellation acknowledgement is not terminal; await the next order book.
         age = (now_ist() - datetime.fromisoformat(row['created_at'])).total_seconds()
-        if row['side'] == 'BUY' and pos.status == 'entry_pending' and (age >= 30 or pos.remaining_qty > 0):
+        if row['side'] == 'BUY' and pos.status == 'entry_pending' and (age >= 30 or pos.remaining_qty > 0 or pos.exit_reason):
             angel_orders.cancel_order(status.order_id)
         if row['side'] == 'SELL' and pos.status == 'exit_pending' and age >= 30:
             audit.log('execution_exit_still_pending', signal_id=pos.signal_id,
@@ -206,3 +230,4 @@ def refresh(positions):
                            f"check broker order {status.order_id}",
                            key=f"pending-exit:{status.order_id}")
     return healthy
+

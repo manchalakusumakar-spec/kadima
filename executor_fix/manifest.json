@@ -1,43 +1,94 @@
 {
   "kadima/alerts.py": [
-    "b94fe1672a30eeb4ac183c8f42bf365271ee3609"
+    "b94fe1672a30eeb4ac183c8f42bf365271ee3609",
+    "472c361e3636805bcb48591398a3f2a5fa708b18"
   ],
   "kadima/angel_orders.py": [
-    "dd52523e5b5b4741592452015de3a206f685afd0"
+    "dd52523e5b5b4741592452015de3a206f685afd0",
+    "5b2f299651a440df971b683674c115cb934e2cb8"
   ],
   "kadima/auto_executor.py": [
-    "b97d03f359135173d49e6a5eb5cdaf30b8aa4cc8",
-    "5f797fad4a96546ebfd130943b4de99290ff2efd"
+    "5f797fad4a96546ebfd130943b4de99290ff2efd",
+    "a4869661f607c3a3825f480f925c28d4e0ef28fd"
   ],
   "kadima/capital_guard.py": [
-    "fa2037c39883c412ae426e37e07121cd0e8f2c91"
+    "fa2037c39883c412ae426e37e07121cd0e8f2c91",
+    "ce1276a680c061e0642a3c245abf72209210363e"
+  ],
+  "kadima/checklist_forecast.py": [
+    null,
+    "a43021cea367e0a8f62875e0c86d11c8a482ec9d"
   ],
   "kadima/control_api.py": [
-    "dda766d3ed57fb7701fd4bdb367be82a0fb4106d"
+    "dda766d3ed57fb7701fd4bdb367be82a0fb4106d",
+    "01d5b906aa9664dc788d0fc8f4501cae9a00308e"
   ],
   "kadima/engine.py": [
-    "a1be6464db4990815bec5abf4e20c168cb5319aa"
+    "a1be6464db4990815bec5abf4e20c168cb5319aa",
+    "0f5c0fd1c0725757c69d964116630c89ea9c89fe"
   ],
-  "kadima/exit_manager.py": [
-    "d5b7d46ecde3a0c960555ce977cd87087482c17d"
-  ],
-  "kadima/forecast_trail.py": [
-    "fcbeeace5355c349caac701521541303af7821a2",
-    null
-  ],
-  "kadima/option_chain.py": [
-    "bba28daca258437742531a3dec594292d880e79c"
-  ],
-  "kadima/rate_limiter.py": [
-    "83dc77d40cfc1d15c7929a4d17e23b407db53b16"
-  ],
-  "kadima/session.py": [
-    "7fb14d476447ea5550b7b8f3724453f80d7accfd"
-  ],
-  "kadima/storage.py": [
-    "35611465714705635a104ad3f312719a9bc843ea"
+  "kadima/entry_quality.py": [
+    "397c88ecee825f878c1a53678087e49e2359f15a",
+    "0fba15edb46e78997f3734be1454b4ddd084bcb8"
   ],
   "kadima/execution_ledger.py": [
-    null
+    null,
+    "69d58c3c12f4d41c4e18861bd457a7f610eeca2b"
+  ],
+  "kadima/exit_manager.py": [
+    "d5b7d46ecde3a0c960555ce977cd87087482c17d",
+    "df8db210c6f0763dd6f452456f4928b81b92dc9d"
+  ],
+  "kadima/forecast_connection.py": [
+    null,
+    "8f08f4e77caca88c0666f96180220748040fcea2"
+  ],
+  "kadima/forecast_observer.py": [
+    null,
+    "24dcff3a12c417fbef25bf606d056e2ba241e152"
+  ],
+  "kadima/forecast_trail.py": [
+    null,
+    "034db8cd18ba2e14e529f2878b6684b3473c53d5"
+  ],
+  "kadima/gamma_blast_scanner.py": [
+    "2d9a389a849ca2e53cc2fddfbc907c465130adcc",
+    "ad50afee9da2cb1e83b1fe5d4646392df6c618c8"
+  ],
+  "kadima/option_chain.py": [
+    "bba28daca258437742531a3dec594292d880e79c",
+    "835d95feee514bfdd6f06d2c0203b734e4692b00"
+  ],
+  "kadima/rate_limiter.py": [
+    "83dc77d40cfc1d15c7929a4d17e23b407db53b16",
+    "34867007aeb2feba2b8fc15e0f90610302321aa8"
+  ],
+  "kadima/risk_budget.py": [
+    "6b9f44ae42a3ff04e197440cd81605f14d6f84c6",
+    "a8ccc00e3ef22edaec97e3f6f067ed915b2c212f"
+  ],
+  "kadima/session.py": [
+    "7fb14d476447ea5550b7b8f3724453f80d7accfd",
+    "55c8ed0c50d53bb86ba2f26c4d9b2c79897a7269"
+  ],
+  "kadima/stock_execution.py": [
+    null,
+    "aafd610df1b60e03d504213e60ccf7e4c58b011f"
+  ],
+  "kadima/stock_handoff.py": [
+    null,
+    "b0caefbf91a11c7fc00ad106f04aea0eea1eccf5"
+  ],
+  "kadima/stock_universe_scanner.py": [
+    "18d40bd9ead639e852a56475c51b820c147898f0",
+    "bfe2ff023c1f90117d5c11ae92deca7c7fe7a27b"
+  ],
+  "kadima/storage.py": [
+    "35611465714705635a104ad3f312719a9bc843ea",
+    "1f11d0944de0e09d85ae00a6e7f43854293b2752"
+  ],
+  "kadima/trade_policy.py": [
+    null,
+    "8b6ac91eac28da0ca2f1a8b6822b078381bf132a"
   ]
 }

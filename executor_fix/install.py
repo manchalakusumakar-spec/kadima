@@ -1,9 +1,10 @@
-"""Guarded maintenance deployment. Run with sudo -n python3 install.py.
+"""Consolidated baseline-to-release maintenance deployment. Run with sudo -n python3 install.py.
 
 Stops the engine/scanner/macro services only after source and local-state
 checks. Uses the engine's existing interpreter/environment for a read-only
 broker preflight; never sends orders, changes credentials or trading flags.
 """
+import ast
 import hashlib
 import json
 import os
@@ -28,6 +29,38 @@ def run(args, **kwargs):
 
 def blob(data):
     return hashlib.sha1(b'blob '+str(len(data)).encode()+b'\0'+data).hexdigest()
+
+
+def validate_dependencies(package, target, manifest):
+    """Check local package imports against the resulting release before stopping."""
+    todo = list(manifest)
+    visited = set()
+    while todo:
+        name = todo.pop()
+        if name in visited:
+            continue
+        visited.add(name)
+        source = (package if name in manifest else target) / name
+        for node in ast.walk(ast.parse(source.read_text())):
+            modules = []
+            if isinstance(node, ast.ImportFrom):
+                if node.level == 1:
+                    modules = [node.module] if node.module else [a.name for a in node.names]
+                elif node.module == 'kadima':
+                    modules = [a.name for a in node.names]
+                elif node.module and node.module.startswith('kadima.'):
+                    modules = [node.module[7:]]
+            elif isinstance(node, ast.Import):
+                modules = [a.name[7:] for a in node.names if a.name.startswith('kadima.')]
+            for module in modules:
+                dependency = 'kadima/' + module.replace('.', '/') + '.py'
+                # Names imported from a package can also be attributes. Only
+                # require actual source modules shipped in this release tree.
+                if not (package / dependency).is_file():
+                    continue
+                if dependency not in manifest and not (target / dependency).is_file():
+                    raise SystemExit('Release dependency missing: ' + dependency + '. No files changed.')
+                todo.append(dependency)
 
 
 PREFLIGHT = r'''
@@ -133,6 +166,7 @@ def main():
         new = blob(source.read_bytes())
         if current not in allowed and current != new:
             raise SystemExit('Unexpected local version: '+name+'. No files changed.')
+    validate_dependencies(PACKAGE, REPO, manifest)
     pid = run(['systemctl','show','kadima.service','-p','MainPID','--value']).stdout.strip()
     if not pid.isdigit() or int(pid) == 0:
         raise SystemExit('Engine must be running so its existing environment can be verified. No files changed.')
@@ -190,6 +224,12 @@ def main():
             os.chown(temporary,user.pw_uid,user.pw_gid)
             os.replace(temporary,target)
             copied=True
+        # Check the installed import graph before restarting any trading process.
+        # Imports construct no Engine and start no feeds, workers or broker orders.
+        operation='installed_import_check'
+        run([python, '-c', 'import kadima.engine; import kadima.control_api; '
+             'import kadima.stock_universe_scanner'], cwd=REPO, env=env,
+            preexec_fn=as_user, timeout=30)
         operation='start_services'
         run(['systemctl','start',*active],timeout=60)
         operation='verify_services'
@@ -215,7 +255,7 @@ def main():
         print('Broker/local preflight must confirm no positions or pending orders.')
         print('Backup:',backup)
         raise SystemExit(1)
-    print('Installed executor safeguards; services active.')
+    print('Installed complete backend release; services active.')
     print('Backup:',backup)
     print('Live fill handling still requires observation in the next session; no test orders sent.')
     print('Forecast trailing remains disabled unless already explicitly configured.')
@@ -223,3 +263,4 @@ def main():
 
 if __name__=='__main__':
     main()
+

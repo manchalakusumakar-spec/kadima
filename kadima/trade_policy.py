@@ -7,6 +7,9 @@ import math
 from datetime import datetime, timedelta
 from .greeks import bs_price, implied_vol_and_greeks
 
+SHIELD_MIN_SCORE = 65.0
+GAMMA_MIN_SCORE = 70.0
+
 RISK_FRACTION = 0.15
 ACTIVATION = 0.05
 RETAIN_PROFIT = 0.50
@@ -23,7 +26,10 @@ def positive(*values):
 
 
 def eligible(kind, tier, score, direction, snap, spot):
-    if kind == 'gamma_blast' and (tier != 'CONFIRMED' or not positive(score) or score < 70):
+    threshold = {'bull_shield': SHIELD_MIN_SCORE, 'bear_shield': SHIELD_MIN_SCORE,
+                 'gamma_blast': GAMMA_MIN_SCORE}.get(kind)
+    if (threshold is None or tier != 'CONFIRMED' or not positive(score)
+            or not threshold <= score <= 100):
         return False
     if direction not in ('CE', 'PE') or snap is None:
         return False
@@ -106,3 +112,4 @@ def ratchet(entry, peak, previous, structural):
     active = peak >= entry * (1 + ACTIVATION)
     trail = entry + (peak - entry) * RETAIN_PROFIT if active else structural
     return max(previous or 0, structural, trail), active
+

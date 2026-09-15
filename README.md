@@ -4,8 +4,12 @@ Tick-by-tick collection across NIFTY, BANKNIFTY, SENSEX and MIDCPNIFTY, feeding
 a Bull Shield v2.1 scoring layer, four-index confirmation, strike ranking and
 Telegram alerts.
 
-**Advisory only. `ORDER_PLACEMENT_ENABLED = False` and there is no order code in
-this package.** Nothing here can place a trade.
+**This package includes live order execution.** The deployed configuration controls
+whether broker orders are enabled; check it before starting the engine.
+
+For the reviewed baseline-to-release update, use [the release instructions](docs/release_readiness.md).
+The consolidated `executor_fix/install.py` preserves deployed configuration and
+installs the complete backend dependency set.
 
 ---
 
@@ -27,8 +31,8 @@ this package.** Nothing here can place a trade.
 | Audit log | `audit.py` — append-only JSONL, fsync'd |
 | Monitoring schedule | `run.py` — pre-market wait, 15:30 shutdown |
 
-Not covered, deliberately: entry/exit position-state engine, order placement.
-Those come after this layer has run clean for a while.
+Execution now includes durable order intents, confirmed fills, partial-fill
+reconciliation and position protection. See [executor safeguards](docs/executor_safeguards.md).
 
 ---
 
@@ -165,3 +169,4 @@ not strike quality. This engine doesn't fix either — which is why
 `MAX_LOTS_PER_SIGNAL`, `MAX_CONCURRENT_POSITIONS` and
 `NO_NEW_SIGNALS_AFTER_HOUR` are in `config.py` from day one, and why there is
 no order-placement code in the package.
+
