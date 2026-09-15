@@ -44,6 +44,8 @@ class ScripMaster:
                 audit.log("scrip_master_downloaded", rows=len(data))
             except Exception as exc:                    # noqa: BLE001
                 audit.log("scrip_master_download_failed", error=str(exc))
+                if os.environ.get('KADIMA_CELESTIAL_ENABLED','0')=='1':
+                    raise RuntimeError('Celestial requires a fresh contract master') from exc
                 if not os.path.exists(CACHE):
                     raise RuntimeError(
                         "Cannot start: scrip master unavailable and no cache."

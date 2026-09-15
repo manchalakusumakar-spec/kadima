@@ -25,10 +25,15 @@ def positive(*values):
         return False
 
 
-def eligible(kind, tier, score, direction, snap, spot):
+def eligible(kind, tier, score, direction, snap, spot, minimum=None):
     threshold = {'bull_shield': SHIELD_MIN_SCORE, 'bear_shield': SHIELD_MIN_SCORE,
                  'gamma_blast': GAMMA_MIN_SCORE}.get(kind)
-    if (threshold is None or tier != 'CONFIRMED' or not positive(score)
+    if minimum is not None:
+        if type(minimum) is not int or minimum not in (65,70,75,80,85,90):
+            return False
+        threshold = minimum if threshold is not None else None
+    valid_tier = tier in ('ACTIVE','CONFIRMED') if minimum is not None else tier == 'CONFIRMED'
+    if (threshold is None or not valid_tier or not positive(score)
             or not threshold <= score <= 100):
         return False
     if direction not in ('CE', 'PE') or snap is None:
@@ -112,4 +117,3 @@ def ratchet(entry, peak, previous, structural):
     active = peak >= entry * (1 + ACTIVATION)
     trail = entry + (peak - entry) * RETAIN_PROFIT if active else structural
     return max(previous or 0, structural, trail), active
-

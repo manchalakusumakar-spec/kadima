@@ -31,6 +31,7 @@ Confirmed against the live EC2 source on 2026-09-02:
 from __future__ import annotations
 
 import os
+import hmac
 from typing import Optional
 from .forecast_observer import read_report as read_forecast_report
 
@@ -67,7 +68,7 @@ def _check_auth(authorization: Optional[str]) -> None:
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="missing_bearer_token")
     token = authorization.removeprefix("Bearer ").strip()
-    if token != expected:
+    if not hmac.compare_digest(token,expected):
         raise HTTPException(status_code=401, detail="invalid_token")
 
 
@@ -379,3 +380,204 @@ def macro_snapshot(authorization: Optional[str] = Header(None)):
     except (OSError, json.JSONDecodeError) as exc:
         raise HTTPException(status_code=503, detail=f"macro_snapshot_unavailable: {exc}")
 
+
+# Celestial control routes: only the authenticated same-origin gateway exposes
+# these to a human dashboard. The read-only LLM bridge is unchanged.
+from fastapi import Body
+from . import celestial, execution_ledger
+
+
+def _celestial_executor():
+    if EXECUTOR is None:
+        raise HTTPException(503,'executor_not_registered')
+    if not celestial.enabled():
+        raise HTTPException(409,'celestial_rollout_not_enabled')
+    return EXECUTOR
+
+
+def _control_result(result):
+    if not result or result.get('ok') is not True:
+        raise HTTPException(409,result or {'reason':'no_execution_result'})
+    return result
+
+
+@app.get('/api/kadima/config')
+def celestial_config(authorization: Optional[str] = Header(None)):
+    _check_auth(authorization)
+    return dict(celestial.read_config(),rollout_enabled=celestial.enabled(),
+                broker_orders_enabled=config.ORDER_PLACEMENT_ENABLED)
+
+
+@app.post('/api/kadima/config')
+def set_celestial_config(body: dict = Body(...), authorization: Optional[str] = Header(None)):
+    _check_auth(authorization)
+    ex = _celestial_executor()
+    data = dict(body)
+    revision = data.pop('revision',None)
+    try:
+        with ex._execution_lock:
+            result = celestial.update_config(data,expected_revision=revision)
+    except ValueError as exc:
+        raise HTTPException(409,str(exc))
+    audit.log('celestial_config_changed',revision=result['revision'])
+    return result
+
+
+@app.get('/api/kadima/top20')
+def celestial_top20(authorization: Optional[str] = Header(None)):
+    _check_auth(authorization)
+    rows = celestial.top20()
+    # UI reads cached monitor quotes, never manufactures a fresh quote from peak.
+    positions = []
+    if EXECUTOR is not None:
+        with EXECUTOR._execution_lock:
+            for p in EXECUTOR.state.positions.values():
+                if p.status=='closed': continue
+                quote = EXECUTOR._celestial_quotes.get(p.exchange+':'+p.token) or {}
+                ltp = quote.get('ltp') if celestial.fresh(quote.get('ts')) else None
+                positions.append(dict(signal_id=p.signal_id,symbol=p.symbol,exchange=p.exchange,token=p.token,
+                    ltp=ltp,quote_at=quote.get('ts'),unrealized_pnl_inr=(ltp-p.entry_price)*p.remaining_qty if ltp is not None else None,
+                    direction=p.direction,status=p.status,remaining_qty=p.remaining_qty,entry_price=p.entry_price,
+                    source='MANUAL_ADOPTED' if p.kind=='MANUAL_ADOPTED' else 'KADIMA_AUTO',
+                    effective_stop=p.effective_stop,trail_active=p.trail_active,
+                    entry_order_id=p.order_id,exit_order_id=p.exit_order_id,exit_reason=p.exit_reason,
+                    protection='engine_managed_not_broker_hosted'))
+    by_contract = {p['exchange']+':'+p['token']:p for p in positions}
+    for row in rows:
+        p = by_contract.get(row['id'])
+        if EXECUTOR is None or EXECUTOR._reconcile_blocked:
+            row['eligible']=False
+            row['blocked_reasons'].append('broker_reconciliation_required')
+            row['action']='RADAR'
+        if p:
+            row['action']='EXIT' if p['exit_reason'] or p['status']=='exit_pending' else 'TRAIL' if p['trail_active'] else 'ENTERED'
+    return dict(ts=now_ist().isoformat(),candidates=rows,positions=positions,
+        config=celestial_config(authorization),system={name:celestial.health(name) for name in
+            ('index_universe','stock_universe','reconciliation','news')},
+        readiness_note='Candidate prechecks only; execution rechecks alignment, structure, sizing, slots and broker state.',
+        score_note='Heuristic scores, not win probabilities. No guaranteed 5% capture or fills.')
+
+
+@app.post('/api/order/buy')
+def celestial_buy(body: dict = Body(...), authorization: Optional[str] = Header(None)):
+    _check_auth(authorization)
+    if set(body)!={'candidate_id'} or not isinstance(body['candidate_id'],str):
+        raise HTTPException(422,'candidate_id_required_no_raw_orders')
+    return _control_result(_celestial_executor().buy_candidate(body['candidate_id']))
+
+
+@app.post('/api/order/sell')
+@app.post('/api/order/exit')
+def celestial_exit(body: dict = Body(...), authorization: Optional[str] = Header(None)):
+    _check_auth(authorization)
+    if set(body)!={'signal_id'} or type(body['signal_id']) is not int or body['signal_id']<=0:
+        raise HTTPException(422,'positive_signal_id_required_sell_is_reduce_only')
+    return _control_result(_celestial_executor().manual_exit(body['signal_id']))
+
+
+@app.post('/api/order/sl')
+@app.post('/api/order/modify-sl')
+def celestial_stop(body: dict = Body(...), authorization: Optional[str] = Header(None)):
+    _check_auth(authorization)
+    if set(body)!={'signal_id','price'} or type(body['signal_id']) is not int:
+        raise HTTPException(422,'signal_id_and_price_required')
+    return _control_result(_celestial_executor().tighten_stop(body['signal_id'],body['price']))
+
+
+@app.post('/api/order/trailing-sl')
+def celestial_trail(body: dict = Body(...), authorization: Optional[str] = Header(None)):
+    _check_auth(authorization)
+    ex = _celestial_executor()
+    if set(body)!={'signal_id','retain'} or type(body['signal_id']) is not int:
+        raise HTTPException(422,'signal_id_and_retain_required')
+    with ex._execution_lock:
+        p = ex.state.positions.get(str(body['signal_id']))
+        if not p or p.remaining_qty<=0:
+            raise HTTPException(409,'owned_position_not_found')
+        try:
+            celestial.set_retain(body['signal_id'],body['retain'])
+        except ValueError as exc:
+            raise HTTPException(422,str(exc))
+    return {'ok':True,'retain':celestial.retain_fraction(body['signal_id'])}
+
+
+@app.post('/api/order/cancel')
+def celestial_cancel(body: dict = Body(...), authorization: Optional[str] = Header(None)):
+    _check_auth(authorization)
+    ex = _celestial_executor()
+    if set(body)!={'order_id'} or not isinstance(body['order_id'],str):
+        raise HTTPException(422,'order_id_required')
+    if ANGEL_ORDERS is None:
+        raise HTTPException(503,'broker_transport_unavailable')
+    with ex._execution_lock:
+        rows = [r for r in execution_ledger.pending() if r['order_id']==body['order_id']]
+        if len(rows)!=1:
+            raise HTTPException(409,'only_tracked_pending_orders_can_be_cancelled')
+        result = ANGEL_ORDERS.cancel_order(body['order_id'])
+        if not result.ok:
+            raise HTTPException(409,'cancellation_not_confirmed')
+        return {'ok':True,'reason':'cancel_requested_awaiting_terminal_broker_state'}
+
+
+@app.post('/api/order/squareoff-all')
+def celestial_squareoff(authorization: Optional[str] = Header(None)):
+    _check_auth(authorization)
+    return _celestial_executor().squareoff()
+
+
+@app.post('/api/kadima/pause')
+def celestial_pause(authorization: Optional[str] = Header(None)):
+    _check_auth(authorization)
+    ex = _celestial_executor()
+    with ex._execution_lock:
+        return celestial.update_config({'auto_trade_enabled':False})
+
+
+@app.post('/api/kadima/resume')
+def celestial_resume(authorization: Optional[str] = Header(None)):
+    _check_auth(authorization)
+    ex = _celestial_executor()
+    with ex._execution_lock:
+        ex.reconcile_on_startup()
+        if ex._reconcile_blocked:
+            raise HTTPException(409,'broker_reconciliation_required')
+        h = celestial.health('news')
+        if not h or h.get('ok') is not True or not celestial.fresh(h['ts'],seconds=300):
+            raise HTTPException(409,'fresh_news_coverage_required')
+        try:
+            return celestial.update_config({'auto_trade_enabled':True})
+        except ValueError as exc:
+            raise HTTPException(409,str(exc))
+
+
+@app.post('/api/kadima/kill')
+def celestial_kill(authorization: Optional[str] = Header(None)):
+    _check_auth(authorization)
+    ex = _celestial_executor()
+    with ex._execution_lock:
+        celestial.latch_kill()
+        return ex.squareoff('emergency_kill_exit')
+
+
+@app.post('/api/kadima/reset-kill')
+def celestial_reset_kill(authorization: Optional[str] = Header(None)):
+    _check_auth(authorization)
+    ex = _celestial_executor()
+    with ex._execution_lock:
+        ex.reconcile_on_startup()
+        if ex._reconcile_blocked or ex.state.positions or execution_ledger.pending():
+            raise HTTPException(409,'verified_flat_account_required')
+        return celestial.update_config({'auto_trade_enabled':False},reset_kill=True)
+
+
+@app.post('/api/kadima/news')
+def celestial_news(body: dict = Body(...), authorization: Optional[str] = Header(None)):
+    _check_auth(authorization)
+    from .news_catalysts import ingest
+    if set(body)!={'events','source','observed_at','covered_symbols'}:
+        raise HTTPException(422,'events_source_observed_at_covered_symbols_required')
+    try:
+        return ingest(body['events'],source=body['source'],observed_at=body['observed_at'],
+                      covered_symbols=body['covered_symbols'])
+    except (ValueError,TypeError,KeyError) as exc:
+        raise HTTPException(422,str(exc))

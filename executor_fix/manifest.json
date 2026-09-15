@@ -9,7 +9,8 @@
   ],
   "kadima/auto_executor.py": [
     "5f797fad4a96546ebfd130943b4de99290ff2efd",
-    "a4869661f607c3a3825f480f925c28d4e0ef28fd"
+    "a4869661f607c3a3825f480f925c28d4e0ef28fd",
+    "90f012c995d90402e30892ddc6029da71f1f2893"
   ],
   "kadima/capital_guard.py": [
     "fa2037c39883c412ae426e37e07121cd0e8f2c91",
@@ -25,7 +26,8 @@
   ],
   "kadima/engine.py": [
     "a1be6464db4990815bec5abf4e20c168cb5319aa",
-    "0f5c0fd1c0725757c69d964116630c89ea9c89fe"
+    "0f5c0fd1c0725757c69d964116630c89ea9c89fe",
+    "64d76d3ebfcb6e198c3cc6d45daad676c8088d96"
   ],
   "kadima/entry_quality.py": [
     "397c88ecee825f878c1a53678087e49e2359f15a",
@@ -33,7 +35,8 @@
   ],
   "kadima/execution_ledger.py": [
     null,
-    "69d58c3c12f4d41c4e18861bd457a7f610eeca2b"
+    "69d58c3c12f4d41c4e18861bd457a7f610eeca2b",
+    "acfa0f18690d995489a0d203e5ea569374911b22"
   ],
   "kadima/exit_manager.py": [
     "d5b7d46ecde3a0c960555ce977cd87087482c17d",
@@ -89,6 +92,25 @@
   ],
   "kadima/trade_policy.py": [
     null,
-    "8b6ac91eac28da0ca2f1a8b6822b078381bf132a"
+    "8b6ac91eac28da0ca2f1a8b6822b078381bf132a",
+    "2ad2f68e4914e3d3f7ab58c300304af18dbeb44f"
+  ],
+  "kadima/celestial.py": [
+    null
+  ],
+  "kadima/celestial_scanner.py": [
+    null
+  ],
+  "kadima/celestial_adoption.py": [
+    null
+  ],
+  "kadima/celestial_universe.py": [
+    null
+  ],
+  "kadima/news_catalysts.py": [
+    null
+  ],
+  "kadima/scrip_master.py": [
+    "d616b49bdc66dd8b7120f62a9373b65aba4f2ad5"
   ]
 }

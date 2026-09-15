@@ -11,6 +11,7 @@ import urllib.request
 import urllib.error
 from fastapi import FastAPI, Request, HTTPException
 from fastapi.responses import JSONResponse
+from starlette.concurrency import run_in_threadpool
 
 CONFIG_PATH = os.environ.get('KADIMA_DASHBOARD_CONFIG', '/etc/kadima-dashboard/config.json')
 with open(CONFIG_PATH) as f:
@@ -21,6 +22,7 @@ SESSIONS = {}
 ATTEMPTS = []
 LOCK = threading.Lock()
 READS = {'state': (8080, '/state'), 'dashboard_data': (8081, '/dashboard_data'),
+         'celestial': (8081, '/api/kadima/top20'),
          'universe_snapshot': (8081, '/universe_snapshot'), 'macro_snapshot': (8081, '/macro_snapshot')}
 
 def origin_check(request):
@@ -105,6 +107,14 @@ def upstream(port, path, method='GET', payload=None):
             return json.loads(raw)
     except urllib.error.HTTPError as exc:
         # Do not forward raw upstream errors or headers containing credentials.
+        if path.startswith('/api/'):
+            try:
+                detail = json.loads(exc.read(4096)).get('detail')
+                reason = detail.get('reason') if isinstance(detail,dict) else detail
+                if isinstance(reason,str) and re.fullmatch(r'[a-z_]{1,100}',reason):
+                    raise HTTPException(exc.code,reason) from None
+            except (ValueError,TypeError,AttributeError):
+                pass
         raise HTTPException(502, 'backend_request_failed') from exc
     except (OSError, ValueError) as exc:
         raise HTTPException(502, 'backend_unavailable') from exc
@@ -123,3 +133,25 @@ def manual_exit(signal_id: int, request: Request):
     if signal_id < 0:
         raise HTTPException(400, 'invalid_signal')
     return upstream(8081, '/manual_exit/'+str(signal_id), 'POST', {'reason':'manual_exit_dashboard'})
+
+
+CELESTIAL_WRITES = {'kadima/config','kadima/pause','kadima/resume','kadima/kill',
+    'kadima/reset-kill','order/buy','order/sell','order/exit','order/sl','order/trailing-sl',
+    'order/modify-sl','order/cancel','order/squareoff-all'}
+
+
+@app.post('/celestial/{path:path}')
+async def celestial_write(path: str, request: Request):
+    origin_check(request)
+    authenticated(request)
+    if path not in CELESTIAL_WRITES:
+        raise HTTPException(404,'unknown_route')
+    raw = await request.body()
+    if len(raw)>4096:
+        raise HTTPException(413,'request_too_large')
+    try:
+        payload = json.loads(raw or b'{}')
+        if not isinstance(payload,dict): raise ValueError()
+    except (ValueError,UnicodeDecodeError):
+        raise HTTPException(400,'invalid_request')
+    return await run_in_threadpool(upstream,8081,'/api/'+path,'POST',payload)

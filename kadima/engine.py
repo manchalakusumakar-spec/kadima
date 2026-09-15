@@ -90,12 +90,21 @@ class IndexState:
 class Engine:
     def __init__(self) -> None:
         self.scrips = ScripMaster.load()
+        from . import celestial
+        from .celestial_scanner import Radar
+        self.radar = Radar()
+        self.scan_indices = GAMMA_INDICES
+        if celestial.enabled():
+            from .celestial_universe import discover_indices
+            self.scan_indices, missing = discover_indices(self.scrips, now_ist().date())
+            celestial.health('index_universe',dict(active=list(self.scan_indices),unresolved=missing))
+        auto_executor.EXECUTOR.celestial_master = self.scrips
         self.states: dict[str, IndexState] = {}
         self.token_to_index: dict[str, str] = {}
         self.feed = TickFeed(self._on_tick)
         self._stop = threading.Event()
 
-        for name, idx in GAMMA_INDICES.items():
+        for name, idx in self.scan_indices.items():
             st = IndexState(name=name)
             st.builder = CandleBuilder(idx.token, on_close=self._on_candle_close)
             st.chain = OptionChain(idx, self.scrips)
@@ -155,7 +164,7 @@ class Engine:
         auto_executor.EXECUTOR.start_monitor_thread()
         self.stock_worker.start()
         self.forecaster.start()
-        for name, idx in GAMMA_INDICES.items():
+        for name, idx in self.scan_indices.items():
             self.feed.subscribe(EXCHANGE_TYPE[idx.exchange], [idx.token])
         self.feed.start()
         threading.Thread(target=self._oi_loop, daemon=True, name="oi-poll").start()
@@ -239,7 +248,8 @@ class Engine:
         while not self._stop.is_set():
             if in_market_hours() and not killswitch.engaged():
                 for st in self.states.values():
-                    if st.name in GAMMA_EXPIRY_ONLY and self._dte(st) > 1.0:
+                    from . import celestial
+                    if not celestial.enabled() and st.name in GAMMA_EXPIRY_ONLY and self._dte(st) > 1.0:
                         continue  # monthly-only index -- scan only on its own expiry day
                     if st.spot:
                         try:
@@ -250,6 +260,12 @@ class Engine:
                             if polled:
                                 auto_executor.EXECUTOR.update_structure(st.name, st.chain, st.spot)
                                 self._score_gamma(st)
+                                self.radar.publish_chain(st.chain,st.spot,
+                                    st.last_updated.isoformat() if st.last_updated and st.is_live_tick else None,
+                                    st.gamma_result,shield_score=st.score,shield_direction=st.direction)
+                                if celestial.enabled():
+                                    auto_executor.EXECUTOR.prepare_celestial_context(
+                                        st.name,st.chain,st.spot,st.snap,self._dte(st))
                         except Exception as exc:        # noqa: BLE001
                             audit.log("oi_loop_error", index=st.name,
                                       error=str(exc))
@@ -461,7 +477,7 @@ class Engine:
             tier=lead.tier, score=lead.score)
 
     def _dte(self, st: IndexState) -> float:
-        expiry = self.scrips.nearest_expiry(GAMMA_INDICES[st.name])
+        expiry = self.scrips.nearest_expiry(st.chain.index)
         if not expiry:
             return 1.0
         try:

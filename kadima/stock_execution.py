@@ -125,6 +125,10 @@ class StockExecutionWorker:
         # Rechecked inside the serialized executor immediately before order submission.
         chain._entry_guard = lambda: stock_handoff.still_current(
             row['name'],row['signal_id'],row['updated_at'])
+        from . import celestial
+        if celestial.enabled():
+            self.executor.prepare_celestial_context(row['name'],chain,data['spot'],snap,data['days_to_expiry'])
+            return
         self.executor.evaluate_and_enter(row['name'],row['direction'],chain,data['spot'],snap,
             data['days_to_expiry'],'gamma_blast',row['signal_id'],'CONFIRMED',data['score'])
 
