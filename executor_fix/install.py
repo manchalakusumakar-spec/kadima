@@ -1,7 +1,7 @@
 """Consolidated baseline-to-release maintenance deployment. Run with sudo -n python3 install.py.
 
-Stops the engine/scanner/macro services only after source and local-state
-checks. Uses the engine's existing interpreter/environment for a read-only
+Stops the engine/scanner/macro services only after source, local-state and broker
+checks. Rechecks broker state after stopping. Uses the engine's existing interpreter/environment for a read-only
 broker preflight; never sends orders, changes credentials or trading flags.
 """
 import ast
@@ -216,6 +216,20 @@ def main():
     user=pwd.getpwnam('ubuntu')
     if Path('/proc/'+pid).stat().st_uid != user.pw_uid:
         raise SystemExit('Unexpected engine owner. No files changed.')
+    def as_user():
+        os.initgroups(user.pw_name,user.pw_gid)
+        os.setgid(user.pw_gid)
+        os.setuid(user.pw_uid)
+    # An expired contract can still have a non-zero quantity in the broker
+    # book. Never infer settlement from its date or stop services just to
+    # discover the same outstanding exposure again.
+    try:
+        check=run([python,'-c',PREFLIGHT],cwd=REPO,env=env,preexec_fn=as_user,timeout=60)
+        if 'KADIMA_PREFLIGHT_OK' not in check.stdout:
+            raise RuntimeError('Broker preflight did not confirm flat state')
+    except Exception as exc:
+        print('Failed check:',failure_summary(exc,'broker_preflight_before_stop'))
+        raise SystemExit('Install stopped before service shutdown. No source files changed.')
     active=[u for u in UNITS if subprocess.run(['systemctl','is-active','--quiet',u]).returncode==0]
     backup=Path(tempfile.mkdtemp(prefix='kadima-executor-backup-',dir='/home/ubuntu'))
     os.chmod(backup,0o700)
@@ -230,10 +244,6 @@ def main():
     operation='stop_services'
     try:
         run(['systemctl','stop',*active],timeout=60)
-        def as_user():
-            os.initgroups(user.pw_name,user.pw_gid)
-            os.setgid(user.pw_gid)
-            os.setuid(user.pw_uid)
         operation='broker_preflight'
         check=run([python,'-c',PREFLIGHT],cwd=REPO,env=env,preexec_fn=as_user,timeout=60)
         if 'KADIMA_PREFLIGHT_OK' not in check.stdout:
@@ -286,4 +296,3 @@ def main():
 
 if __name__=='__main__':
     main()
-

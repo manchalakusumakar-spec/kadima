@@ -16,6 +16,46 @@ installer=importlib.util.module_from_spec(spec)
 spec.loader.exec_module(installer)
 
 class InstallerDiagnostics(unittest.TestCase):
+    def test_broker_block_leaves_services_and_source_untouched(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root=Path(tmp);repo=root/'repo';repo.mkdir()
+            package=root/'package';(package/'executor_fix').mkdir(parents=True)
+            (package/'executor_fix/manifest.json').write_text('{}')
+            sentinel=repo/'run.py';sentinel.write_text('# existing engine')
+            process=root/'proc'/'123';process.mkdir(parents=True)
+            (process/'cwd').symlink_to(repo,target_is_directory=True)
+            (process/'cmdline').write_bytes(b'/usr/bin/python3\0run.py\0')
+            (process/'environ').write_bytes(('KADIMA_DATA_DIR='+str(root)).encode())
+            with installer.sqlite3.connect(root/'kadima.db') as c:
+                c.execute('CREATE TABLE positions(status TEXT)')
+            def local_path(*args):
+                p=Path(*args)
+                return root/p.relative_to('/') if str(p).startswith('/proc') else p
+            for stage,reason in [('broker_positions','broker_positions_not_flat'),
+                                 ('broker_orders','broker_orders_pending_or_unknown')]:
+                with self.subTest(reason=reason),contextlib.ExitStack() as stack:
+                    diagnostic='KADIMA_DIAGNOSTIC '+json.dumps(dict(stage=stage,reason=reason,error='RuntimeError'))
+                    def call(args,**kwargs):
+                        if args[:2]==['systemctl','show']:return types.SimpleNamespace(stdout='123')
+                        raise subprocess.CalledProcessError(1,args,output=diagnostic)
+                    stack.enter_context(patch.object(installer,'REPO',repo))
+                    stack.enter_context(patch.object(installer,'PACKAGE',package))
+                    stack.enter_context(patch.object(installer,'Path',side_effect=local_path))
+                    stack.enter_context(patch.object(installer.os,'geteuid',return_value=0))
+                    stack.enter_context(patch.object(installer.pwd,'getpwnam',return_value=types.SimpleNamespace(
+                        pw_name='ubuntu',pw_uid=process.stat().st_uid,pw_gid=process.stat().st_gid)))
+                    clock=stack.enter_context(patch.object(installer,'datetime'))
+                    clock.now.return_value.hour=1
+                    run=stack.enter_context(patch.object(installer,'run',side_effect=call))
+                    direct=stack.enter_context(patch.object(installer.subprocess,'run'))
+                    backup=stack.enter_context(patch.object(installer.tempfile,'mkdtemp'))
+                    output=io.StringIO();stack.enter_context(contextlib.redirect_stdout(output))
+                    with self.assertRaisesRegex(SystemExit,'before service shutdown'):installer.main()
+                    self.assertIn(reason,output.getvalue())
+                    self.assertEqual(sentinel.read_text(),'# existing engine')
+                    self.assertEqual([c.args[0][0] for c in run.call_args_list],['systemctl','/usr/bin/python3'])
+                    direct.assert_not_called();backup.assert_not_called()
+
     def test_engine_checkout_and_entrypoint_must_match(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);repo=root/'repo';repo.mkdir();process=root/'proc';process.mkdir()

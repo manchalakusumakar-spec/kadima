@@ -180,6 +180,14 @@ rejecting authentication or incompatible API responses immediately.
 
 ### Source installation after inventory review
 
+An attempted EC2 installation stopped at `broker_positions_not_flat` before
+source replacement. The user subsequently confirmed all four original services
+active/running. The installer now checks local and broker exposure **before
+stopping any service**, and repeats that check after stopping to catch intervening
+changes. A broker failure at the first check leaves services and source alone.
+It does not infer zero exposure from an expired contract date or a screenshot.
+Broker checks authenticate and read position/order books; they send no orders.
+
 Run during **19:00–08:00 IST**, using the reviewed checkout above. The backend
 step checks local and broker exposure, backs up source, and restarts the three
 backend services. The next step updates the two dashboard files with its own
