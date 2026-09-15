@@ -57,12 +57,12 @@ def send_signal(signal_id: int, p: dict) -> None:
         f"Size per your own rules; the engine does not place orders.</i>\n"
         f"<code>signal #{signal_id}</code>"
     )
-    send(text, key=f"{p['index']}:{p['tier']}",
+    enqueue(text, key=f"{p['index']}:{p['tier']}",
          bypass=p["tier"] == "CONFIRMED")
 
 
 def send_invalidation(index: str, reason: str) -> None:
-    send(f"⚠️ <b>SHIELD INVALIDATED — {index}</b>\n{reason}",
+    enqueue(f"⚠️ <b>SHIELD INVALIDATED — {index}</b>\n{reason}",
          key=f"{index}:INVALID", bypass=True)
 
 
@@ -84,7 +84,7 @@ def send_prealert(name: str, tier: str, direction: str, score: float,
         f"<i>Early signal -- building toward a possible gamma blast. "
         f"Not a confirmed entry; watch for CONFIRMED tier.</i>"
     )
-    send(text, key=f"{name}:{tier}:prealert", bypass=False)
+    enqueue(text, key=f"{name}:{tier}:prealert", bypass=False)
 
 
 def send_prealert(name: str, tier: str, direction: str, score: float,
@@ -105,4 +105,38 @@ def send_prealert(name: str, tier: str, direction: str, score: float,
         f"PCR {round(pcr, 2) if pcr else '--'} \u00b7 Max pain {max_pain}\n\n"
         f"<i>Early warning -- ranked on liquidity/structure via strike_selector, "
         f"not a trade recommendation.</i>")
-    send(text, key=f"{name}:{tier}:prealert", bypass=(tier == "CONFIRMED"))
+    enqueue(text, key=f"{name}:{tier}:prealert", bypass=(tier == "CONFIRMED"))
+
+
+
+# Delivery happens off the trading thread. Queue acceptance is not delivery.
+import queue
+import threading
+_queue = queue.Queue(maxsize=128)
+_worker_lock = threading.Lock()
+_worker_started = False
+
+
+def _deliver():
+    while True:
+        text, key, bypass = _queue.get()
+        try:
+            send(text, key=key, bypass=bypass)
+        except Exception:
+            audit.log('alert_worker_error')
+        finally:
+            _queue.task_done()
+
+
+def enqueue(text, key=None, bypass=False):
+    global _worker_started
+    with _worker_lock:
+        if not _worker_started:
+            threading.Thread(target=_deliver, daemon=True, name='alert-delivery').start()
+            _worker_started = True
+    try:
+        _queue.put_nowait((text, key, bypass))
+        return True
+    except queue.Full:
+        audit.log('alert_queue_full', key=key)
+        return False

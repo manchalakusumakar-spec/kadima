@@ -1,43 +1,8 @@
+"""Realised-P&L helpers and legacy pure exit evaluator.
 
-"""
-KADIMA exit manager — trailing stop-loss + daily loss limit.
-
-Scope: this module ONLY decides when an already-open position should be
-closed. It does not open positions (that's auto_executor.py's entry
-logic) and it does not compute strikes (that's strike_selector.py).
-
-Spec locked with the trader on 2026-08-17, TRAIL METHOD UPDATED 2026-08-20:
-  - Initial hard SL:     INITIAL_SL_PCT of entry premium (until trail activates)
-  - Trail activation:    once profit reaches GAIN_ACTIVATION_PCT of entry
-                         premium (originally a fixed 20 points; changed to
-                         a percentage so it scales with the option's own
-                         price rather than being arbitrarily tight on a
-                         high-premium contract or arbitrarily loose on a
-                         cheap one — same floor as the entry criterion's
-                         own 10% minimum-projected-return bar, reused
-                         rather than inventing a second number)
-  - Trail method:        percentage-of-gained-profit giveback, not fixed
-                         points (originally fixed points; changed
-                         2026-08-20 on the trader's explicit instruction —
-                         this supersedes the 2026-08-17 lock, noted here
-                         so a future reader isn't confused by the
-                         contradiction between this file and its own
-                         history)
-  - Trail distance:      exits once GIVEBACK_PCT of the PEAK GAIN (not
-                         peak price) has been given back. Scale-invariant
-                         by construction: protects the same proportion of
-                         profit whether the move was small or large.
-  - Daily loss limit:    DAILY_LOSS_PCT of configured capital, hard stop
-                         for the whole engine, not just one position
-  - First live week:     MAX_LOTS_FIRST_WEEK cap, enforced by auto_executor.py
-                         reading FIRST_WEEK_MODE from here — this module
-                         does not place trades, only flags when to exit.
-
-Nothing here sends an order. It returns a decision; auto_executor.py
-(or you, manually, during dry-run) is the only thing that acts on it.
-This separation is deliberate: exit *logic* and exit *execution* should
-never be the same function, so a bug in one can't silently skip the
-other's safety check.
+The live executor uses trade_policy's structural stop and persisted ratchet.
+INITIAL_SL_PCT remains only for legacy positions/evaluator callers; new entries
+must supply confirmed structural protection. See docs/trade_policy.md.
 """
 
 from __future__ import annotations
@@ -47,6 +12,7 @@ from datetime import date, datetime
 from typing import Literal
 
 from kadima import storage, audit
+from .trade_policy import ACTIVATION, RETAIN_PROFIT
 from kadima.utils import now_ist
 
 
@@ -55,13 +21,9 @@ from kadima.utils import now_ist
 # not inline in the logic below, so the forecast-vs-actual tracker can
 # tell you if a number needs recalibrating.
 
-INITIAL_SL_PCT = 0.30          # hard SL = 30% of entry premium, until trail activates
-GAIN_ACTIVATION_PCT = 0.10     # trail starts once profit reaches 10% of entry premium
-                               # (same figure as the entry criterion's minimum
-                               # projected return — deliberately reused, not
-                               # a coincidence, so there's one "10%" to reason
-                               # about across entry and exit, not two)
-GIVEBACK_PCT = 0.50            # once active, exit if price gives back 50% of
+INITIAL_SL_PCT = 0.30          # legacy positions only
+GAIN_ACTIVATION_PCT = ACTIVATION
+GIVEBACK_PCT = 1 - RETAIN_PROFIT            # once active, exit if price gives back 50% of
                                # the PEAK GAIN reached (not 50% of peak price).
                                # Widened from 30% on 2026-08-24, trader's
                                # explicit choice, after discussing the real
@@ -195,11 +157,13 @@ def realized_pnl_today() -> float:
     lot's contract multiplier happens to be (65 for NIFTY, etc.) -- never
     caught until wiring this in for real and reading it against the
     actual schema."""
-    c = storage.conn()
+    from . import execution_ledger
+    c = execution_ledger.connection()
     today = now_ist().strftime("%Y-%m-%d")
     rows = c.execute(
         "SELECT entry_price, exit_price, lots, lot_size FROM positions "
-        "WHERE exit_ts LIKE ? AND status = 'closed'",
+        "WHERE exit_ts LIKE ? AND status = 'closed' AND NOT EXISTS "
+        "(SELECT 1 FROM execution_orders e WHERE e.signal_id=positions.signal_id)",
         (f"{today}%",),
     ).fetchall()
 
@@ -208,6 +172,8 @@ def realized_pnl_today() -> float:
         if r["entry_price"] is None or r["exit_price"] is None:
             continue
         total += (r["exit_price"] - r["entry_price"]) * r["lots"] * r["lot_size"]
+    total += c.execute("SELECT COALESCE(SUM(pnl),0) FROM execution_fills "
+                       "WHERE ts LIKE ? AND dry_run=0", (f"{today}%",)).fetchone()[0]
     return total
 
 
@@ -223,5 +189,6 @@ def max_lots_allowed(requested_lots: int) -> int:
             )
         return capped
     return requested_lots
+
 
 

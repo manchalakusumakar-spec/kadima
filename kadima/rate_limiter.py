@@ -1,26 +1,8 @@
+"""Local order/status limits and a shared conservative quote budget.
+
+Broker reference: https://smartapi.angelone.in/docs (Rate Limit).
+Quote calls also use the cross-process limiter attached to SESSION.api.
 """
-rate_limiter.py — enforces Angel One's actual published SmartAPI rate
-limits so auto_executor.py can never accidentally breach them.
-
-Limits below are Angel One's official published per-second ceilings
-(SmartAPI rate-limit table, cross-checked against the SEBI-mandated
-order-throttling circular effective Aug 2025, which caps order APIs at
-10/sec — tighter than SmartAPI's own older 20/sec table, so the lower
-number governs). VERIFY these periodically; broker limits do change.
-
-    Endpoint group                                  Per second
-    place/modify/cancel order                       10   (SEBI-capped)
-    getOrderBook / getPosition / getTradeBook        1    (each, separately)
-    getLtpData / quote                               10
-    login                                            1
-
-The getOrderBook/getPosition/getTradeBook ceiling of 1/sec is the tight
-one — it's why check_exits() in auto_executor.py reads live premium from
-the already-subscribed WebSocket feed (push-based, no REST call, no rate
-limit) rather than polling position status on every check. REST position
-polling is reserved for periodic reconciliation, not the hot loop.
-"""
-
 from __future__ import annotations
 
 import threading
@@ -68,8 +50,65 @@ class RateLimiter:
 # are per-endpoint, and grouping only same-limit endpoints together keeps
 # this simple without being wrong (no two endpoints sharing a limiter here
 # have different actual ceilings).
-ORDER_WRITE = RateLimiter(max_calls=10, period_sec=1.0)   # place/modify/cancel
+ORDER_WRITE = RateLimiter(max_calls=9, period_sec=1.0)   # place/modify/cancel
 ORDER_STATUS = RateLimiter(max_calls=1, period_sec=1.0)   # getOrderBook/getPosition/getTradeBook
 QUOTE = RateLimiter(max_calls=10, period_sec=1.0)         # getLtpData/quote
 LOGIN = RateLimiter(max_calls=1, period_sec=1.0)
 
+
+
+
+class SharedQuoteLimiter:
+    """Serialize quote requests across processes sharing KADIMA_DATA_DIR.
+
+    Conservative spacing is intentional: this deployment has recorded repeated
+    access-denied responses. This is a local budget, not a claim about the
+    broker's maximum allowance. Calls on other hosts remain outside this budget.
+    """
+    def __init__(self, path=None, interval=1.1):
+        self.path = path
+        self.interval = interval
+
+    def wait_and_allow(self, timeout_sec=3.0):
+        import os
+        import sqlite3
+        from .config import DATA_DIR
+        path = self.path or os.path.join(DATA_DIR, 'quote_budget.sqlite3')
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        deadline = time.monotonic() + timeout_sec
+        while time.monotonic() < deadline:
+            c = None
+            try:
+                c = sqlite3.connect(path, timeout=0.05)
+                c.execute('CREATE TABLE IF NOT EXISTS budget (id INTEGER PRIMARY KEY, next REAL)')
+                c.execute('BEGIN IMMEDIATE')
+                row = c.execute('SELECT next FROM budget WHERE id=1').fetchone()
+                now = time.time()
+                if row is None or now >= row[0]:
+                    c.execute('INSERT OR REPLACE INTO budget VALUES (1,?)', (now+self.interval,))
+                    c.commit()
+                    return True
+                c.rollback()
+            except sqlite3.OperationalError:
+                pass
+            finally:
+                if c is not None:
+                    c.close()
+            time.sleep(min(.05, max(0, deadline-time.monotonic())))
+        return False
+
+
+SHARED_QUOTE = SharedQuoteLimiter()
+
+
+def protect_quote_api(api):
+    """Apply once to each SDK instance; all SESSION quote callers share budget."""
+    method = api.getMarketData
+    if getattr(method, '_kadima_budgeted', False):
+        return
+    def quote(*args, **kwargs):
+        if not SHARED_QUOTE.wait_and_allow(timeout_sec=3.0):
+            raise TimeoutError('KADIMA shared quote budget unavailable')
+        return method(*args, **kwargs)
+    quote._kadima_budgeted = True
+    api.getMarketData = quote

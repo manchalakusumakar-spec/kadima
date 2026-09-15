@@ -1,49 +1,16 @@
-"""
-risk_budget.py — cap absolute rupee risk per trade by strike selection.
-
-THE IDEA:
-    Rather than widening/narrowing the stop %, constrain which strikes are
-    tradeable so that (premium x lot_size x stop%) stays under a fixed
-    rupee ceiling. This caps downside per trade in absolute terms, which
-    is what actually matters on a small account.
-
-THE TRAP THIS AVOIDS:
-    "Just buy the cheapest option" degenerates into buying far-OTM
-    lottery tickets. Cheap premium is cheap because:
-      - delta is low        -> needs a much larger underlying move to pay
-      - theta is savage     -> can lose 30-50% in a day with spot flat
-      - spreads are wide    -> a Rs 1 spread on a Rs 20 option is 5% each
-                               way, 10% round-trip, before you are right
-      - depth is thin       -> the stop may not fill near where you set it
-
-    Your spec already says this (Section 3: rank strikes by TRADEABILITY,
-    not theoretical profit; Section 23: execution quality has VETO
-    authority). This module implements that with a budget added, not a
-    budget instead.
-
-THE RULE:
-    Among strikes that pass ALL quality gates, pick the one with the
-    lowest rupee risk that still fits the budget. If none passes, return
-    None -> "NO A-GRADE SETUP - WAIT". Never relax a gate to find a fit.
-"""
-
+"""Quality-gated structural-stop sizing against allocated trading capital."""
 from __future__ import annotations
 
 from dataclasses import dataclass
 from typing import Optional, Sequence
 
-from . import audit
+from . import audit, trade_policy
 from .instrument_master import get_lot_size
 
 
-# ---------------------------------------------------------------- config
-# Move into config.py. Suggested: MAX_RISK_PER_TRADE_INR ~= 2-5% of capital.
-MAX_RISK_PER_TRADE_INR = 750.0     # absolute rupee risk ceiling per trade
-STOPLOSS_PCT = 30.0                # must match stops.STOPLOSS_PCT
-
 # Quality gates — a strike must pass ALL of these regardless of price.
 MIN_DELTA = 0.25                   # below this, needs an implausible move
-MAX_SPREAD_PCT = 3.0               # bid-ask as % of mid
+MAX_SPREAD_PCT = 1.5               # bid-ask as % of mid
 MIN_OPTION_VOLUME = 1000           # today's traded contracts
 MIN_OPEN_INTEREST = 5000
 MAX_DISTANCE_FROM_SPOT_PCT = 2.0   # how far OTM we will go, hard cap
@@ -61,6 +28,7 @@ class StrikeCandidate:
     delta: Optional[float]
     volume: Optional[int]
     open_interest: Optional[int]
+    stop_price: Optional[float] = None
 
 
 @dataclass
@@ -86,24 +54,24 @@ def _spread_pct(c: StrikeCandidate) -> Optional[float]:
 def _quality_fail_reason(c: StrikeCandidate, spot: float) -> Optional[str]:
     """Returns None if the strike passes all gates, else the failure reason.
     Missing data is a FAILURE, not a pass — we do not size on unknowns."""
-    if c.ltp is None or c.ltp <= 0:
+    if not trade_policy.positive(c.ltp, spot, c.strike):
         return "no_valid_ltp"
 
     sp = _spread_pct(c)
     if sp is None:
         return "spread_unavailable"
-    if sp > MAX_SPREAD_PCT:
+    if not 0 <= sp <= MAX_SPREAD_PCT:
         return f"spread_{sp:.1f}pct_over_{MAX_SPREAD_PCT}"
 
     if c.delta is None:
         return "delta_unavailable"
-    if abs(c.delta) < MIN_DELTA:
+    if not trade_policy.positive(abs(c.delta)) or abs(c.delta) < MIN_DELTA:
         return f"delta_{abs(c.delta):.2f}_under_{MIN_DELTA}"
 
-    if c.volume is None or c.volume < MIN_OPTION_VOLUME:
+    if not trade_policy.positive(c.volume) or c.volume < MIN_OPTION_VOLUME:
         return f"volume_{c.volume}_under_{MIN_OPTION_VOLUME}"
 
-    if c.open_interest is None or c.open_interest < MIN_OPEN_INTEREST:
+    if not trade_policy.positive(c.open_interest) or c.open_interest < MIN_OPEN_INTEREST:
         return f"oi_{c.open_interest}_under_{MIN_OPEN_INTEREST}"
 
     dist_pct = abs(c.strike - spot) / spot * 100.0
@@ -117,7 +85,7 @@ def _quality_fail_reason(c: StrikeCandidate, spot: float) -> Optional[str]:
 def select_within_budget(
     candidates: Sequence[StrikeCandidate],
     spot: float,
-    max_risk_inr: float = MAX_RISK_PER_TRADE_INR,
+    allocated_capital: float = 0.0,
     max_lots: int = 1,
 ) -> StrikeVerdict:
     """
@@ -130,6 +98,7 @@ def select_within_budget(
     """
     rejected = []
     viable = []
+    max_risk_inr = allocated_capital * trade_policy.RISK_FRACTION
 
     for c in candidates:
         fail = _quality_fail_reason(c, spot)
@@ -138,12 +107,18 @@ def select_within_budget(
             continue
 
         lot_size = get_lot_size(c.symbol, c.token)
-        if lot_size is None:
+        if not trade_policy.positive(lot_size):
             rejected.append((c.strike, c.option_type, "lot_size_unresolvable"))
             continue
 
-        cost_1lot = c.ltp * lot_size
-        risk_1lot = cost_1lot * (STOPLOSS_PCT / 100.0)
+        entry_limit = round(c.ltp * (1 + trade_policy.ENTRY_BUFFER), 1)
+        unit_risk = trade_policy.risk_per_unit(entry_limit, c.stop_price)
+        if unit_risk is None or trade_policy.lots_within_allocation(
+                allocated_capital, entry_limit, c.stop_price, lot_size, max_lots) < 1:
+            rejected.append((c.strike, c.option_type, 'structure_or_allocation_insufficient'))
+            continue
+        cost_1lot = entry_limit * (1 + trade_policy.COST_RESERVE) * lot_size
+        risk_1lot = unit_risk * lot_size
 
         if risk_1lot > max_risk_inr:
             rejected.append(
@@ -168,7 +143,7 @@ def select_within_budget(
     risk_1lot, cost_1lot, lot_size, chosen = viable[0]
 
     # How many lots fit the risk budget?
-    lots = min(max_lots, int(max_risk_inr // risk_1lot))
+    lots = min(max_lots, int(max_risk_inr // risk_1lot), int(allocated_capital // cost_1lot))
     if lots < 1:
         return StrikeVerdict(None, 0, 0.0, 0.0, "budget_below_one_lot", rejected)
 
@@ -194,3 +169,4 @@ def select_within_budget(
         rejected_count=len(rejected),
     )
     return verdict
+

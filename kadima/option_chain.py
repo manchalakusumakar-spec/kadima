@@ -147,13 +147,18 @@ class OptionChain:
         self.spot: float | None = None
         self.atm: float | None = None
         self._last_poll = 0.0
+        self._expiry = None
 
     # -------------------------------------------------------------- ladder
     def rebuild_ladder(self, spot: float) -> None:
         step = self.index.strike_step
         atm = round(spot / step) * step
-        if atm == self.atm:
+        expiry = self.scrips.nearest_expiry(self.index)
+        if atm == self.atm and expiry == self._expiry:
             return
+        self._expiry = expiry
+        self._last_poll = 0.0
+        self._forecast_sample = None
         self.atm = atm
         contracts = self.scrips.strikes_around(
             self.index, atm, STRIKES_EACH_SIDE)
@@ -168,15 +173,15 @@ class OptionChain:
         """One REST refresh. Returns False if the sample was lost."""
         if not self.quotes:
             return False
-        SESSION.ensure()
         tokens = list(self.quotes.keys())
         payload = {"mode": "FULL",
                    "exchangeTokens": {self.index.opt_exchange: tokens}}
         try:
-            resp = SESSION.api.getMarketData(**payload)
-        except TypeError:
-            resp = SESSION.api.getMarketData("FULL",
-                                             {self.index.opt_exchange: tokens})
+            SESSION.ensure()
+            try:
+                resp = SESSION.api.getMarketData(**payload)
+            except TypeError:
+                resp = SESSION.api.getMarketData("FULL", {self.index.opt_exchange: tokens})
         except Exception as exc:                        # noqa: BLE001
             audit.log("oi_poll_failed", index=self.index.name, error=str(exc))
             self.velocity.mark_degraded()
@@ -189,11 +194,18 @@ class OptionChain:
             return False
 
         fetched = resp.get("data", {}).get("fetched", [])
+        received = {str(row.get('symbolToken')) for row in fetched}
+        if not set(tokens).issubset(received):
+            self.velocity.mark_degraded()
+            audit.log('oi_poll_incomplete', index=self.index.name,
+                      expected=len(tokens), received=len(received))
+            return False
         for row in fetched:
             token = str(row.get("symbolToken"))
             q = self.quotes.get(token)
             if not q:
                 continue
+            q.iv = q.delta = q.gamma = q.theta = q.vega = None
             q.ltp = _f(row.get("ltp"))
             q.oi = _i(row.get("opnInterest"))
             q.oi_change = _i(row.get("netChangeOpnInterest"))
@@ -211,6 +223,13 @@ class OptionChain:
              "delta": q.delta, "gamma": q.gamma, "theta": q.theta,
              "vega": q.vega} for q in self.quotes.values()])
         self._last_poll = time.monotonic()
+        # Publish a completed immutable-by-convention sample for the observer.
+        # Never expose a half-refreshed ladder while poll mutates quote objects.
+        self._forecast_sample = dict(mono=self._last_poll, expiry=self._expiry,
+            quotes=[dict(token=q.token,symbol=q.symbol,strike=q.strike,opt_type=q.opt_type,
+                ltp=q.ltp,oi=q.oi,oi_change=q.oi_change,volume=q.volume,iv=q.iv,
+                delta=q.delta,gamma=q.gamma,theta=q.theta,vega=q.vega,bid=q.bid,ask=q.ask)
+                for q in self.quotes.values()])
         return True
 
     # ------------------------------------------------------------- analytics
@@ -256,5 +275,7 @@ def _i(v):
         return int(float(v))
     except (TypeError, ValueError):
         return None
+
+
 
 
