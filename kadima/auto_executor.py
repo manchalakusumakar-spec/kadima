@@ -147,13 +147,14 @@ def _poll_ltp(exchange: str, tokens: list[str]) -> dict[str, float]:
     reuse option_chain's polling."""
     if not tokens:
         return {}
-    payload = {"mode": "LTP", "exchangeTokens": {exchange: tokens}}
+    mode = 'FULL' if celestial.enabled() else 'LTP'
+    payload = {"mode": mode, "exchangeTokens": {exchange: tokens}}
     try:
         SESSION.ensure()
         try:
             resp = SESSION.api.getMarketData(**payload)
         except TypeError:
-            resp = SESSION.api.getMarketData("LTP", {exchange: tokens})
+            resp = SESSION.api.getMarketData(mode, {exchange: tokens})
     except Exception as exc:                        # noqa: BLE001
         audit.log("position_ltp_poll_failed", error=str(exc), tokens=tokens)
         return {}
@@ -162,12 +163,17 @@ def _poll_ltp(exchange: str, tokens: list[str]) -> dict[str, float]:
     out: dict[str, float] = {}
     for row in resp.get("data", {}).get("fetched", []):
         token = str(row.get("symbolToken"))
+        if token not in tokens or row.get('exchange', exchange) != exchange:
+            continue
         ltp = row.get("ltp")
         if ltp is not None:
             try:
                 price = float(ltp)
                 if math.isfinite(price) and price > 0:
                     out[token] = price
+                    if celestial.enabled():
+                        from .celestial_exit import publish_quote
+                        publish_quote(exchange, token, row)
             except (TypeError, ValueError):
                 pass
     return out
@@ -333,15 +339,22 @@ class AutoExecutor:
                 celestial.health('reconciliation',dict(ok=False,reason='contract_master_unavailable'))
                 return
             from . import celestial_adoption
+            from .external_reconciliation import reconcile as reconcile_external
+            unresolved_external = reconcile_external(self, broker_positions, book)
             live, expected, observations, proposals = celestial_adoption.inspect(
                 self,broker_positions,book,own_ids,own_tags,self.celestial_master)
             if any(r.get('reason')=='invalid_broker_position' for r in observations):
                 celestial.health('reconciliation',dict(ok=False,positions=observations))
                 return
             celestial_adoption.adopt(self,proposals)
+            # Capture the existing external book as the adoption baseline.
+            reconcile_external(self, broker_positions, book)
+            if unresolved_external:
+                observations.append(dict(source='BROKER_EXTERNAL', managed=False,
+                    reason='external_fill_history_unresolved', signal_ids=sorted(unresolved_external)))
             for p in self.state.positions.values():
                 key = p.exchange,p.token,'INTRADAY'
-                if p.remaining_qty>0 and live.get(key)==p.remaining_qty:
+                if p.remaining_qty>0 and live.get(key)==p.remaining_qty and str(p.signal_id) not in unresolved_external:
                     self._celestial_verified.add(str(p.signal_id))
             healthy = all(r.get('managed') is True for r in observations)
             if any(r.get('reason')=='external_pending_orders' for r in observations):
@@ -729,6 +742,10 @@ class AutoExecutor:
                               reason=decision.reason, stop=decision.stop,
                               should_exit=decision.should_exit)
                     reason = decision.reason if decision.should_exit else None
+
+            if not reason and celestial.enabled():
+                from .celestial_exit import evaluate
+                reason = evaluate(pos, ltp, now)
 
             if reason:
                 self._close_position(pos, ltp, reason)

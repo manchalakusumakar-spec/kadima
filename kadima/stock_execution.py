@@ -86,7 +86,10 @@ class StockExecutionWorker:
         index = config.Index(**data['index'])
         if index.name in config.GAMMA_INDICES:
             raise ValueError('Index is not a stock')
-        chain = OptionChain(index,self.scrips)
+        width = data.get('ladder_width')
+        if width is not None and (type(width) is not int or width != 1):
+            raise ValueError('Unsupported stock ladder width')
+        chain = OptionChain(index,self.scrips, strikes_each_side=width)
         chain.rebuild_ladder(data['spot'])
         expected = set(chain.quotes)
         quotes = [OptionQuote(**q) for q in data['quotes']]

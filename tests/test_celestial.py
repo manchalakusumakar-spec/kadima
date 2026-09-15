@@ -215,6 +215,53 @@ class Celestial(unittest.TestCase):
         self.assertFalse(self.ex._positions_verified);self.assertEqual(self.ex._celestial_verified,set())
         self.assertFalse(c.health('reconciliation')['ok'])
 
+    def external_fill(self, qty, side, price=110, oid='EXT1'):
+        return f.orders.OrderStatus(oid,'complete',qty,price,dict(exchange='NFO',symboltoken='X',
+            producttype='INTRADAY',transactiontype=side,tradingsymbol='TESTCE'))
+
+    def test_verified_manual_exit_is_accounted_once_without_reselling(self):
+        with self.setup_adoption():self.ex.reconcile_on_startup()
+        pos=next(iter(self.ex.state.positions.values()))
+        self.book.return_value=[self.external_fill(10,'SELL')]
+        with patch.object(f.executor,'fetch_broker_positions',return_value=[]):
+            self.ex.reconcile_on_startup();self.ex.reconcile_on_startup()
+        self.assertEqual(pos.remaining_qty,0)
+        self.assertEqual(pos.status,'closed')
+        module=importlib.import_module(f.PKG+'.external_reconciliation')
+        self.assertEqual(module.realized_today(),100)
+        self.assertFalse(self.ex._reconcile_blocked)
+        self.place.assert_not_called()
+
+    def test_verified_manual_scale_in_updates_basis_and_tightens_protection(self):
+        with self.setup_adoption():self.ex.reconcile_on_startup()
+        pos=next(iter(self.ex.state.positions.values()))
+        self.book.return_value=[self.external_fill(10,'BUY',120)]
+        row=self.broker();row.update(netqty='20',buyavgprice='110')
+        with patch.object(f.executor,'fetch_broker_positions',return_value=[row]):self.ex.reconcile_on_startup()
+        self.assertEqual((pos.remaining_qty,pos.entry_price),(20,110))
+        self.assertGreaterEqual(pos.effective_stop,104.5)
+        self.assertFalse(self.ex._reconcile_blocked)
+        self.place.assert_not_called()
+
+    def test_mixed_manual_fills_with_same_net_do_not_silently_reconcile(self):
+        with self.setup_adoption():self.ex.reconcile_on_startup()
+        self.book.return_value=[self.external_fill(10,'SELL'),self.external_fill(10,'BUY',120,'EXT2')]
+        with patch.object(f.executor,'fetch_broker_positions',return_value=[self.broker()]):self.ex.reconcile_on_startup()
+        self.assertTrue(self.ex._reconcile_blocked)
+        self.assertFalse(self.ex._positions_verified)
+        self.place.assert_not_called()
+
+    def test_revised_external_fill_book_is_not_applied_twice(self):
+        with self.setup_adoption():self.ex.reconcile_on_startup()
+        self.book.return_value=[self.external_fill(10,'BUY',120)]
+        row=self.broker();row.update(netqty='20',buyavgprice='110')
+        with patch.object(f.executor,'fetch_broker_positions',return_value=[row]):
+            self.ex.reconcile_on_startup()
+            self.book.return_value=[self.external_fill(10,'BUY',130)]
+            self.ex.reconcile_on_startup()
+        self.assertTrue(self.ex._reconcile_blocked)
+        self.assertEqual(next(iter(self.ex.state.positions.values())).entry_price,110)
+
     def test_external_pending_order_prevents_adoption(self):
         self.book.return_value=[f.orders.OrderStatus('external','open',0,None,{})]
         with self.setup_adoption():self.ex.reconcile_on_startup()

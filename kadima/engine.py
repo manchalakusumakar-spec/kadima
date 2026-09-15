@@ -262,7 +262,8 @@ class Engine:
                                 self._score_gamma(st)
                                 self.radar.publish_chain(st.chain,st.spot,
                                     st.last_updated.isoformat() if st.last_updated and st.is_live_tick else None,
-                                    st.gamma_result,shield_score=st.score,shield_direction=st.direction)
+                                    st.gamma_result,shield_score=st.score,shield_direction=st.direction,
+                                    vwap=st.snap.vwap)
                                 if celestial.enabled():
                                     auto_executor.EXECUTOR.prepare_celestial_context(
                                         st.name,st.chain,st.spot,st.snap,self._dte(st))
@@ -502,7 +503,6 @@ class Engine:
                 audit.log("market_close_shutdown")
                 self.stop()
                 return
-
 
 
 

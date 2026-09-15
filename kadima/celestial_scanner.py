@@ -50,12 +50,16 @@ class Radar:
     def __init__(self):
         self.windows = {}
 
-    def publish_chain(self, chain, spot, spot_at, result, *, shield_score=None, shield_direction=None):
+    def publish_chain(self, chain, spot, spot_at, result, *, shield_score=None, shield_direction=None, vwap=None):
         now = now_ist()
         producer = chain.index.opt_exchange + ':' + chain.index.name
         if not 0 <= time.monotonic()-getattr(chain,'_last_poll',0) <= 30:
             celestial.publish(producer,[])
             return []
+        if celestial.enabled():
+            from .celestial_exit import publish_structure
+            publish_structure(chain, spot, spot_at, result, vwap=vwap,
+                              shield_score=shield_score, shield_direction=shield_direction)
         expiry_string = chain.scrips.nearest_expiry(chain.index)
         expiry = datetime.strptime(expiry_string,'%d%b%Y').date()
         # Confirm current master membership; tokens/symbols are never manufactured.

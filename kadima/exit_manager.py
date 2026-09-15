@@ -163,7 +163,8 @@ def realized_pnl_today() -> float:
     rows = c.execute(
         "SELECT entry_price, exit_price, lots, lot_size FROM positions "
         "WHERE exit_ts LIKE ? AND status = 'closed' AND NOT EXISTS "
-        "(SELECT 1 FROM execution_orders e WHERE e.signal_id=positions.signal_id)",
+        "(SELECT 1 FROM execution_orders e WHERE e.signal_id=positions.signal_id) "
+        "AND COALESCE(exit_reason,'') != 'external_fill_reconciled'",
         (f"{today}%",),
     ).fetchall()
 
@@ -174,6 +175,8 @@ def realized_pnl_today() -> float:
         total += (r["exit_price"] - r["entry_price"]) * r["lots"] * r["lot_size"]
     total += c.execute("SELECT COALESCE(SUM(pnl),0) FROM execution_fills "
                        "WHERE ts LIKE ? AND dry_run=0", (f"{today}%",)).fetchone()[0]
+    from .external_reconciliation import realized_today
+    total += realized_today()
     return total
 
 

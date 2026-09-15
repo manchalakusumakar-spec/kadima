@@ -5,8 +5,11 @@
 This branch adds the [Celestial control plane and Top 20 dashboard](docs/celestial_release.md)
 on top of PR #1. The rollout flag defaults off; legacy execution remains unchanged
 until deliberately switched. Celestial auto-entry defaults paused. A verified
-per-symbol news collector, coverage validation, server preflight and browser QA
-remain release requirements. Do not interpret offline tests as live readiness.
+per-symbol news source, coverage validation, server preflight and browser QA
+remain release requirements. The follow-up adds all-root nearest-expiry stock
+ladders, an NSE RSS collector, more exit checks, verified manual fill deltas,
+and deployment inventory/upgrade tools. See the exact remaining boundaries in
+the linked release notes. Do not interpret offline tests as live readiness.
 
 Tick-by-tick collection across NIFTY, BANKNIFTY, SENSEX and MIDCPNIFTY, feeding
 a Bull Shield v2.1 scoring layer, four-index confirmation, strike ranking and

@@ -413,7 +413,12 @@ class UniverseScanner:
 
 def main() -> int:
     audit.log("universe_scanner_starting")
-    scanner = UniverseScanner()
+    from . import celestial
+    if celestial.enabled():
+        from .full_universe_scanner import FullUniverseScanner
+        scanner = FullUniverseScanner()
+    else:
+        scanner = UniverseScanner()
     try:
         scanner.run_forever()
     except KeyboardInterrupt:
@@ -424,5 +429,4 @@ def main() -> int:
 if __name__ == "__main__":
     import sys
     sys.exit(main())
-
 

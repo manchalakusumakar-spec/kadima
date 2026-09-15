@@ -44,7 +44,7 @@ class Integrations(unittest.TestCase):
     def test_fresh_quote_invalidates_cached_greeks(self):
         obj=self.chain()
         with patch.object(session.SESSION.api,'getMarketData',return_value={
-            'status':True,'data':{'fetched':[{'symbolToken':t,'ltp':110} for t in ['T','U']]}}), \
+            'status':True,'data':{'fetched':[{'symbolToken':t,'ltp':110,'opnInterest':1000,'tradeVolume':2000} for t in ['T','U']]}}), \
              patch.object(storage,'insert_oi_snapshot'):
             self.assertTrue(obj.poll())
         self.assertIsNone(obj.quotes['T'].delta)

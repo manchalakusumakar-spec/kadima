@@ -21,35 +21,78 @@ credential changes or live-configuration changes were performed.
 | Dashboard | Top 20, open/adopted trades, status, threshold and controls at the existing `/dashboard.html` source path. No unfiltered universe/headline feed. Session-cookie authentication and same-origin allowlisted gateway; broker bearer token remains server-side. |
 | Audit/postmortem | Existing signals, execution intents/fills, persisted positions and rejection logs retained. Candidate source, selected strike and score snapshot are stored with the durable signal. |
 
+## Follow-up implementation
+
+- `full_universe_scanner.py` replaces the rotating 20-stock shortlist **when
+  Celestial is selected**. It discovers all active OPTSTK roots with a unique
+  NSE cash token, retains every resolvable root (up to a refusal ceiling of
+  512), and batches spot plus nearest-expiry ATM/adjacent CE/PE quotes. Seven
+  stocks fit in one 49-token request. It shares the existing cross-process
+  SmartAPI request budget. Actual cadence, missing mappings and successful
+  90-second coverage appear in status. Candidate eligibility still expires
+  after 30 seconds. It does not subscribe to every strike or every expiry.
+- Contract lookups now use an in-memory index and retain fractional strike
+  steps such as 2.5. A complete option sample is validated before any quote
+  changes; partial/malformed responses cannot refresh the ladder timestamp.
+- `news_collector.py` automatically starts with the new stock scanner. It
+  fetches NSE announcements, board meetings, corporate actions and financial
+  results RSS, mapping legal company names through NSE's equity list. All
+  required sources and mappings must pass before coverage becomes healthy.
+  Results filing alone is neutral; only explicit, unambiguous text rules
+  produce directional adjustments. Existing source-attributed ingestion is
+  retained for a more complete licensed news source.
+- `celestial_exit.py` adds persisted completed-one-minute EMA9 monitoring,
+  fresh opposite VWAP/Shield/Gamma/OI-direction evidence, spread above 3%,
+  and active news BLOCK exits. Missing evidence is unknown, not an invented
+  opposite signal. Stops/trails continue while indicators warm after gaps.
+- `external_reconciliation.py` reconciles subsequent one-sided manual
+  scale-ins, reductions and full exits of a verified long intraday option
+  when terminal order-book deltas exactly explain the broker net quantity.
+  Quantity, weighted basis, tightened protection and incremental realized P&L
+  are committed together. Revised or mixed-side histories remain unresolved.
+- `tools/deployment_report.py` provides a sanitized, read-only EC2 inventory;
+  `dashboard_live/upgrade.py` checks known hashes, backs up and atomically
+  replaces the existing gateway and HTML, preserving credentials and trading
+  configuration. Only the gateway is restarted. Default is check-only.
+- A GitHub workflow runs Python regressions and the fully intercepted
+  desktop/mobile Playwright fixture. Workflow creation is not a passing run.
+
 ## Important unfinished work — NO-GO for unattended live deployment
 
-- **Full option-universe coverage is NOT implemented.** Existing stage 1 screens
-  all known F&O underlyings; stage 2 still tracks a bounded rotating shortlist of
-  20 stock option chains. New radar consumes those real polls. Broad continuous
-  option-premium coverage needs a separately validated rate/memory/feed design.
-  Underlying coverage must not be advertised as complete option coverage.
-- **No live NSE/company-news collector was configured or validated.** This draft
-  supplies a strict ingestion/scoring boundary, not a fabricated news feed.
-  Until a collector checks the required symbols successfully, auto-entry is
-  blocked. The existing generic Marketaux headlines are not silently treated
-  as full, symbol-level corporate-announcement coverage.
+- All-root nearest-expiry entry-ladder scanning is implemented, but **actual
+  broker throughput, memory headroom and complete market-session coverage are
+  not validated on AWS**. Existing notes record an OOM event on the host.
+  Missing mappings, incomplete ladders and slow cycles can leave gaps. Every
+  listed option strike/expiry is outside this REST scanning scope.
+- **Public RSS freshness/coverage remains a release blocker.** Read-only
+  source probes on 16 September 2026 IST retrieved the four NSE feeds, but the
+  financial-results feed lacked a build timestamp and contained 24 August
+  publications. That does not establish current publication coverage. The
+  collector must report this as unavailable. RSS snapshots can roll at
+  midnight and omit prior-day filings on first startup. BSE announcements,
+  exchange broadcast messages, general business/sector/macro news and full
+  historical bootstrap are not supplied by the NSE stock RSS adapter.
+  Index news coverage therefore still requires a verified source. Generic
+  Marketaux top-ten headlines are not treated as full corporate coverage.
 - Sector impact and event-risk numeric models are not supplied; there is no
   fabricated bonus or penalty. A verified catalyst BLOCK still vetoes entry.
 - Shorts, futures, carry/delivery products, malformed broker responses,
-  external pending orders, and manual size changes to an already managed
-  contract remain visible but **unmanaged/unresolved**. New entries are blocked.
+  external pending orders, mixed-side manual episodes, and unexplained manual
+  size changes remain visible but **unmanaged/unresolved**. New entries are blocked.
   Confirmed unaffected quantities can still be protected; a malformed book or
   external pending order disables quantity-dependent exits until reconciled.
   Extending adoption to arbitrary instruments needs a separate risk/ledger design.
 - Stops are **engine-managed, not broker-hosted protective orders**. Feed/API
   failure, process failure, broker rejections and unfilled LIMIT orders can
   delay or prevent exits. A kill request does not prove an account is flat.
-  No fill chasing was added. Premium-EMA exits and a complete fresh-news /
-  spread / OI-loss exit matrix are not implemented in this draft; existing
-  structural, trailing, daily-loss and end-of-session exits remain.
+  No fill chasing or broker-hosted protection was added. The new EMA/spread/
+  reversal/BLOCK checks supplement structural, trailing, daily-loss and
+  end-of-session exits. Loss of an OI observation is not proof of reversal;
+  missing feed/API data can still prevent evaluation and fills.
 - Initial adoption basis is the broker's reported buy average; prior manual
-  realized P&L is not reconstructed in the local fill ledger. Account-wide
-  realized/unrealized loss reconciliation still requires live validation.
+  realized P&L before initial adoption is not reconstructed. Later verified
+  external fill deltas are accounted for. Account-wide realized/unrealized
+  loss reconciliation still requires live validation.
 - Exact exchange/broker session, expiry cutoffs, static-IP registration,
   deployed process manager, source hashes and resource headroom are unverified.
   Existing session/cutoff values were not asserted correct or changed.
@@ -85,9 +128,27 @@ incremental installers.
 
 For a previously installed dashboard gateway, review/install the new gateway
 and HTML together while preserving its private configuration and password.
-The historical `dashboard_live/install.py` is a fresh-install path, not an
-in-place updater. This draft does not supply a verified AWS dashboard-upgrade
-script; actual deployed file hashes and process ownership must be checked first.
+The historical `dashboard_live/install.py` is a fresh-install path. The new
+`dashboard_live/upgrade.py` is the conservative in-place path; it has not run
+on AWS. Actual deployed hashes and process ownership must be checked first.
+
+### First EC2 action: read-only report
+
+Run these commands in the existing EC2 terminal. They fetch the review branch
+into a separate temporary checkout and print an inventory. They do not change
+the running checkout or restart services. Do not paste credentials.
+
+```bash
+git -C /home/ubuntu/kadima-py fetch origin codex/celestial-autonomous-gamma
+kadima_review_dir=$(mktemp -d /tmp/kadima-review-XXXXXX)
+git -C /home/ubuntu/kadima-py archive FETCH_HEAD | tar -x -C "$kadima_review_dir"
+sudo -n python3 "$kadima_review_dir/tools/deployment_report.py"
+```
+
+Review the report before using the backend maintenance installer. It must
+identify the real engine owner; the historical PM2 dashboard installation
+and systemd engine installer must not be assumed to refer to the same live
+process. Unattended activation remains NO-GO while blockers remain.
 
 ## APIs (authenticated control service, port 8081)
 
@@ -126,12 +187,13 @@ the API cannot prove an external collector actually checked a source.
 
 ## Offline verification
 
-Validation performed for this draft: 133 Python tests passed (84 baseline plus
-49 added), including real authenticated FastAPI/control-gateway requests with
+Validation performed locally for the follow-up: 157 Python tests passed,
+including real authenticated FastAPI/control-gateway requests with
 broker boundaries mocked or login forbidden. All Python source compiled; actual
 engine/control/scanner imports passed with socket connections forbidden, and
-dashboard JavaScript syntax passed. Browser rendering was blocked as noted
-above. No GitHub workflow or AWS/broker live test is claimed.
+dashboard JavaScript syntax is checked separately. Browser rendering was
+blocked as noted above. GitHub workflow status must be inspected at the actual
+release commit. No AWS/broker live test is claimed.
 
 ```bash
 python3 -m pip install -r requirements.txt httpx

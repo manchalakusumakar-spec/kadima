@@ -1,0 +1,42 @@
+name: Celestial offline verification
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+permissions:
+  contents: read
+jobs:
+  regression:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      ORDER_PLACEMENT_ENABLED: '0'
+      KADIMA_CELESTIAL_ENABLED: '0'
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - name: Install test dependencies
+        run: |
+          python -m pip install -r requirements.txt httpx==0.28.1
+          npm install --no-save --package-lock=false playwright@1.62.1
+          npx playwright install --with-deps chromium
+      - name: Python regressions and compilation
+        run: |
+          python -m unittest discover -s tests -v
+          python -m compileall -q kadima dashboard_live tools
+      - name: Intercepted desktop and mobile dashboard
+        run: node tests/test_celestial_dashboard.cjs
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: celestial-fixture-screenshots
+          path: /tmp/kadima-celestial-*.png
+          if-no-files-found: ignore
+          retention-days: 7

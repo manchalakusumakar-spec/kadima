@@ -11,7 +11,7 @@ const assert=require('assert');
   const fixture={ts:now,config:{rollout_enabled:true,auto_trade_enabled:false,kill_latched:false,
     broker_orders_enabled:false,score_threshold:65,revision:0},
     system:{news:{ok:true,ts:now},reconciliation:{ok:true,positions:[]},
-      stock_universe:{priced:207,expected:208,option_chains_tracked:20,option_chain_limit:20}},
+      stock_universe:{priced:207,expected:208,option_chains_tracked:208,option_chain_limit:null,option_chains_fresh:207,missing:[]}},
     candidates:[{id:'NFO:1',rank:1,symbol:'TEST26SEP25000CE',underlying:'NIFTY',direction:'CE',
       best_strike:25000,option_ltp:125,premium_move_pct:12.5,gamma_score:80,bull_shield_score:75,
       bear_shield_score:null,news_available:true,news_score:10,final_score:90,tier:'BLAST',volume_ratio:2.4,
@@ -36,6 +36,8 @@ const assert=require('assert');
   await page.waitForSelector('#desk:not([hidden])');
   await page.waitForSelector('[data-buy]');
   assert.strictEqual(await page.locator('#candidates tbody tr').count(),1);
+  assert.ok((await page.locator('#coverage').innerText()).includes('207/208'));
+  assert.ok((await page.locator('#coverage').innerText()).includes('Nearest expiry'));
   await page.selectOption('#threshold','75');await page.click('#saveThreshold');
   await page.waitForFunction(()=>!document.getElementById('saveThreshold').disabled);
   assert.strictEqual(writes[0].body.score_threshold,75);

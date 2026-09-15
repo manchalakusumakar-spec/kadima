@@ -159,6 +159,7 @@ class ReleaseInstaller(unittest.TestCase):
         manifest=json.loads((f.ROOT/'executor_fix/manifest.json').read_text())
         self.assertNotIn(installer.blob(b'local unreviewed edits'),manifest['kadima/engine.py'])
         required={'kadima/'+name+'.py' for name in ('celestial','celestial_scanner','celestial_adoption',
-                  'celestial_universe','news_catalysts','scrip_master')}
+                  'celestial_universe','news_catalysts','scrip_master','full_universe_scanner',
+                  'news_collector','celestial_exit','external_reconciliation')}
         self.assertTrue(required.issubset(manifest))
-        self.assertEqual(len(manifest),29)
+        self.assertEqual(len(manifest),33)
