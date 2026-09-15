@@ -19,6 +19,9 @@ from datetime import datetime
 
 from . import alerts, audit, indicators, killswitch, last_known, storage, strike_selector
 from . import auto_executor
+from .trade_policy import SHIELD_MIN_SCORE
+from .stock_execution import StockExecutionWorker
+from .forecast_observer import ForecastObserver
 from . import gamma_blast_scanner as gamma
 from .candles import Candle, CandleBuilder
 from .config import (EMA_FAST, EMA_SLOW, GAMMA_EXPIRY_ONLY, GAMMA_INDICES,
@@ -42,12 +45,7 @@ WEIGHTS = {
 }
 TIER_WATCH = 30.0
 TIER_ACTIVE = 50.0
-TIER_CONFIRMED = 80.0    # raised from 65.0 on 2026-09-06 per trader instruction: require higher-conviction signals before auto-execution (was lowered from 90.0 on 2026-08-21)
-                         # instruction. WATCH/ACTIVE scaled down proportionally
-                         # (same ratio as the original 40/70/90 spacing) rather
-                         # than left at their old absolute values, which would
-                         # have put ACTIVE (70) ABOVE the new CONFIRMED (65) —
-                         # a broken, unreachable-in-order tier hierarchy.
+TIER_CONFIRMED = SHIELD_MIN_SCORE  # Both CE and PE; other entry gates still apply.
 
 EXCHANGE_TYPE = {"NSE": 1, "NFO": 2, "BSE": 3, "BFO": 4}
 
@@ -104,7 +102,9 @@ class Engine:
             self.states[name] = st
             self.token_to_index[idx.token] = name
 
+        self.stock_worker = StockExecutionWorker(auto_executor.EXECUTOR, self.scrips)
         self._seed_last_known()
+        self.forecaster = ForecastObserver(self, auto_executor.EXECUTOR)
 
     def _seed_last_known(self) -> None:
         """Pre-populate spot/score/tier/direction from the last
@@ -153,6 +153,8 @@ class Engine:
         # try to open a second position on top of one we can't yet see.
         auto_executor.EXECUTOR.reconcile_on_startup()
         auto_executor.EXECUTOR.start_monitor_thread()
+        self.stock_worker.start()
+        self.forecaster.start()
         for name, idx in GAMMA_INDICES.items():
             self.feed.subscribe(EXCHANGE_TYPE[idx.exchange], [idx.token])
         self.feed.start()
@@ -162,10 +164,12 @@ class Engine:
         threading.Thread(target=self._persist_last_known_loop, daemon=True,
                          name="last-known-persist").start()
         mode = "LIVE ORDERS ENABLED" if ORDER_PLACEMENT_ENABLED else "advisory mode — no orders"
-        alerts.send(f"🟢 KADIMA engine started ({mode}).")
+        alerts.enqueue(f"🟢 KADIMA engine started ({mode}).")
 
     def stop(self) -> None:
         self._stop.set()
+        self.forecaster.stop()
+        self.stock_worker.stop()
         self.feed.stop()
         auto_executor.EXECUTOR.stop()
         # Explicit daily logout, not just an abandoned session. The feed
@@ -187,7 +191,7 @@ class Engine:
         except Exception as exc:                        # noqa: BLE001
             audit.log("last_known_persist_on_stop_failed", error=str(exc))
         audit.log("engine_stopped")
-        alerts.send("🔴 KADIMA engine stopped.")
+        alerts.enqueue("🔴 KADIMA engine stopped.")
 
     # ------------------------------------------------------------------ ticks
     def _on_tick(self, tick: dict) -> None:
@@ -196,6 +200,7 @@ class Engine:
             return
         st = self.states[name]
         st.spot = tick["ltp"]
+        st.chain._spot_received_at = time.monotonic()
         st.last_updated = now_ist()
         st.is_live_tick = True
         st.builder.add_tick(tick["ts"], tick["ltp"], tick["volume"])
@@ -225,6 +230,7 @@ class Engine:
             rows, session_vwap=st.builder.session_vwap(),
             ema_fast_p=EMA_FAST, ema_slow_p=EMA_SLOW,
             ma_long_p=MA_LONG, rsi_p=RSI_PERIOD)
+        st.chain._alignment_at = time.monotonic()
         self._score(st)
         self._evaluate()
 
@@ -240,6 +246,9 @@ class Engine:
                             st.chain.rebuild_ladder(st.spot)
                             polled = st.chain.poll()
                             if polled:
+                                auto_executor.EXECUTOR.state.premium_tracker.record_chain(st.chain)
+                            if polled:
+                                auto_executor.EXECUTOR.update_structure(st.name, st.chain, st.spot)
                                 self._score_gamma(st)
                         except Exception as exc:        # noqa: BLE001
                             audit.log("oi_loop_error", index=st.name,
@@ -252,18 +261,18 @@ class Engine:
         """Separate signal stream from Bull Shield's _score() above — same
         tier convention, different factors. Costs zero extra network calls:
         st.chain has already been polled this cycle by the caller."""
-        prev_tier = st.gamma_result.tier if st.gamma_result else "NONE"
+        previous = (st.gamma_result.tier, st.gamma_result.direction) if st.gamma_result else None
         result = gamma.score(st.name, st.chain, st.gamma_history, st.spot,
                              days_to_expiry=self._dte(st), snap=gamma.GammaSnapshot(
                                  above_vwap=st.snap.above_vwap, ema_bull=st.snap.ema_bull))
         st.gamma_result = result
 
-        if result.tier == prev_tier:
-            return  # only alert on a tier transition, same discipline as Bull Shield
-
-        audit.log("gamma_tier_change", index=st.name, tier=result.tier,
-                  score=result.score, direction=result.direction,
-                  components=result.components.as_dict())
+        episode_changed = previous != (result.tier, result.direction)
+        if episode_changed:
+            st._gamma_entry_signal = None
+            audit.log("gamma_tier_change", index=st.name, tier=result.tier,
+                      score=result.score, direction=result.direction,
+                      components=result.components.as_dict())
 
         if result.tier != "CONFIRMED":
             return  # WATCH/ACTIVE are visible via /state; only CONFIRMED alerts,
@@ -287,15 +296,19 @@ class Engine:
         payload = {"index": st.name, "tier": result.tier, "score": result.score,
                    "direction": result.direction, "spot": st.spot,
                    "components": result.components.as_dict()}
-        sid = storage.insert_signal(st.name, result.tier, result.score,
-                                    result.direction, json.dumps(payload, default=str),
-                                    kind="gamma_blast")
-        audit.log("gamma_signal_emitted", signal_id=sid, **payload)
-        alerts.send(
-            f"🌊 <b>GAMMA {result.tier}</b> — {st.name} {result.direction}\n"
-            f"Score {result.score}% · Spot {st.spot}\n"
-            f"<code>signal #{sid}</code>",
-            key=f"{st.name}:gamma:{result.tier}")
+        sid = getattr(st, "_gamma_entry_signal", None)
+        if sid is None:
+            sid = storage.insert_signal(st.name, result.tier, result.score,
+                                        result.direction, json.dumps(payload, default=str),
+                                        kind="gamma_blast")
+            audit.log("gamma_signal_emitted", signal_id=sid, **payload)
+            alerts.enqueue(
+                f"🌊 <b>GAMMA {result.tier}</b> — {st.name} {result.direction}\n"
+                f"Score {result.score}% · Spot {st.spot}\n"
+                f"<code>signal #{sid}</code>",
+                key=f"{st.name}:gamma:{result.tier}")
+    
+            st._gamma_entry_signal = sid
 
         auto_executor.EXECUTOR.evaluate_and_enter(
             index_name=st.name, direction=result.direction, chain=st.chain,
@@ -473,5 +486,7 @@ class Engine:
                 audit.log("market_close_shutdown")
                 self.stop()
                 return
+
+
 
 

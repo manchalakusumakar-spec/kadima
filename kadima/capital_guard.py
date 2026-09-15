@@ -59,6 +59,7 @@ DESIGN NOTES — read before deploying (ORIGINAL, still true):
 from __future__ import annotations
 
 import json
+import math
 import os
 import threading
 
@@ -202,7 +203,7 @@ def deployed_capital(positions: dict) -> float:
                 note="lot size unavailable; blocking new entries until resolved",
             )
             return float("inf")
-        total += pos.entry_price * lot_size * pos.remaining_qty
+        total += pos.entry_price * pos.remaining_qty
     return total
 
 
@@ -218,11 +219,14 @@ def broker_available_funds() -> float | None:
     try:
         SESSION.ensure()
         resp = SESSION.api.rmsLimit()
-        data = (resp or {}).get("data") or {}
+        if not isinstance(resp, dict) or resp.get("status") is not True:
+            return None
+        data = resp.get("data") or {}
         for key in ("availablecash", "availableCash", "net", "availablemargin"):
             if key in data:
                 try:
-                    return float(data[key])
+                    funds = float(data[key])
+                    return funds if math.isfinite(funds) and funds >= 0 else None
                 except (TypeError, ValueError):
                     continue
         audit.log("capital_guard_rms_unparsed", response_keys=list(data.keys()))
@@ -303,9 +307,6 @@ def enforce(executor, ranked, direction: str, requested_lots: int):
 
     Returns (allowed_lots, reason).
     """
-    if config.in_no_auto_exit_window():
-        audit.log("capital_guard_bypassed_no_auto_exit_window", symbol=ranked.quote.symbol, requested_lots=requested_lots)
-        return requested_lots, "no_auto_exit_window_capital_cap_bypassed"
 
     q = ranked.quote
     allowed, why = max_affordable_lots(
@@ -322,14 +323,12 @@ def enforce(executor, ranked, direction: str, requested_lots: int):
         requested_lots=requested_lots,
         allowed_lots=allowed,
         reason=why,
-        equity=round(available_equity(), 2),
-        buffered_ceiling=round(_buffered_ceiling(), 2),
         already_deployed=deployed_capital(executor.state.positions),
     )
     return allowed, why
 def get_capital_for_signal(kind: str, tier: str) -> float:
-    """Fixed rupee capital band per signal source, used directly as
-    max_risk_inr (not a base to apply a percentage to).
+    """Allocated trading capital, capped by available funds and the source band.
+    The executor applies the 15% risk fraction separately.
     bull_shield: 25,000-30,000. gamma_blast: 50,000-62,000.
     WATCH/unknown tier or unknown kind returns 0.0."""
     BANDS = {
@@ -339,15 +338,8 @@ def get_capital_for_signal(kind: str, tier: str) -> float:
     band = BANDS.get(kind)
     if band is None or tier not in ("CONFIRMED", "ACTIVE"):
         return 0.0
-    lo, hi = band
-    try:
-        SESSION.ensure()
-        resp = SESSION.api.rmsLimit()
-        data = (resp or {}).get("data") or {}
-        net = float(data.get("net", 0.0))
-    except Exception as exc:
-        audit.log("capital_guard_signal_rms_exception", kind=kind, tier=tier, error=str(exc))
+    _, hi = band
+    funds = broker_available_funds()
+    if funds is None:
         return 0.0
-    if net <= 0.0:
-        return 0.0
-    return min(max(net, lo), hi)
+    return min(funds, hi)

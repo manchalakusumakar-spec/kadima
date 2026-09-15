@@ -86,7 +86,7 @@ from .option_chain import OptionChain, OptionQuote
 
 TIER_WATCH = 30.0
 TIER_ACTIVE = 50.0
-TIER_CONFIRMED = 80.0    # raised from 65.0 on 2026-09-06 per trader instruction: require higher-conviction signals before auto-execution (was lowered from 90.0 on 2026-08-21)
+TIER_CONFIRMED = 70.0    # eligibility score, not a win probability
                          # instruction, same proportional scaling as engine.py's
                          # Bull Shield thresholds — kept consistent deliberately,
                          # so "CONFIRMED" means the same confidence level whether
@@ -378,4 +378,5 @@ def score(name: str, chain: OptionChain, history: GammaHistory,
     audit.log("gamma_score", name=name, score=result.score, tier=tier,
               direction=direction, components=comp.as_dict())
     return result
+
 

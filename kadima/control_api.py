@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import os
 from typing import Optional
+from .forecast_observer import read_report as read_forecast_report
 
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
@@ -139,6 +140,10 @@ def modify_order(order_id: str, body: ModifyOrderBody, authorization: Optional[s
     )
     # modifyOrder() is confirmed live in angel_orders.py from the
     # deployed screenshots.
+    from . import execution_ledger
+    tracked = [r for r in execution_ledger.pending() if r['order_id'] == order_id]
+    if tracked and body.quantity is not None and body.quantity != tracked[0]['quantity']:
+        raise HTTPException(status_code=409, detail='tracked_order_quantity_change_not_supported')
     result = ANGEL_ORDERS.modify_order(order_id, price=body.price, quantity=body.quantity)
     if not getattr(result, "ok", False):
         raise HTTPException(status_code=409, detail=str(result))
@@ -228,7 +233,7 @@ def _position_view(pos) -> dict:
     ltp_map = _poll_ltp(pos.exchange, [pos.token])
     ltp = ltp_map.get(pos.token, pos.peak_price or pos.entry_price)
 
-    fixed_stop = pos.entry_price * (1 - FIXED_STOPLOSS_PCT / 100.0)
+    fixed_stop = getattr(pos, 'structural_stop', None) or pos.entry_price * (1 - FIXED_STOPLOSS_PCT / 100.0)
     peak = pos.peak_price or pos.entry_price
     if pos.trail_active:
         trail_stop = peak - (GIVEBACK_TRAIL_PCT / 100.0) * (peak - pos.entry_price)
@@ -236,7 +241,8 @@ def _position_view(pos) -> dict:
     else:
         effective_stop = fixed_stop
 
-    risk = pos.entry_price - fixed_stop
+    effective_stop = max(effective_stop, getattr(pos, 'effective_stop', None) or 0)
+    risk = max(0, pos.entry_price - fixed_stop)
     targets = {
         "T1": pos.entry_price + risk * 1,
         "T2": pos.entry_price + risk * 2,
@@ -267,6 +273,9 @@ def _position_view(pos) -> dict:
 
     return {
         "signal_id": pos.signal_id,
+        "status": pos.status,
+        "entry_order_id": pos.order_id,
+        "exit_order_id": pos.exit_order_id,
         "index": pos.index,
         "direction": pos.direction,
         "symbol": pos.symbol,
@@ -293,7 +302,7 @@ def dashboard_data(authorization: Optional[str] = Header(None)):
     if EXECUTOR is None:
         raise HTTPException(status_code=503, detail="executor_not_registered")
 
-    open_positions = [p for p in EXECUTOR.state.positions.values() if p.status == "open"]
+    open_positions = [p for p in EXECUTOR.state.positions.values() if p.status != "closed"]
     position_views = [_position_view(p) for p in open_positions]
 
     deployed = capital_guard.deployed_capital(EXECUTOR.state.positions)
@@ -305,6 +314,9 @@ def dashboard_data(authorization: Optional[str] = Header(None)):
     return {
         "ts": now_ist().isoformat(),
         "positions": position_views,
+        "forecast_connection": getattr(EXECUTOR, "forecast_connection_status", {"status": "not_checked"}),
+        "forecaster": read_forecast_report(),
+        "stock_execution": {"mode": "central_executor_gated", "shared_slot": True},
         "session": {
             "realized_gain_today_inr": round(realized_today, 0),
             "capital_deployed_inr": None if deployed == float("inf") else round(deployed, 0),
@@ -313,7 +325,7 @@ def dashboard_data(authorization: Optional[str] = Header(None)):
             "daily_loss_used_inr": round(daily_loss_used, 0),
             "daily_loss_limit_inr": config.DAILY_LOSS_LIMIT_INR,
             "position_slots_used": len(open_positions),
-            "position_slots_max": config.MAX_CONCURRENT_POSITIONS,
+            "position_slots_max": min(1, config.MAX_CONCURRENT_POSITIONS),
         },
     }
 
@@ -366,3 +378,4 @@ def macro_snapshot(authorization: Optional[str] = Header(None)):
                 "economic_calendar": []}
     except (OSError, json.JSONDecodeError) as exc:
         raise HTTPException(status_code=503, detail=f"macro_snapshot_unavailable: {exc}")
+

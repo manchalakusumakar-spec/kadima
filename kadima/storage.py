@@ -11,6 +11,7 @@ multi-day tick backtests.
 from __future__ import annotations
 
 import os
+from contextlib import nullcontext
 import sqlite3
 import threading
 from datetime import datetime
@@ -122,6 +123,10 @@ def _migrate(c: sqlite3.Connection) -> None:
     the production database already has a `signals` table from before
     `kind` was added, so that column needs an explicit ALTER TABLE.
     Guarded so it's a no-op once the column exists."""
+    position_cols = {row['name'] for row in c.execute('PRAGMA table_info(positions)')}
+    for name in ('swing_level', 'structural_stop', 'effective_stop', 'allocated_capital'):
+        if name not in position_cols:
+            c.execute(f'ALTER TABLE positions ADD COLUMN {name} REAL')
     cols = {row["name"] for row in c.execute("PRAGMA table_info(signals)")}
     if "kind" not in cols:
         c.execute("ALTER TABLE signals ADD COLUMN kind TEXT DEFAULT 'bull_shield'")
@@ -186,22 +191,27 @@ def insert_signal(index_name: str, tier: str, score: float,
 
 
 # ---------------------------------------------------------------- positions
-def upsert_position(pos) -> None:
+def upsert_position(pos, _connection=None) -> None:
     """pos is an auto_executor.Position. Imported lazily by callers to
     avoid a circular import (auto_executor imports storage)."""
-    c = conn()
-    with c:
+    c = _connection if _connection is not None else conn()
+    with (c if _connection is None else nullcontext()):
         c.execute(
             "INSERT INTO positions (signal_id, kind, index_name, direction, "
             "symbol, token, exchange, entry_price, entry_ts, lots, lot_size, "
             "remaining_qty, order_id, status, peak_price, trail_active, "
-            "exit_price, exit_ts, exit_reason, exit_order_id) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "exit_price, exit_ts, exit_reason, exit_order_id, "
+            "swing_level, structural_stop, effective_stop, allocated_capital) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(signal_id) DO UPDATE SET "
+            "entry_price=excluded.entry_price, entry_ts=excluded.entry_ts, "
+            "remaining_qty=excluded.remaining_qty, "
             "status=excluded.status, peak_price=excluded.peak_price, "
             "trail_active=excluded.trail_active, exit_price=excluded.exit_price, "
             "exit_ts=excluded.exit_ts, exit_reason=excluded.exit_reason, "
-            "exit_order_id=excluded.exit_order_id, order_id=excluded.order_id",
+            "exit_order_id=excluded.exit_order_id, order_id=excluded.order_id, "
+            "swing_level=excluded.swing_level, structural_stop=excluded.structural_stop, "
+            "effective_stop=excluded.effective_stop, allocated_capital=excluded.allocated_capital",
             (pos.signal_id, pos.kind, pos.index, pos.direction, pos.symbol,
              pos.token, pos.exchange, pos.entry_price,
              pos.entry_ts.isoformat() if pos.entry_ts else None,
@@ -209,7 +219,9 @@ def upsert_position(pos) -> None:
              pos.status, pos.peak_price, int(pos.trail_active),
              pos.exit_price,
              pos.exit_ts.isoformat() if pos.exit_ts else None,
-             pos.exit_reason, pos.exit_order_id))
+             pos.exit_reason, pos.exit_order_id,
+             getattr(pos, 'swing_level', None), getattr(pos, 'structural_stop', None),
+             getattr(pos, 'effective_stop', None), getattr(pos, 'allocated_capital', None)))
 
 
 def close_position(signal_id: int, exit_price: float | None, exit_ts: str,
@@ -233,8 +245,9 @@ def load_open_positions() -> list[dict]:
         "SELECT signal_id, kind, index_name AS 'index', direction, symbol, "
         "token, exchange, entry_price, entry_ts, lots, lot_size, "
         "remaining_qty, order_id, status, peak_price, trail_active, "
-        "exit_price, exit_ts, exit_reason, exit_order_id "
-        "FROM positions WHERE status='open'"
+        "exit_price, exit_ts, exit_reason, exit_order_id, "
+        "swing_level, structural_stop, effective_stop, allocated_capital "
+        "FROM positions WHERE status IN ('open','entry_pending','exit_pending','order_unknown')"
     ).fetchall()
     return [dict(r) for r in rows]
 
@@ -245,5 +258,6 @@ def recent_candles(token: str, interval: int, limit: int = 200):
         "SELECT * FROM candles WHERE token=? AND interval=? AND closed=1 "
         "ORDER BY start_ts DESC LIMIT ?", (token, interval, limit)).fetchall()
     return list(reversed(rows))
+
 
 

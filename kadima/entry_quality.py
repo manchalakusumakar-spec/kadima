@@ -73,6 +73,7 @@ class EntryContext:
 
     direction: str                        # "CE" or "PE"
     spread_pct: Optional[float] = None
+    stop_override: Optional[float] = None
 
 
 @dataclass
@@ -177,7 +178,14 @@ def evaluate_entry(ctx: EntryContext) -> EntryVerdict:
         )
 
     # 4. Derive the stop from structure.
-    stop_price, stop_pct, note = structural_stop(ctx)
+    if ctx.stop_override is not None:
+        stop_price = ctx.stop_override
+        if not 0 < stop_price < ctx.ltp:
+            return EntryVerdict(False, 'invalid_structural_stop')
+        stop_pct = (ctx.ltp - stop_price) / ctx.ltp * 100
+        note = 'confirmed_underlying_pivot_mapped_to_premium'
+    else:
+        stop_price, stop_pct, note = structural_stop(ctx)  # legacy callers only
     if stop_price is None:
         return EntryVerdict(False, "cannot_derive_stop", range_position=rng)
 
@@ -210,3 +218,4 @@ def evaluate_entry(ctx: EntryContext) -> EntryVerdict:
         rr=round(rr, 2) if rr else None,
     )
     return EntryVerdict(True, note, stop_price, stop_pct, rr, rng)
+
