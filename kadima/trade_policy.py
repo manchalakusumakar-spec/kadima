@@ -4,10 +4,11 @@ The option stop is a model mapping of confirmed underlying structure, not a
 guaranteed fill price. Cost reserves below are estimates, not broker tariffs.
 """
 import math
+from dataclasses import replace
 from datetime import datetime, timedelta
 from .greeks import bs_price, implied_vol_and_greeks
 
-SHIELD_MIN_SCORE = 65.0
+from .shield_confirmation import SHIELD_MIN_SCORE, ShieldEvidence, is_shield_confirmed
 GAMMA_MIN_SCORE = 70.0
 
 RISK_FRACTION = 0.15
@@ -25,12 +26,22 @@ def positive(*values):
         return False
 
 
-def eligible(kind, tier, score, direction, snap, spot):
+def eligible(kind, tier, score, direction, snap, spot, minimum=None, shield_evidence=None, now=None):
     threshold = {'bull_shield': SHIELD_MIN_SCORE, 'bear_shield': SHIELD_MIN_SCORE,
                  'gamma_blast': GAMMA_MIN_SCORE}.get(kind)
-    if (threshold is None or tier != 'CONFIRMED' or not positive(score)
+    if minimum is not None:
+        if type(minimum) is not int or minimum not in (65,70,75,80,85,90):
+            return False
+        threshold = minimum if threshold is not None else None
+    valid_tier = tier in ('ACTIVE','CONFIRMED') if minimum is not None else tier == 'CONFIRMED'
+    if (threshold is None or not valid_tier or not positive(score)
             or not threshold <= score <= 100):
         return False
+    if kind in ('bull_shield', 'bear_shield'):
+        if (tier != 'CONFIRMED' or not isinstance(shield_evidence, ShieldEvidence) or now is None
+                or shield_evidence.direction != direction or shield_evidence.score != score):
+            return False
+        return is_shield_confirmed(replace(shield_evidence, snap=snap, spot=spot), now, threshold)
     if direction not in ('CE', 'PE') or snap is None:
         return False
     values = [spot] + [getattr(snap, k, None) for k in ('vwap', 'ema_fast', 'ema_slow', 'rsi')]
@@ -112,4 +123,3 @@ def ratchet(entry, peak, previous, structural):
     active = peak >= entry * (1 + ACTIVATION)
     trail = entry + (peak - entry) * RETAIN_PROFIT if active else structural
     return max(previous or 0, structural, trail), active
-

@@ -100,35 +100,15 @@ class PartialEntryProtection(unittest.TestCase):
 
 
 class ShieldThreshold(unittest.TestCase):
-    def test_both_directions_65_boundary_and_other_gates(self):
+    def test_score_and_label_without_evidence_are_not_confirmation(self):
+        # Full boundary/engine/transport coverage is in test_shield_confirmation.
         for direction, spot, snap in [
             ('CE',101,SimpleNamespace(vwap=100,ema_fast=102,ema_slow=101,rsi=60)),
             ('PE',99,SimpleNamespace(vwap=100,ema_fast=98,ema_slow=99,rsi=40))]:
             for kind in ('bull_shield','bear_shield'):
-                for score in (65,70,80,100):
-                    self.assertTrue(trade_policy.eligible(kind,'CONFIRMED',score,direction,snap,spot))
-                for score in (64.99,0,float('nan'),float('inf'),101):
+                for score in (65,70,80,90,100):
                     self.assertFalse(trade_policy.eligible(kind,'CONFIRMED',score,direction,snap,spot))
-                self.assertFalse(trade_policy.eligible(kind,'ACTIVE',65,direction,snap,spot))
-                self.assertFalse(trade_policy.eligible(kind,'CONFIRMED',65,direction,None,spot))
-            self.assertFalse(trade_policy.eligible('gamma_blast','CONFIRMED',65,direction,snap,spot))
             self.assertTrue(trade_policy.eligible('gamma_blast','CONFIRMED',70,direction,snap,spot))
-
-    def test_actual_engine_scores_both_directions_at_65(self):
-        tree = ast.parse((f.ROOT/'kadima/engine.py').read_text())
-        cls = next(n for n in tree.body if isinstance(n,ast.ClassDef) and n.name=='Engine')
-        fn = next(n for n in cls.body if isinstance(n,ast.FunctionDef) and n.name=='_score')
-        constants = [n for n in tree.body if isinstance(n,ast.Assign) and
-                     any(isinstance(t,ast.Name) and (t.id=='WEIGHTS' or t.id.startswith('TIER_')) for t in n.targets)]
-        ns = dict(SHIELD_MIN_SCORE=trade_policy.SHIELD_MIN_SCORE,IndexState=object,
-                  now_ist=lambda:f.NOW,audit=SimpleNamespace(log=lambda *a,**k:None))
-        exec(compile(ast.Module(body=constants+[fn],type_ignores=[]),'engine-score','exec'),ns)
-        for bullish,direction in [(True,'CE'),(False,'PE')]:
-            snap=SimpleNamespace(above_vwap=bullish,ema_bull=bullish,rsi=60 if bullish else 40,
-                 avg_vol=0,vol=0,failed_breakdown=False,failed_breakout=False)
-            state=SimpleNamespace(name='TEST',snap=snap,chain=None,tier='NONE')
-            ns['_score'](None,state)
-            self.assertEqual((state.score,state.tier,state.direction),(65,'CONFIRMED',direction))
 
 
 class ReleaseInstaller(unittest.TestCase):
@@ -158,4 +138,10 @@ class ReleaseInstaller(unittest.TestCase):
         installer=self.installer()
         manifest=json.loads((f.ROOT/'executor_fix/manifest.json').read_text())
         self.assertNotIn(installer.blob(b'local unreviewed edits'),manifest['kadima/engine.py'])
-        self.assertEqual(len(manifest),23)
+        required={'kadima/'+name+'.py' for name in ('celestial','celestial_scanner','celestial_adoption',
+                  'celestial_universe','news_catalysts','scrip_master','full_universe_scanner',
+                  'news_collector','celestial_exit','external_reconciliation')}
+        self.assertTrue(required.issubset(manifest))
+        self.assertIn('kadima/shield_confirmation.py',manifest)
+        self.assertIn('kadima/api.py',manifest)
+        self.assertIn('kadima/universe_display.py',manifest)

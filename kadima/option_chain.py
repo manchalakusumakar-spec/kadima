@@ -20,6 +20,7 @@ sample is worse than no warning.
 from __future__ import annotations
 
 import time
+import math
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
@@ -128,7 +129,7 @@ class OIVelocityTracker:
 class OptionChain:
     """Holds the ATM +/- N ladder for one index and refreshes it via REST."""
 
-    def __init__(self, index_or_object, scrips) -> None:
+    def __init__(self, index_or_object, scrips, strikes_each_side=None) -> None:
         # Accepts EITHER a registered index name (str, existing behavior --
         # engine.py's 4-index calls are untouched) OR an Index object
         # directly (new, 2026-08-23 -- lets the stock-universe scanner
@@ -142,6 +143,7 @@ class OptionChain:
             self.index = index_or_object
             index_name = self.index.name
         self.scrips = scrips            # ScripMaster instance
+        self.strikes_each_side = STRIKES_EACH_SIDE if strikes_each_side is None else strikes_each_side
         self.quotes: dict[str, OptionQuote] = {}
         self.velocity = OIVelocityTracker(index_name)
         self.spot: float | None = None
@@ -161,7 +163,7 @@ class OptionChain:
         self._forecast_sample = None
         self.atm = atm
         contracts = self.scrips.strikes_around(
-            self.index, atm, STRIKES_EACH_SIDE)
+            self.index, atm, self.strikes_each_side)
         self.quotes = {c["token"]: OptionQuote(
             token=c["token"], symbol=c["symbol"], strike=c["strike"],
             opt_type=c["opt_type"]) for c in contracts}
@@ -194,18 +196,29 @@ class OptionChain:
             return False
 
         fetched = resp.get("data", {}).get("fetched", [])
+        return self.accept_full_sample(fetched)
+
+    def accept_full_sample(self, fetched) -> bool:
+        """Atomically accept one complete ladder, including shared batch polls."""
+        tokens = set(self.quotes)
+        if not tokens or not isinstance(fetched, list):
+            return False
         received = {str(row.get('symbolToken')) for row in fetched}
         if not set(tokens).issubset(received):
             self.velocity.mark_degraded()
             audit.log('oi_poll_incomplete', index=self.index.name,
                       expected=len(tokens), received=len(received))
             return False
+        updated = {}
         for row in fetched:
             token = str(row.get("symbolToken"))
-            q = self.quotes.get(token)
-            if not q:
+            old = self.quotes.get(token)
+            if not old:
                 continue
-            q.iv = q.delta = q.gamma = q.theta = q.vega = None
+            if token in updated or row.get('exchange', self.index.opt_exchange) != self.index.opt_exchange:
+                self.velocity.mark_degraded()
+                return False
+            q = OptionQuote(old.token, old.symbol, old.strike, old.opt_type)
             q.ltp = _f(row.get("ltp"))
             q.oi = _i(row.get("opnInterest"))
             q.oi_change = _i(row.get("netChangeOpnInterest"))
@@ -214,7 +227,13 @@ class OptionChain:
             buy, sell = depth.get("buy") or [], depth.get("sell") or []
             q.bid = _f(buy[0].get("price")) if buy else None
             q.ask = _f(sell[0].get("price")) if sell else None
+            if (q.ltp is None or not math.isfinite(q.ltp) or q.ltp <= 0
+                    or q.oi is None or q.volume is None or q.oi < 0 or q.volume < 0):
+                self.velocity.mark_degraded()
+                return False
+            updated[token] = q
 
+        self.quotes = updated
         self.velocity.add(list(self.quotes.values()))
         storage.insert_oi_snapshot(self.index.name, [
             {"token": q.token, "symbol": q.symbol, "strike": q.strike,

@@ -205,7 +205,7 @@ def upsert_position(pos, _connection=None) -> None:
             "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(signal_id) DO UPDATE SET "
             "entry_price=excluded.entry_price, entry_ts=excluded.entry_ts, "
-            "remaining_qty=excluded.remaining_qty, "
+            "remaining_qty=excluded.remaining_qty, lots=excluded.lots, "
             "status=excluded.status, peak_price=excluded.peak_price, "
             "trail_active=excluded.trail_active, exit_price=excluded.exit_price, "
             "exit_ts=excluded.exit_ts, exit_reason=excluded.exit_reason, "

@@ -1,7 +1,7 @@
 """Consolidated baseline-to-release maintenance deployment. Run with sudo -n python3 install.py.
 
-Stops the engine/scanner/macro services only after source and local-state
-checks. Uses the engine's existing interpreter/environment for a read-only
+Stops the engine/scanner/macro services only after source, local-state and broker
+checks. Rechecks broker state after stopping. Uses the engine's existing interpreter/environment for a read-only
 broker preflight; never sends orders, changes credentials or trading flags.
 """
 import ast
@@ -29,6 +29,20 @@ def run(args, **kwargs):
 
 def blob(data):
     return hashlib.sha1(b'blob '+str(len(data)).encode()+b'\0'+data).hexdigest()
+
+
+def engine_interpreter(process, repo):
+    """Confirm the service really executes this checkout before replacing it."""
+    argv=[os.fsdecode(v) for v in (process/'cmdline').read_bytes().split(b'\0') if v]
+    if not argv or not Path(argv[0]).is_absolute() or 'python' not in Path(argv[0]).name:
+        raise SystemExit('Engine interpreter could not be verified. No files changed.')
+    if (process/'cwd').resolve()!=repo.resolve():
+        raise SystemExit('Engine uses a different checkout. No files changed.')
+    args=argv[1:]
+    if args and args[0]=='-u':args=args[1:]
+    if len(args)!=1 or (repo/args[0]).resolve()!=(repo/'run.py').resolve():
+        raise SystemExit('Unexpected engine entrypoint. No files changed.')
+    return argv[0]
 
 
 def validate_dependencies(package, target, manifest):
@@ -65,6 +79,7 @@ def validate_dependencies(package, target, manifest):
 
 PREFLIGHT = r'''
 import json
+import math
 import re
 import sys
 stage = 'imports'
@@ -102,8 +117,19 @@ try:
             reason = 'broker_response_invalid'
             raise RuntimeError()
         for row in rows:
+            if not isinstance(row,dict):
+                reason = 'broker_response_invalid'
+                raise RuntimeError()
             if name == 'position':
-                if float(row.get('netqty') or 0) != 0:
+                raw = row.get('netqty')
+                if raw is None or isinstance(raw,bool) or not str(raw).strip():
+                    reason = 'broker_response_invalid'
+                    raise RuntimeError()
+                quantity = float(raw)
+                if not math.isfinite(quantity):
+                    reason = 'broker_response_invalid'
+                    raise RuntimeError()
+                if quantity != 0:
                     reason = 'broker_positions_not_flat'
                     raise RuntimeError()
             elif str(row.get('orderstatus') or row.get('status') or '').lower() not in {
@@ -186,13 +212,24 @@ def main():
         if local.execute("SELECT 1 FROM sqlite_master WHERE name='execution_orders'").fetchone():
             if local.execute("SELECT 1 FROM execution_orders WHERE state != 'terminal' LIMIT 1").fetchone():
                 raise SystemExit('Pending execution intents remain. No services stopped.')
-    argv=Path('/proc/'+pid+'/cmdline').read_bytes().split(b'\0')
-    python=os.fsdecode(argv[0])
-    if not Path(python).is_absolute() or 'python' not in Path(python).name:
-        raise SystemExit('Engine interpreter could not be verified. No files changed.')
+    python=engine_interpreter(Path('/proc')/pid,REPO)
     user=pwd.getpwnam('ubuntu')
     if Path('/proc/'+pid).stat().st_uid != user.pw_uid:
         raise SystemExit('Unexpected engine owner. No files changed.')
+    def as_user():
+        os.initgroups(user.pw_name,user.pw_gid)
+        os.setgid(user.pw_gid)
+        os.setuid(user.pw_uid)
+    # An expired contract can still have a non-zero quantity in the broker
+    # book. Never infer settlement from its date or stop services just to
+    # discover the same outstanding exposure again.
+    try:
+        check=run([python,'-c',PREFLIGHT],cwd=REPO,env=env,preexec_fn=as_user,timeout=60)
+        if 'KADIMA_PREFLIGHT_OK' not in check.stdout:
+            raise RuntimeError('Broker preflight did not confirm flat state')
+    except Exception as exc:
+        print('Failed check:',failure_summary(exc,'broker_preflight_before_stop'))
+        raise SystemExit('Install stopped before service shutdown. No source files changed.')
     active=[u for u in UNITS if subprocess.run(['systemctl','is-active','--quiet',u]).returncode==0]
     backup=Path(tempfile.mkdtemp(prefix='kadima-executor-backup-',dir='/home/ubuntu'))
     os.chmod(backup,0o700)
@@ -207,10 +244,6 @@ def main():
     operation='stop_services'
     try:
         run(['systemctl','stop',*active],timeout=60)
-        def as_user():
-            os.initgroups(user.pw_name,user.pw_gid)
-            os.setgid(user.pw_gid)
-            os.setuid(user.pw_uid)
         operation='broker_preflight'
         check=run([python,'-c',PREFLIGHT],cwd=REPO,env=env,preexec_fn=as_user,timeout=60)
         if 'KADIMA_PREFLIGHT_OK' not in check.stdout:
@@ -263,4 +296,3 @@ def main():
 
 if __name__=='__main__':
     main()
-

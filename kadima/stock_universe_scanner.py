@@ -101,6 +101,8 @@ class _TrackedStock:
 
 class UniverseScanner:
     def __init__(self) -> None:
+        from .celestial_scanner import Radar
+        self.radar = Radar()
         self.scrips = ScripMaster.load()
         self.universe = stock_universe()
         audit.log("universe_scanner_loaded", stock_count=len(self.universe))
@@ -298,6 +300,7 @@ class UniverseScanner:
 
             result = gamma.score(name, tracked.chain, tracked.history,
                                  tracked.spot, tracked.days_to_expiry)
+            self.radar.publish_chain(tracked.chain,tracked.spot,tracked.spot_at,result)
 
             audit.log("universe_gamma_score", name=name, tier=result.tier,
                       score=result.score, direction=result.direction,
@@ -309,6 +312,10 @@ class UniverseScanner:
                 "direction": result.direction,
                 "ts": now_ist().isoformat(),
             }
+            from .universe_display import selected_contract
+            contract,status=selected_contract(tracked.chain,result.direction,tracked.spot,
+                                              tracked.days_to_expiry,chain_at)
+            self._last_score[name].update(best_contract=contract,strike_status=status)
 
             if result.tier in ("ACTIVE", "CONFIRMED") and result.direction:
                 pick = strike_selector.best(tracked.chain, result.direction,
@@ -340,6 +347,10 @@ class UniverseScanner:
         for every name in the universe stage 1 has seen a quote for,
         scored or not. control_api.py serves this file as-is to the
         dashboard via /universe_snapshot."""
+        from . import celestial
+        celestial.health('stock_universe',dict(expected=len(self.universe),priced=len(self._last_universe_quotes),
+            option_chains_tracked=len(self._tracked),option_chain_limit=MAX_SHORTLIST,
+            coverage='full_underlying_screen_rotating_option_shortlist'))
         rows = []
         for name, tracked in self._tracked.items():
             latest = self._last_score.get(name)
@@ -352,6 +363,8 @@ class UniverseScanner:
                 "score": latest["score"],
                 "direction": latest["direction"],
                 "last_updated": latest["ts"],
+                "best_contract": latest.get("best_contract"),
+                "strike_status": latest.get("strike_status","not_scanned"),
             })
         rows.sort(key=lambda r: r["score"], reverse=True)
         payload = {
@@ -406,7 +419,12 @@ class UniverseScanner:
 
 def main() -> int:
     audit.log("universe_scanner_starting")
-    scanner = UniverseScanner()
+    from . import celestial
+    if celestial.enabled():
+        from .full_universe_scanner import FullUniverseScanner
+        scanner = FullUniverseScanner()
+    else:
+        scanner = UniverseScanner()
     try:
         scanner.run_forever()
     except KeyboardInterrupt:
@@ -417,5 +435,3 @@ def main() -> int:
 if __name__ == "__main__":
     import sys
     sys.exit(main())
-
-

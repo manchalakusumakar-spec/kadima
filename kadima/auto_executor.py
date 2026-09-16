@@ -20,6 +20,7 @@ from typing import Optional
 from . import (alerts, audit, capital_guard, entry_quality, exit_manager,
               killswitch, risk_budget, storage, strike_selector)
 from . import angel_orders, forecast_trail, execution_ledger, trade_policy
+from . import celestial
 from .config import (DAILY_LOSS_LIMIT_INR, IST, MAX_CONCURRENT_POSITIONS,
                      MAX_LOTS_PER_SIGNAL, ORDER_PLACEMENT_ENABLED)
 from .instrument_master import get_lot_size
@@ -146,13 +147,14 @@ def _poll_ltp(exchange: str, tokens: list[str]) -> dict[str, float]:
     reuse option_chain's polling."""
     if not tokens:
         return {}
-    payload = {"mode": "LTP", "exchangeTokens": {exchange: tokens}}
+    mode = 'FULL' if celestial.enabled() else 'LTP'
+    payload = {"mode": mode, "exchangeTokens": {exchange: tokens}}
     try:
         SESSION.ensure()
         try:
             resp = SESSION.api.getMarketData(**payload)
         except TypeError:
-            resp = SESSION.api.getMarketData("LTP", {exchange: tokens})
+            resp = SESSION.api.getMarketData(mode, {exchange: tokens})
     except Exception as exc:                        # noqa: BLE001
         audit.log("position_ltp_poll_failed", error=str(exc), tokens=tokens)
         return {}
@@ -161,12 +163,17 @@ def _poll_ltp(exchange: str, tokens: list[str]) -> dict[str, float]:
     out: dict[str, float] = {}
     for row in resp.get("data", {}).get("fetched", []):
         token = str(row.get("symbolToken"))
+        if token not in tokens or row.get('exchange', exchange) != exchange:
+            continue
         ltp = row.get("ltp")
         if ltp is not None:
             try:
                 price = float(ltp)
                 if math.isfinite(price) and price > 0:
                     out[token] = price
+                    if celestial.enabled():
+                        from .celestial_exit import publish_quote
+                        publish_quote(exchange, token, row)
             except (TypeError, ValueError):
                 pass
     return out
@@ -230,6 +237,61 @@ class AutoExecutor:
         self._reconcile_blocked = True   # stays True until reconcile_on_startup() runs
         self._stop = threading.Event()
         self._profit_projections: dict[int, forecast_trail.Projection] = {}
+        self.celestial_master = None
+        self._celestial_contexts = {}
+        self._celestial_verified = set()
+        self._celestial_quotes = {}
+
+    @serialized
+    def prepare_celestial_context(self, name, chain, spot, snap, days):
+        if not celestial.enabled():
+            return
+        rows = [r for r in celestial.top20(manual=True) if r['underlying']==name and r['eligible']]
+        clock = time.monotonic()
+        self._celestial_contexts = {k:v for k,v in self._celestial_contexts.items() if clock-v['at']<=30}
+        for row in rows:
+            sid = celestial.signal_for(row)
+            args = dict(index_name=name,direction=row['direction'],chain=chain,spot=spot,
+                snap=snap,days_to_expiry=days,kind='gamma_blast',source_signal_id=sid,
+                tier='ACTIVE',score=row['final_score'],candidate_id=row['id'])
+            self._celestial_contexts[row['id']] = dict(at=clock,args=args)
+            if celestial.read_config()['auto_trade_enabled']:
+                self.evaluate_and_enter(**args)
+
+    @serialized
+    def buy_candidate(self, candidate_id):
+        context = self._celestial_contexts.get(candidate_id)
+        if context is None or not 0 <= time.monotonic()-context['at']<=30:
+            return {'ok':False,'reason':'fresh_execution_context_unavailable'}
+        return self.evaluate_and_enter(**context['args'],manual_request=True)
+
+    @serialized
+    def squareoff(self, reason='squareoff_dashboard'):
+        celestial.update_config({'auto_trade_enabled':False})
+        results = []
+        for pos in list(self.state.positions.values()):
+            if pos.status in ('open','entry_pending'):
+                pos.exit_reason = reason
+                storage.upsert_position(pos)
+                results.append(self.manual_exit(pos.signal_id,reason))
+        unresolved = celestial.health('reconciliation') or {}
+        return {'ok':all(r.get('ok') for r in results) and unresolved.get('ok') is True,
+                'reason':'exit_requests_submitted_not_fill_confirmation','results':results,
+                'reconciliation':unresolved}
+
+    @serialized
+    def tighten_stop(self, signal_id, price):
+        pos = self.state.positions.get(str(signal_id))
+        if not pos or pos.status not in ('open','entry_pending') or pos.remaining_qty<=0:
+            return {'ok':False,'reason':'owned_position_not_found'}
+        if not celestial.finite(price,.000001) or price < (pos.effective_stop or pos.structural_stop or 0):
+            return {'ok':False,'reason':'stop_may_only_tighten'}
+        ltp = _poll_ltp(pos.exchange,[pos.token]).get(pos.token)
+        if ltp is None or price>=ltp:
+            return {'ok':False,'reason':'fresh_quote_required_and_stop_must_be_below_ltp'}
+        pos.effective_stop = price
+        storage.upsert_position(pos)
+        return {'ok':True,'signal_id':signal_id,'effective_stop':price,'protection':'engine_managed_not_broker_hosted'}
 
     def set_profit_projection(self, projection: forecast_trail.Projection) -> None:
         """Called by a 30-minute forecast producer; no order or HTTP endpoint."""
@@ -249,6 +311,10 @@ class AutoExecutor:
         response doesn't carry. Fails closed on an unreadable broker call."""
         self._last_reconcile = time.monotonic()
         self._reconcile_blocked = True
+        if celestial.enabled():
+            self._positions_verified = False
+            self._celestial_verified.clear()
+            celestial.health('reconciliation',dict(ok=False,reason='checking_broker_books'))
         if not self._restored:
             for row in storage.load_open_positions():
                 for key in ('entry_ts', 'exit_ts'):
@@ -268,6 +334,37 @@ class AutoExecutor:
         pending_rows = execution_ledger.pending()
         own_ids = {r['order_id'] for r in pending_rows}
         own_tags = {r['intent'] for r in pending_rows}
+        if celestial.enabled():
+            if self.celestial_master is None:
+                celestial.health('reconciliation',dict(ok=False,reason='contract_master_unavailable'))
+                return
+            from . import celestial_adoption
+            from .external_reconciliation import reconcile as reconcile_external
+            unresolved_external = reconcile_external(self, broker_positions, book)
+            live, expected, observations, proposals = celestial_adoption.inspect(
+                self,broker_positions,book,own_ids,own_tags,self.celestial_master)
+            if any(r.get('reason')=='invalid_broker_position' for r in observations):
+                celestial.health('reconciliation',dict(ok=False,positions=observations))
+                return
+            celestial_adoption.adopt(self,proposals)
+            # Capture the existing external book as the adoption baseline.
+            reconcile_external(self, broker_positions, book)
+            if unresolved_external:
+                observations.append(dict(source='BROKER_EXTERNAL', managed=False,
+                    reason='external_fill_history_unresolved', signal_ids=sorted(unresolved_external)))
+            for p in self.state.positions.values():
+                key = p.exchange,p.token,'INTRADAY'
+                if p.remaining_qty>0 and live.get(key)==p.remaining_qty and str(p.signal_id) not in unresolved_external:
+                    self._celestial_verified.add(str(p.signal_id))
+            healthy = all(r.get('managed') is True for r in observations)
+            if any(r.get('reason')=='external_pending_orders' for r in observations):
+                self._celestial_verified.clear()
+                self._positions_verified = False
+            else:
+                self._positions_verified = bool(self._celestial_verified) or healthy
+            self._reconcile_blocked = not healthy
+            celestial.health('reconciliation',dict(ok=healthy,positions=observations))
+            return
         if any(o.status not in execution_ledger.TERMINAL and
                o.order_id not in own_ids and o.raw.get('ordertag') not in own_tags for o in book):
             self._positions_verified = False
@@ -304,7 +401,7 @@ class AutoExecutor:
         """Manually exit one open position by signal_id, via the dashboard's
         Live Trade panel. Reuses the exact _close_position() path check_exits()
         already uses for automatic exits — no new order logic, no new risk logic."""
-        if self._reconcile_blocked:
+        if self._reconcile_blocked and not (celestial.enabled() and str(signal_id) in self._celestial_verified):
             return {"ok": False, "reason": "startup_reconcile_not_complete"}
 
         with self._lock:
@@ -374,11 +471,23 @@ class AutoExecutor:
     @serialized
     def evaluate_and_enter(self, index_name: str, direction: str, chain, spot: float,
                            snap, days_to_expiry: float, kind: str,
-                           source_signal_id: int, tier: str, score: float) -> None:
+                           source_signal_id: int, tier: str, score: float,
+                           candidate_id=None, manual_request=False, shield_context=None):
         """snap: indicators.Snapshot from the calling IndexState, used for
         real VWAP (not a stub) in the entry-quality check."""
         if not getattr(chain, '_entry_guard', lambda: True)():
             return self._reject('stock_signal_expired_or_replaced', index_name, direction)
+        selected = None
+        minimum = None
+        if celestial.enabled():
+            if candidate_id is None:
+                return self._reject('legacy_entry_disabled_in_celestial_mode',index_name,direction)
+            selected = celestial.entry_candidate(index_name,direction,manual=manual_request,candidate_id=candidate_id)
+            if selected is None:
+                return self._reject('celestial_top20_gate',index_name,direction)
+            minimum = celestial.read_config()['score_threshold']
+            if kind not in ('bull_shield', 'bear_shield'):
+                score = selected['final_score']
         if self._reconcile_blocked:
             return self._reject("startup_reconcile_not_complete", index_name, direction)
         if killswitch.engaged():
@@ -405,7 +514,12 @@ class AutoExecutor:
             return self._reject('underlying_quote_stale', index_name, direction)
         if not 0 <= time.monotonic() - getattr(chain, '_alignment_at', 0) <= 240:
             return self._reject('alignment_snapshot_stale', index_name, direction)
-        if not trade_policy.eligible(kind, tier, score, direction, snap, spot):
+        evidence = shield_context() if callable(shield_context) else None
+        if kind in ('bull_shield', 'bear_shield') and (
+                evidence is None or evidence.index != index_name):
+            return self._reject('shield_confirmation_evidence_missing', index_name, direction)
+        if not trade_policy.eligible(kind, tier, score, direction, snap, spot,minimum=minimum,
+                                     shield_evidence=evidence, now=now_ist()):
             return self._reject('eligibility_alignment_or_gamma_score', index_name, direction)
         structure = self._structure(chain, direction, spot)
         if structure is None:
@@ -427,6 +541,8 @@ class AutoExecutor:
 
         ranked = [r for r in strike_selector.rank(chain, direction, spot, days_to_expiry)
                   if not r.rejected and str(r.quote.token) in valid_tokens]
+        if selected is not None:
+            ranked = [r for r in ranked if chain.index.opt_exchange+':'+r.quote.token == selected['id']]
         if not ranked:
             return self._reject("no_tradeable_strike", index_name, direction)
 
@@ -509,6 +625,17 @@ class AutoExecutor:
             return self._reject('entry_gate_changed_before_submission', index_name, direction)
         if not getattr(chain, '_entry_guard', lambda: True)():
             return self._reject('stock_signal_changed_before_submission', index_name, direction)
+        if selected is not None:
+            latest = celestial.entry_candidate(index_name,direction,manual=manual_request,candidate_id=selected['id'])
+            if latest is None or latest['last_updated'] != selected['last_updated']:
+                return self._reject('celestial_candidate_changed_before_submission',index_name,direction)
+        if kind in ('bull_shield', 'bear_shield'):
+            latest_evidence = shield_context()
+            if (latest_evidence is None or latest_evidence.index != index_name
+                    or latest_evidence.direction != direction or latest_evidence.score != score
+                    or not trade_policy.is_shield_confirmed(latest_evidence, now_ist(),
+                                                            minimum or trade_policy.SHIELD_MIN_SCORE)):
+                return self._reject('shield_invalidated_before_submission', index_name, direction)
         pos = Position(
             signal_id=source_signal_id, kind=kind, index=index_name, direction=direction,
             symbol=chosen_quote.symbol, token=chosen_quote.token,
@@ -519,15 +646,18 @@ class AutoExecutor:
         with self._lock:
             self.state.positions[str(source_signal_id)] = pos
         result = execution_ledger.submit(pos, 'BUY', quantity, limit_price)
+        self._last_reconcile = 0.0
         if pos.status == 'closed':
             self.state.positions.pop(str(source_signal_id), None)
         audit.log('entry_order_result', signal_id=source_signal_id, **result)
         alerts.enqueue(f"ENTRY order {pos.symbol}: {result['reason']} | signal #{source_signal_id}",
                        key=f'entry:{source_signal_id}')
+        return result
 
-    def _reject(self, reason: str, index_name: str, direction: str) -> None:
+    def _reject(self, reason: str, index_name: str, direction: str) -> dict:
         audit.log("auto_executor_entry_rejected", reason=reason,
                   index=index_name, direction=direction)
+        return {'ok':False,'reason':reason}
 
     # -------------------------------------------------------- exit
     @serialized
@@ -538,7 +668,8 @@ class AutoExecutor:
             return
         with self._lock:
             open_positions = [p for p in self.state.positions.values()
-                              if p.status in ("open", "entry_pending") and p.remaining_qty > 0]
+                              if p.status in ("open", "entry_pending") and p.remaining_qty > 0
+                              and (not celestial.enabled() or str(p.signal_id) in self._celestial_verified)]
         if not open_positions:
             return
 
@@ -546,9 +677,9 @@ class AutoExecutor:
         for p in open_positions:
             by_exchange.setdefault(p.exchange, []).append(p.token)
 
-        ltp_by_token: dict[str, float] = {}
+        ltp_by_contract: dict[tuple[str,str], float] = {}
         for exch, tokens in by_exchange.items():
-            ltp_by_token.update(_poll_ltp(exch, tokens))
+            ltp_by_contract.update({(exch,token):price for token,price in _poll_ltp(exch,tokens).items()})
 
         now = now_ist()
         eod_hh, eod_mm = EOD_FORCE_CLOSE_HHMM
@@ -562,7 +693,9 @@ class AutoExecutor:
         daily_loss_breached = exit_manager.realized_pnl_today() <= -DAILY_LOSS_LIMIT_INR
 
         for pos in open_positions:
-            ltp = ltp_by_token.get(pos.token)
+            ltp = ltp_by_contract.get((pos.exchange,pos.token))
+            if celestial.enabled() and ltp is not None:
+                self._celestial_quotes[pos.exchange+':'+pos.token] = dict(ltp=ltp,ts=now.isoformat())
             if ltp is None:
                 audit.log("position_ltp_unavailable", signal_id=pos.signal_id,
                           token=pos.token)
@@ -593,6 +726,9 @@ class AutoExecutor:
             structural = pos.structural_stop or pos.entry_price * (1 - FIXED_STOPLOSS_PCT / 100)
             pos.effective_stop, active = trade_policy.ratchet(
                 pos.entry_price, pos.peak_price, pos.effective_stop, structural)
+            if celestial.enabled():
+                pos.effective_stop, active = celestial.trail_stop(pos.entry_price,pos.peak_price,
+                    pos.effective_stop,structural,celestial.retain_fraction(pos.signal_id))
             pos.trail_active = pos.trail_active or active
             storage.upsert_position(pos)
             # A queued exit remains binding after cancellation, restart or rebound.
@@ -605,9 +741,9 @@ class AutoExecutor:
                 pass
             elif ltp <= structural:
                 reason = 'structural_stop_breached'
-            elif pos.trail_active and ltp <= pos.effective_stop:
+            elif (pos.trail_active or celestial.enabled()) and ltp <= pos.effective_stop:
                 reason = 'dynamic_profit_trail_breached'
-                if getattr(config, 'FORECAST_TRAIL_ENABLED', False):
+                if not celestial.enabled() and getattr(config, 'FORECAST_TRAIL_ENABLED', False):
                     projection = self._profit_projections.get(pos.signal_id)
                     decision = forecast_trail.evaluate(
                         entry=pos.entry_price, peak=pos.peak_price,
@@ -619,6 +755,10 @@ class AutoExecutor:
                               reason=decision.reason, stop=decision.stop,
                               should_exit=decision.should_exit)
                     reason = decision.reason if decision.should_exit else None
+
+            if not reason and celestial.enabled():
+                from .celestial_exit import evaluate
+                reason = evaluate(pos, ltp, now)
 
             if reason:
                 self._close_position(pos, ltp, reason)
@@ -673,6 +813,3 @@ class AutoExecutor:
 
 
 EXECUTOR = AutoExecutor()
-
-
-

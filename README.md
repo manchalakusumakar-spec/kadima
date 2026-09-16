@@ -1,5 +1,16 @@
 # KADIMA — Continuous Data Engine
 
+## Celestial draft (not a live release)
+
+This branch adds the [Celestial control plane and Top 20 dashboard](docs/celestial_release.md)
+on top of PR #1. The rollout flag defaults off; legacy execution remains unchanged
+until deliberately switched. Celestial auto-entry defaults paused. A verified
+per-symbol news source, coverage validation, server preflight and browser QA
+remain release requirements. The follow-up adds all-root nearest-expiry stock
+ladders, an NSE RSS collector, more exit checks, verified manual fill deltas,
+and deployment inventory/upgrade tools. See the exact remaining boundaries in
+the linked release notes. Do not interpret offline tests as live readiness.
+
 Tick-by-tick collection across NIFTY, BANKNIFTY, SENSEX and MIDCPNIFTY, feeding
 a Bull Shield v2.1 scoring layer, four-index confirmation, strike ranking and
 Telegram alerts.
@@ -167,6 +178,6 @@ It reliably keeps you out of 4%-spread contracts and far-OTM strikes needing a
 Your own postmortems put your losses down to strike-ladder chasing and sizing,
 not strike quality. This engine doesn't fix either — which is why
 `MAX_LOTS_PER_SIGNAL`, `MAX_CONCURRENT_POSITIONS` and
-`NO_NEW_SIGNALS_AFTER_HOUR` are in `config.py` from day one, and why there is
-no order-placement code in the package.
-
+`NO_NEW_SIGNALS_AFTER_HOUR` are historical settings in `config.py`. Verify the
+active gates in the executor; live safeguards must remain in force even when
+the scanner score is high.

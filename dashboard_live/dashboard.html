@@ -1,236 +1,107 @@
 <!doctype html>
-<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>KADIMA — Celestial Watch</title>
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='7' fill='%2312102a'/%3E%3Ctext x='6' y='25' fill='%23e8c878' font-size='26'%3EK%3C/text%3E%3C/svg%3E">
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>KADIMA Celestial · Gamma Desk</title>
 <style>
-:root{color-scheme:dark;--bg:#12102a;--panel:#1d1838;--gold:#e8c878;--text:#ede6f5;--muted:#b5abc9;--green:#5fe0a0;--red:#ff8181;--line:#e8c87833}*{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at top,#2a214b,var(--bg) 65%);color:var(--text);font:16px/1.5 system-ui,sans-serif}main{max-width:1550px;margin:auto;padding:24px}header{display:flex;align-items:center;justify-content:space-between;gap:16px;border-bottom:1px solid var(--line);padding-bottom:22px}h1{font:600 34px Georgia,serif;letter-spacing:.13em;color:var(--gold);margin:0}h2{font:600 19px Georgia,serif;letter-spacing:.04em;color:var(--gold);margin:0 0 14px}h3{font-size:16px;margin:0 0 10px}.subtitle,.muted,small{color:var(--muted);font-size:14px}button,input,select{font:inherit;color:var(--text);background:#27203f;border:1px solid var(--line);border-radius:7px;padding:9px 13px}button{cursor:pointer}button:hover{border-color:var(--gold)}button:disabled{opacity:.45;cursor:default}button.primary{background:var(--gold);color:#171128}.toolbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap}.statusbar{display:flex;gap:10px;flex-wrap:wrap;padding:16px 0}.badge{border:1px solid var(--line);border-radius:5px;padding:7px 10px;font-size:14px}.good{color:var(--green)}.bad{color:var(--red)}.warn{color:var(--gold)}.grid{display:grid;gap:16px}.stats{grid-template-columns:repeat(4,minmax(0,1fr))}.panel,.card{background:linear-gradient(130deg,#231c40,#19162f);border:1px solid var(--line);border-radius:11px;padding:20px;min-width:0}.value{font:500 26px ui-monospace,monospace;margin:10px 0;overflow-wrap:anywhere}.sections{grid-template-columns:1fr 1fr;margin-top:18px}.wide{grid-column:1/-1}.indices{grid-template-columns:repeat(auto-fit,minmax(205px,1fr))}.index{border:1px solid var(--line);padding:16px;border-radius:8px}.index .value{color:var(--gold)}.index dl{font-size:14px}.index dl div{display:flex;justify-content:space-between;gap:8px}dt{color:var(--muted)}dd{margin:0}progress{width:100%;accent-color:var(--gold);height:7px}.table-wrap{overflow:auto;width:100%}table{width:100%;border-collapse:collapse;font-size:14px}th,td{text-align:left;padding:12px 9px;border-bottom:1px solid #ffffff12;vertical-align:top}th{color:var(--muted);font-weight:500;white-space:nowrap}td{overflow-wrap:anywhere}.empty{padding:18px;color:var(--muted);border:1px dashed var(--line);border-radius:7px}.split{display:flex;justify-content:space-between;gap:12px;flex-wrap:wrap}.wall{display:flex;gap:7px;flex-wrap:wrap}.wall span{padding:5px 8px;background:#ffffff08;font:14px ui-monospace,monospace;border-radius:4px}.news{list-style:none;padding:0;margin:0}.news li{border-bottom:1px solid var(--line);padding:12px 0}a{color:var(--gold)}.chart{height:105px;width:100%}.chartbox{border:1px solid var(--line);padding:15px;border-radius:8px}.auth{position:fixed;inset:0;background:#100d23f5;z-index:20;display:grid;place-items:center;padding:20px}.auth[hidden]{display:none}.auth form{width:min(440px,100%);border:1px solid var(--line);border-radius:14px;background:var(--panel);padding:30px}.auth label,.auth input{display:block;width:100%;margin:14px 0}.notice{margin:12px 0;color:var(--gold);font-size:14px}#exitMessage{min-height:24px}footer{padding:25px 0;color:var(--muted);font-size:14px}@media(max-width:900px){.stats,.sections{grid-template-columns:1fr 1fr}.sections>.panel{grid-column:1/-1}}@media(max-width:580px){main{padding:14px}.stats{grid-template-columns:1fr 1fr}.value{font-size:21px}header{align-items:flex-start;flex-direction:column}.panel{padding:14px}h1{font-size:29px}}
+:root{color-scheme:dark;--bg:#090f1c;--panel:#111b2d;--line:#253149;--gold:#ebc97c;--text:#edf2fa;--muted:#a8b5cb;--green:#7fe0ae;--red:#ff9c9c}*{box-sizing:border-box}body{margin:0;background:radial-gradient(ellipse at top right,#26324b 0,transparent 50%),var(--bg);color:var(--text);font:14px system-ui,sans-serif;min-height:100vh}main{max-width:1800px;margin:auto;padding:28px}header{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:24px}.eyebrow{letter-spacing:.2em;font-size:11px;color:var(--gold);text-transform:uppercase}h1{font-size:29px;font-weight:550;letter-spacing:.06em;margin:7px 0}h2{font-size:17px;font-weight:550;margin:0}p{color:var(--muted);line-height:1.6}.panel{background:#111b2de8;border:1px solid var(--line);border-radius:14px;padding:20px;margin:18px 0}.toolbar,.controls,.badges{display:flex;align-items:center;flex-wrap:wrap;gap:10px}.toolbar{justify-content:space-between}.badges{margin:15px 0}.badge{padding:7px 12px;border:1px solid var(--line);border-radius:20px;color:var(--muted)}button,select,input{background:#1a2840;color:var(--text);border:1px solid #435270;border-radius:7px;padding:10px 13px;font:inherit}button{cursor:pointer}button:hover:not(:disabled){border-color:var(--gold)}button:disabled{opacity:.4;cursor:not-allowed}.primary{background:var(--gold);color:#151b28;border-color:var(--gold)}.danger{color:var(--red);border-color:#733e4b}.small{font-size:12px;padding:6px 9px}.muted{color:var(--muted)}.good{color:var(--green)}.bad{color:var(--red)}.scroll{overflow-x:auto;margin:16px -1px 0}table{border-collapse:collapse;width:100%;text-align:left;white-space:nowrap;font-variant-numeric:tabular-nums}th{font-size:10px;text-transform:uppercase;letter-spacing:.08em;color:var(--muted);font-weight:550;background:#142039}td,th{padding:13px 11px;border-bottom:1px solid var(--line)}td{font-size:12px}tbody tr:hover{background:#1a2740}td:first-child,th:first-child{position:sticky;left:0;background:#142039}.empty{text-align:center;padding:44px;color:var(--muted);white-space:normal}.note{font-size:12px;color:var(--muted);margin:12px 0 0}#notice{padding:14px;border-left:3px solid var(--gold);background:#1a2438;margin:15px 0;white-space:pre-wrap}#login{max-width:430px;margin:10vh auto;padding:32px}#login label,#login input{display:block;width:100%;margin:12px 0}#login button{width:100%}#positionTools{display:flex;gap:10px;flex-wrap:wrap;margin-top:18px;align-items:center}#positionTools input{max-width:130px}.foot{display:flex;justify-content:space-between;gap:20px;font-size:11px;color:var(--muted);margin-top:24px}[hidden]{display:none!important}@media(max-width:700px){main{padding:15px}header{align-items:flex-start}h1{font-size:23px}.panel{padding:14px}td,th{padding:11px 9px}.controls button{flex:1}.foot{display:block}}
 
-/* Decorative KADIMA rain: isolated from dashboard data and controls. */
-#kadimaRain{position:fixed;inset:0;overflow:hidden;pointer-events:none;z-index:0;user-select:none}
-#kadimaRain span{position:absolute;top:0;color:#4dff91;font:600 19px/1.3 ui-monospace,monospace;white-space:pre;text-align:center;opacity:.28;text-shadow:0 0 8px #28ff75;animation:kadimaFall var(--duration) linear infinite;animation-delay:var(--delay);will-change:transform}
-#kadimaRain.paused span{animation-play-state:paused}
-body>main{position:relative;z-index:1}
-@keyframes kadimaFall{from{transform:translateY(-100%)}to{transform:translateY(100vh)}}
-@media(prefers-reduced-motion:reduce){#kadimaRain{display:none}#matrixToggle{display:none}}
-.scroll-window{height:360px;overflow:auto;overscroll-behavior:contain;scrollbar-width:thin;scrollbar-color:var(--gold) transparent;overflow-anchor:none}.scroll-window:focus-visible{outline:2px solid var(--gold);outline-offset:4px}.scroll-tools{display:flex;align-items:center;gap:12px;margin:10px 0}.scroll-tools small{flex:1}.scroll-tools button{font-size:13px;padding:5px 9px}@media(max-width:580px){.scroll-window{height:300px}}
-</style></head><body>
-<div id="kadimaRain" aria-hidden="true"><span style="left:0.00%;--duration:14s;--delay:-0s">K
-A
-D
-I
-M
-A
-K
-A
-D
-I
-M
-A</span><span style="left:5.56%;--duration:21s;--delay:-11s">K
-A
-D
-I
-M
-A
-K
-A
-D
-I
-M
-A</span><span style="left:11.11%;--duration:15s;--delay:-22s">K
-A
-D
-I
-M
-A
-K
-A
-D
-I
-M
-A</span><span style="left:16.67%;--duration:22s;--delay:-6s">K
-A
-D
-I
-M
-A
-K
-A
-D
-I
-M
-A</span><span style="left:22.22%;--duration:16s;--delay:-17s">K
-A
-D
-I
-M
-A
-K
-A
-D
-I
-M
-A</span><span style="left:27.78%;--duration:23s;--delay:-1s">K
-A
-D
-I
-M
-A
-K
-A
-D
-I
-M
-A</span><span style="left:33.33%;--duration:17s;--delay:-12s">K
-A
-D
-I
-M
-A
-K
-A
-D
-I
-M
-A</span><span style="left:38.89%;--duration:24s;--delay:-23s">K
-A
-D
-I
-M
-A
-K
-A
-D
-I
-M
-A</span><span style="left:44.44%;--duration:18s;--delay:-7s">K
-A
-D
-I
-M
-A
-K
-A
-D
-I
-M
-A</span><span style="left:50.00%;--duration:25s;--delay:-18s">K
-A
-D
-I
-M
-A
-K
-A
-D
-I
-M
-A</span><span style="left:55.56%;--duration:19s;--delay:-2s">K
-A
-D
-I
-M
-A
-K
-A
-D
-I
-M
-A</span><span style="left:61.11%;--duration:26s;--delay:-13s">K
-A
-D
-I
-M
-A
-K
-A
-D
-I
-M
-A</span><span style="left:66.67%;--duration:20s;--delay:-24s">K
-A
-D
-I
-M
-A
-K
-A
-D
-I
-M
-A</span><span style="left:72.22%;--duration:14s;--delay:-8s">K
-A
-D
-I
-M
-A
-K
-A
-D
-I
-M
-A</span><span style="left:77.78%;--duration:21s;--delay:-19s">K
-A
-D
-I
-M
-A
-K
-A
-D
-I
-M
-A</span><span style="left:83.33%;--duration:15s;--delay:-3s">K
-A
-D
-I
-M
-A
-K
-A
-D
-I
-M
-A</span><span style="left:88.89%;--duration:22s;--delay:-14s">K
-A
-D
-I
-M
-A
-K
-A
-D
-I
-M
-A</span><span style="left:94.44%;--duration:16s;--delay:-25s">K
-A
-D
-I
-M
-A
-K
-A
-D
-I
-M
-A</span></div>
-<div id="auth" class="auth"><form id="loginForm"><h1>KADIMA</h1><p>Celestial Watch · Dashboard sign-in</p><label for="password">Dashboard password</label><input id="password" type="password" autocomplete="current-password" required><button class="primary" type="submit">Sign in</button><p id="loginError" role="alert" class="bad"></p><p class="muted">Use the dashboard password created during installation.</p></form></div>
-<main><header><div><h1>KADIMA</h1><div class="subtitle">CELESTIAL WATCH · LIVE OPERATIONS</div></div><div class="toolbar"><span id="clock"></span><button id="matrixToggle" aria-pressed="false">Pause animation</button><button id="refresh">Refresh</button><button id="logout">Sign out</button></div></header>
-<div id="statusbar" class="statusbar" aria-live="polite"></div>
-<div class="grid stats" id="ledger"></div>
+.legacy-panels{margin-top:28px}.legacy-panels .grid{display:grid;gap:16px}.legacy-panels .stats{grid-template-columns:repeat(4,minmax(0,1fr));margin:18px 0}.legacy-panels .sections{grid-template-columns:repeat(2,minmax(0,1fr))}.legacy-panels .wide{grid-column:1/-1}.legacy-panels .panel{margin:0;min-width:0}.legacy-panels .indices{grid-template-columns:repeat(5,minmax(0,1fr));margin-top:16px}.legacy-panels .card,.legacy-panels .index,.legacy-panels .chartbox{background:#142039;border:1px solid var(--line);padding:16px;border-radius:10px;min-width:0}.legacy-panels .value{font-size:24px;color:var(--gold);margin:9px 0}.legacy-panels .split,.legacy-panels .scroll-tools,.legacy-panels .statusbar{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px}.legacy-panels .statusbar{margin:16px 0;justify-content:flex-start}.legacy-panels .warn{color:var(--gold)}.legacy-panels .table-wrap,.legacy-panels .wall{overflow:auto;max-height:460px}.legacy-panels .scroll-window{height:300px;overflow:auto;margin-top:12px;overflow-anchor:none}.legacy-panels .chart{width:100%;height:110px}.legacy-panels small{color:var(--muted);line-height:1.5}.legacy-panels dl div{display:flex;justify-content:space-between;gap:8px;border-bottom:1px solid var(--line);padding:7px 0}.legacy-panels dd{margin:0}.legacy-panels a{color:var(--gold)}.legacy-panels li{margin-bottom:15px}.legacy-panels .news{padding-left:20px}.legacy-panels .scroll-tools{margin-top:12px}.legacy-panels details{margin:14px 0}.legacy-panels summary{cursor:pointer;color:var(--gold)}@media(max-width:1100px){.legacy-panels .indices{grid-template-columns:repeat(2,minmax(0,1fr))}}@media(max-width:700px){.legacy-panels .stats,.legacy-panels .sections,.legacy-panels .indices{grid-template-columns:1fr}.legacy-panels .value{font-size:22px}}
+#candidates td:nth-child(5){white-space:pre-line;min-width:125px;color:var(--gold)}
+</style></head><body><main>
+<header><div><div class="eyebrow">Disciplined freedom</div><h1>KADIMA <span style="color:var(--gold)">CELESTIAL</span></h1><div class="muted">Autonomous Gamma Blast · Operations desk</div></div><div><div id="clock" class="muted">— IST</div><button id="logout" class="small" hidden>Sign out</button></div></header>
+<section id="login" class="panel"><h2>Sign in to the desk</h2><p>Your dashboard session keeps broker credentials on the server.</p><form id="loginForm"><label for="password">Dashboard password</label><input id="password" type="password" required autocomplete="current-password"><button class="primary" type="submit">Sign in</button></form></section>
+<div id="notice" role="status" aria-live="polite" hidden></div>
+<div id="desk" hidden>
+<section class="panel"><div class="toolbar"><h2>System status & controls</h2><span id="updated" class="muted">Waiting for a verified snapshot</span></div>
+<div class="badges"><span class="badge" id="mode">Mode —</span><span class="badge" id="broker">Broker —</span><span class="badge" id="reconcile">Reconciliation —</span><span class="badge" id="news">News —</span></div>
+<div class="controls"><label for="threshold">Auto-trade score</label><select id="threshold"><option>65</option><option>70</option><option>75</option><option>80</option><option>85</option><option>90</option></select><button id="saveThreshold">Save threshold</button><button id="pause">Pause auto</button><button id="resume" class="primary">Resume auto</button><button id="squareoff" class="danger">Square off managed trades</button><button id="kill" class="danger">Emergency kill</button><button id="resetKill">Reset kill · flat only</button></div>
+<p class="note" id="coverage">Scan coverage awaiting backend.</p><p class="note">Scores are not win probabilities. Pause blocks auto entries; existing positions continue to be monitored. Kill latches all entries off and requests managed exits—it does not guarantee fills.</p></section>
+<section class="panel"><div class="toolbar"><h2>Gamma Blast · Top 20 likely candidates</h2><span class="muted" id="candidateCount">0 candidates</span></div><p class="note"><span id="gammaSource">Celestial contract ranking · +5% premium radar · No fixed upper profit target</span></p>
+<div class="toolbar"><label>T1 gain % <input id="planT1" data-view type="number" min="1" max="200" value="10" style="width:75px"></label><label>T2 gain % <input id="planT2" data-view type="number" min="1" max="200" value="20" style="width:75px"></label><span class="note">Display scenarios only · T2 must exceed T1 · settings reset on reload</span></div><p class="note">Entry uses reported LTP until a matching managed fill is available; it is not an entry signal or executable quote. T1/T2 are percentage scenarios, not forecasts or automatic exits. Holding estimates extrapolate measured premium movement and can fail; missing/stale inputs show Unavailable. Existing trades use their reported engine stop. New-trade exit plans are unavailable until engine validation.</p><div class="toolbar"><span class="note">Live ranking · hover or focus to pause scrolling</span><button id="gammaScrollToggle" class="small" data-view aria-controls="gammaScroll" aria-pressed="false">Pause scrolling</button></div><div class="scroll" id="gammaScroll" tabindex="0" role="region" aria-label="Gamma Top 20 scrolling table" style="max-height:480px;overflow:auto"><table id="candidates"><thead><tr><th>Rank</th><th>Option</th><th>Underlying</th><th>Side</th><th>Best strike</th><th>LTP</th><th>Entry reference ₹</th><th>Exit / stop ₹</th><th>T1 ₹ · scenario</th><th>T2 ₹ · scenario</th><th>Holding estimate</th><th>Move %</th><th>Gamma</th><th>Bull</th><th>Bear</th><th>News</th><th>Final</th><th>Tier</th><th>Vol ×</th><th>OI</th><th>Spread</th><th>Action</th><th>Updated IST</th><th>Control</th></tr></thead><tbody></tbody></table></div>
+<p class="note">Missing news coverage, stale quotes, poor liquidity, and unconfirmed direction block entry. BUY uses the same risk, sizing, and contract checks as auto mode; no raw browser orders.</p></section>
+<section class="panel"><div class="toolbar"><h2>Open & adopted trades</h2><span class="muted">Stops are engine-managed, not broker-hosted</span></div>
+<div class="scroll"><table id="positions"><thead><tr><th>ID</th><th>Option</th><th>Source</th><th>Status</th><th>Qty</th><th>Entry</th><th>Live LTP</th><th>P&L ₹</th><th>Effective SL</th><th>Protection</th><th>Action</th></tr></thead><tbody></tbody></table></div>
+<div id="positionTools"><label for="positionId">Manage position</label><select id="positionId"><option value="">Select position</option></select><label for="stopPrice">SL price</label><input id="stopPrice" type="number" step="0.05" min="0.05" placeholder="Premium ₹"><button id="setStop">Stop loss / modify SL</button><label for="retain">Retain peak profit</label><select id="retain"><option value=".5">50%</option><option value=".6">60%</option><option value=".7">70%</option><option value=".8">80%</option><option value=".9">90%</option></select><button id="setTrail">Trailing stop loss</button><label for="orderId">Pending order</label><select id="orderId"><option value="">Select order</option></select><button id="cancelOrder">Cancel order</button></div>
+<p class="note">Protection prices may only tighten. Trailing starts at +5% and tightens as gains grow. Partial booking is not required. SELL / EXIT only reduces an owned long position.</p><p id="unmanaged" class="bad note"></p></section>
+<div class="legacy-panels" id="legacy-panels"><div class="toolbar"><h2>Market overview · Checklist · News</h2><button id="legacy-refresh" class="small">Refresh market panels</button></div><div id="legacy-statusbar" class="statusbar" aria-live="polite"></div>
+<div class="grid stats" id="legacy-ledger"></div>
 <div class="grid sections">
-<section class="panel wide"><div class="split"><h2>The Five Pillars</h2><span id="market" class="muted">Market state unavailable</span></div><div class="indices grid" id="indices"></div></section>
-<section class="panel wide"><div class="split"><h2>Open Positions · Entry, Stop & Targets</h2><span id="positionsTime" class="muted"></span></div><div id="positions"></div><div id="exitMessage" role="status"></div><p class="muted">Prices are reported by the execution engine. Its current API can substitute entry/peak prices when broker quotes fail; quote freshness is unverified. Targets are engine-calculated levels, not profit forecasts.</p></section>
-<section class="panel"><div class="split"><h2>Master Checklist</h2><select id="focus" aria-label="Checklist index"><option>NIFTY</option><option>BANKNIFTY</option><option>SENSEX</option><option>MIDCPNIFTY</option><option>BANKEX</option></select></div><div id="checklist"></div></section>
-<section class="panel"><h2>Gamma Scanner · Top 20 Candidates</h2><p class="muted">Up to 20 directional WATCH, ACTIVE or CONFIRMED signals, with recent signals first and ranked by gamma score. Scores are not probabilities. Older signals are marked last known. Ranking covers the signals supplied by the backend, not the full F&O universe.</p><div class="scroll-tools"><small>96 px/sec · hover or focus to pause</small><button id="gammaScrollToggle" aria-controls="gammaScroll" aria-pressed="false">Pause scrolling</button></div><div id="gammaScroll" class="scroll-window" tabindex="0" role="region" aria-label="Gamma Scanner scrolling content"><div id="gamma"></div></div></section>
-<section class="panel wide"><h2>Observed Price History · 5-Minute Samples</h2><p class="muted">Collected while this page is open. No predicted prices or invented confidence values.</p><div id="history" class="grid indices"></div></section>
-<section class="panel"><h2>Macro & Event Watch</h2><div class="scroll-tools"><small>96 px/sec · hover or focus to pause</small><button id="macroScrollToggle" aria-controls="macroScroll" aria-pressed="false">Pause scrolling</button></div><div id="macroScroll" class="scroll-window" tabindex="0" role="region" aria-label="Macro & Event Watch scrolling content"><div id="macro"></div></div></section>
-<section class="panel"><h2>News</h2><div class="scroll-tools"><small>96 px/sec · hover or focus to pause</small><button id="newsScrollToggle" aria-controls="newsScroll" aria-pressed="false">Pause scrolling</button></div><div id="newsScroll" class="scroll-window" tabindex="0" role="region" aria-label="News scrolling content"><ul id="news" class="news"></ul></div></section>
-<section class="panel wide"><div class="split"><h2>F&O Universe</h2><span id="universeCount" class="muted"></span></div><div id="universe" class="wall"></div></section>
-<section class="panel wide"><h2>KADIMA Checklist Forecast · Observation</h2><div id="forecastPanel"></div></section>
-<section class="panel wide"><h2>Data Coverage</h2><div id="coverage" class="muted"></div></section>
-</div><footer>All times IST · State and positions refresh every 4 seconds; scanner and macro every 20 seconds. Source updates, response times and fetch times are shown separately. Recent source update means within 2 minutes; it does not guarantee a live exchange tick. Unknown timestamps are never replaced with the current time.</footer></main>
-<script>
+<section class="panel wide"><div class="split"><h2>The Five Pillars</h2><span id="legacy-market" class="muted">Market state unavailable</span></div><div class="indices grid" id="legacy-indices"></div></section>
+<section class="panel wide"><div class="split"><h2>Open Positions · Entry, Stop & Targets</h2><span id="legacy-positionsTime" class="muted"></span></div><div id="legacy-positions"></div><div id="legacy-exitMessage" role="status"></div><p class="muted">Prices are reported by the execution engine. Its current API can substitute entry/peak prices when broker quotes fail; quote freshness is unverified. Targets are engine-calculated levels, not profit forecasts.</p></section>
+<section class="panel"><div class="split"><h2>Master Checklist</h2><select id="legacy-focus" aria-label="Checklist index"><option>NIFTY</option><option>BANKNIFTY</option><option>SENSEX</option><option>MIDCPNIFTY</option><option>BANKEX</option></select></div><div id="legacy-checklist"></div></section>
+<section class="panel wide"><h2>Observed Price History · 5-Minute Samples</h2><p class="muted">Collected while this page is open. No predicted prices or invented confidence values.</p><div id="legacy-history" class="grid indices"></div></section>
+<section class="panel"><h2>Macro & Event Watch</h2><div class="scroll-tools"><small>Auto-scroll · hover or focus to pause</small><button id="legacy-macroScrollToggle" aria-controls="legacy-macroScroll" aria-pressed="false">Pause scrolling</button></div><div id="legacy-macroScroll" class="scroll-window" tabindex="0" role="region" aria-label="Macro & Event Watch scrolling content"><div id="legacy-macro"></div></div></section>
+<section class="panel"><h2>News</h2><div class="scroll-tools"><small>Auto-scroll · hover or focus to pause</small><button id="legacy-newsScrollToggle" aria-controls="legacy-newsScroll" aria-pressed="false">Pause scrolling</button></div><div id="legacy-newsScroll" class="scroll-window" tabindex="0" role="region" aria-label="News scrolling content"><ul id="legacy-news" class="news"></ul></div></section>
+<section class="panel wide"><div class="split"><h2>F&O Universe</h2><span id="legacy-universeCount" class="muted"></span></div><div id="legacy-universe" class="wall"></div></section>
+<section class="panel wide"><h2>KADIMA Checklist Forecast · Observation</h2><div id="legacy-forecastPanel"></div></section>
+<section class="panel wide"><h2>Data Coverage</h2><div id="legacy-coverage" class="muted"></div></section>
+</div><p class="note">Market and positions refresh every 4 seconds; universe and macro every 20 seconds. Source timestamps and fetch times are shown separately.</p></div>
+<div class="foot"><span>KADIMA · One ranking. One execution pathway. Explicit data gaps.</span><span>No guaranteed minimum gain, missed-move prevention, or unlimited realized profit.</span></div>
+</div></main><script>
 'use strict';
-const $=id=>document.getElementById(id), esc=x=>String(x??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+const el=id=>document.getElementById(id);let snapshot=null,polling=false,writing=false,online=false,signedIn=false;
+const format=(v,d=2)=>typeof v==='number'&&Number.isFinite(v)?v.toLocaleString('en-IN',{maximumFractionDigits:d}):'—';
+const timeIST=t=>t?new Date(t).toLocaleTimeString('en-IN',{timeZone:'Asia/Kolkata',hour12:false}):'—';
+// BEGIN GAMMA PLAN
+function gammaPlan(row, {current, t1, t2, positions=[], positionsCurrent=false, now=Date.now()}={}){
+ const positive=v=>typeof v==='number'&&Number.isFinite(v)&&v>0;
+ const unavailable=['Unavailable','Unavailable','Unavailable','Unavailable','Unavailable'];
+ const observed=Date.parse(row.last_updated), expiry=Date.parse((row.expiry||'')+'T15:30:00+05:30');
+ if(!current||!Number.isFinite(observed)||now-observed<0||now-observed>30000||!Number.isFinite(expiry)||expiry<=now||!positive(row.option_ltp))return unavailable;
+ const matches=positionsCurrent?positions.filter(p=>p.symbol===row.symbol&&p.status==='open'&&positive(p.entry_price)&&positive(p.remaining_qty)):[];
+ const p=matches.length===1?matches[0]:null;
+ const entry=p?p.entry_price:row.option_ltp;
+ const money=v=>'₹'+v.toLocaleString('en-IN',{minimumFractionDigits:2,maximumFractionDigits:2});
+ const values=[money(entry)+(p?' · filled':' · LTP reference'),p&&positive(p.effective_stop)?money(p.effective_stop)+' · engine stop':'Unavailable · await engine plan','Unavailable','Unavailable','Unavailable · no measured pace'];
+ if(!positive(t1)||!positive(t2)||t2<=t1||t2>200)return [values[0],values[1],'Invalid target %','Invalid target %','Unavailable'];
+ values[2]=money(entry*(1+t1/100)); values[3]=money(entry*(1+t2/100));
+ if(row.pace_status==='warming_up')values[4]='Collecting 5 min of quotes';
+ if(row.pace_status==='not_rising')values[4]='No rising pace · no target ETA';
+ const span=(observed-Date.parse(row.baseline_at))/60000, move=row.premium_move_pct;
+ if(positive(move)&&span>=5&&span<=6.5){
+  const rate=Math.log1p(move/100)/span;
+  const sessionEnd=Date.parse(new Date(now+19800000).toISOString().slice(0,10)+'T15:30:00+05:30');
+  const estimate=target=>{
+   if(target<=row.option_ltp)return 'Reached';
+   const minutes=Math.log(target/row.option_ltp)/rate;
+   if(!Number.isFinite(minutes)||minutes<=0||now+minutes*60000>=Math.min(sessionEnd,expiry))return 'Unavailable before close';
+   return '~'+Math.ceil(minutes-1e-9)+' min from quote';
+  };
+  values[4]='T1 '+estimate(entry*(1+t1/100))+' / T2 '+estimate(entry*(1+t2/100))+' · pace only';
+ }
+ return values;
+}
+// END GAMMA PLAN
+function updateGammaPlans(){if(signedIn&&online&&snapshot?.config.rollout_enabled){const rows=el('candidates').tBodies[0].rows;for(const [i,r] of snapshot.candidates.entries()){if(rows[i]?.cells.length===24)gammaPlan(r,{...planSettings(),current:online,positions:snapshot.positions,positionsCurrent:Date.now()-Date.parse(snapshot.ts)>=0&&Date.now()-Date.parse(snapshot.ts)<=30000}).forEach((v,j)=>rows[i].cells[6+j].textContent=v)}}}
+for(const id of ['planT1','planT2'])el(id).addEventListener('change',updateGammaPlans);
+function planSettings(){return {t1:Number(el('planT1').value),t2:Number(el('planT2').value)}}
+function notice(s,bad=false){el('notice').textContent=s;el('notice').hidden=false;el('notice').className=bad?'bad':'';}
+async function request(path,method='GET',body){const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),9000);try{const response=await fetch('/dashboard-api/'+path,{method,credentials:'same-origin',cache:'no-store',signal:controller.signal,headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined});let data;try{data=await response.json()}catch{throw new Error('Invalid backend response')}if(!response.ok){if(response.status===401)showLogin();const detail=typeof data.detail==='string'?data.detail:'Request rejected';throw new Error(detail.replaceAll('_',' '))}return data}finally{clearTimeout(timer)}}
+function showLogin(){legacy.stop();signedIn=false;online=false;el('login').hidden=false;el('desk').hidden=true;el('logout').hidden=true;syncControls()}
+function showDesk(){signedIn=true;el('login').hidden=true;el('desk').hidden=false;el('logout').hidden=false;legacy.start()}
+function syncControls(){document.querySelectorAll('#desk button,#desk select,#desk input').forEach(b=>{if(!b.closest('.legacy-panels')&&!b.hasAttribute('data-view'))b.disabled=writing||!online||!snapshot?.config.rollout_enabled});document.querySelectorAll('[data-buy]').forEach(b=>b.disabled=writing||!online||b.dataset.ready!=='true');if(snapshot){el('resume').disabled=el('resume').disabled||snapshot.config.kill_latched;el('resetKill').disabled=el('resetKill').disabled||!snapshot.config.kill_latched}}
+async function write(path,body={}){if(writing||!online)return;writing=true;syncControls();try{const result=await request('celestial/'+path,'POST',body);notice(result.ok===false?'Not all exits could be requested. Check unresolved exposure and broker orders.':result.reason?.replaceAll('_',' ')||'Saved. Broker fills must be confirmed separately.',result.ok===false)}catch(error){notice(error.name==='AbortError'?'Request outcome unknown. Do not repeat blindly; inspect the broker order book.':error.message,true)}finally{writing=false;await refresh();syncControls()}}
+function cell(row,value,cls){const c=document.createElement('td');c.textContent=value??'—';if(cls)c.className=cls;row.append(c);return c}
+function empty(tbody,columns,message){const row=document.createElement('tr');const c=cell(row,message,'empty');c.colSpan=columns;tbody.append(row)}
+function option(select,value,label){const o=document.createElement('option');o.value=value;o.textContent=label;select.append(o)}
+function render(data){snapshot=data;el('gammaSource').textContent='Celestial contract ranking · +5% premium radar · No fixed upper profit target';const cfg=data.config;el('mode').textContent=cfg.kill_latched?'KILL LATCHED':!cfg.rollout_enabled?'LEGACY ENGINE / CELESTIAL OFF':cfg.auto_trade_enabled?'AUTO ON':'AUTO PAUSED';el('broker').textContent=cfg.broker_orders_enabled?'Broker orders enabled':'Broker dry-run';el('reconcile').textContent='Reconciliation '+(data.system.reconciliation?.ok?'healthy':'unverified / blocked');el('news').textContent='News '+(data.system.news?.ok&&Date.now()-Date.parse(data.system.news.ts)<=300000?'connected':'unavailable');el('updated').textContent='Snapshot '+timeIST(data.ts)+' IST';if(document.activeElement!==el('threshold'))el('threshold').value=String(cfg.score_threshold);
+const cov=data.system.stock_universe;el('coverage').textContent=cov?(cov.option_chain_limit===null?'Stock ladders checked within 90s: '+cov.option_chains_fresh+'/'+cov.expected+' · All resolved active F&O stocks · Nearest expiry, ATM ±1 strike · Missing mappings: '+(cov.missing?.length||0):'Underlying quotes: '+cov.priced+'/'+cov.expected+' · Option chains tracked: '+cov.option_chains_tracked+'/'+cov.option_chain_limit+' · Legacy rotating shortlist.'):'Stock scan coverage unavailable.';
+const body=el('candidates').tBodies[0];body.replaceChildren();el('candidateCount').textContent=data.candidates.length+' / 20 candidates';
+for(const r of data.candidates){const tr=document.createElement('tr');[r.rank,r.symbol,r.underlying,r.direction,format(r.best_strike)+' '+r.direction+'\n'+(r.expiry||'Expiry unavailable'),format(r.option_ltp),...gammaPlan(r,{...planSettings(),current:online,positions:data.positions,positionsCurrent:online&&Date.now()-Date.parse(data.ts)>=0&&Date.now()-Date.parse(data.ts)<=30000}),format(r.premium_move_pct)+'%',format(r.gamma_score,1),format(r.bull_shield_score,1),format(r.bear_shield_score,1),r.news_available?format(r.news_score,0):'Unavailable',format(r.final_score,1),r.tier,format(r.volume_ratio,1),r.oi_support?'Confirmed':'Unconfirmed',r.spread_status,r.action,timeIST(r.last_updated)].forEach(v=>cell(tr,v));const c=cell(tr,'');const b=document.createElement('button');b.textContent='BUY';b.className='small primary';b.dataset.buy=r.id;b.dataset.ready=String(cfg.rollout_enabled&&['RADAR','READY'].includes(r.action)&&r.blocked_reasons.every(x=>x==='auto_paused'));b.title=r.blocked_reasons.join(', ');b.onclick=()=>write('order/buy',{candidate_id:r.id});c.append(b);body.append(tr)}if(!data.candidates.length)empty(body,24,'No fresh qualifying candidates. The desk never fills empty places with weak or stale contracts.');
+const positions=el('positions').tBodies[0];positions.replaceChildren();const oldPosition=el('positionId').value,oldOrder=el('orderId').value;el('positionId').replaceChildren();el('orderId').replaceChildren();option(el('positionId'),'','Select position');option(el('orderId'),'','Select order');
+for(const p of data.positions){const tr=document.createElement('tr');[p.signal_id,p.symbol,p.source,p.status,p.remaining_qty,format(p.entry_price),format(p.ltp),format(p.unrealized_pnl_inr),format(p.effective_stop),p.trail_active?'TRAIL':'INITIAL SL'].forEach(v=>cell(tr,v));const c=cell(tr,'');const b=document.createElement('button');b.textContent='SELL / EXIT';b.className='small danger';b.onclick=()=>write('order/exit',{signal_id:p.signal_id});c.append(b);positions.append(tr);option(el('positionId'),p.signal_id,p.symbol+' #'+p.signal_id);if(p.status==='entry_pending'&&p.entry_order_id)option(el('orderId'),p.entry_order_id,p.entry_order_id+' · entry');if(p.status==='exit_pending'&&p.exit_order_id)option(el('orderId'),p.exit_order_id,p.exit_order_id+' · exit')}if(!data.positions.length)empty(positions,11,'No locally managed open trades. Check reconciliation status before assuming the broker account is flat.');el('positionId').value=oldPosition;el('orderId').value=oldOrder;
+const unknown=(data.system.reconciliation?.positions||[]).filter(p=>!p.managed);el('unmanaged').textContent=unknown.length?'Unmanaged / unresolved: '+unknown.map(p=>(p.symbol||p.source)+': '+p.reason.replaceAll('_',' ')).join(' · '):'';legacy.renderGamma();syncControls()}
+async function refresh(){if(!signedIn||polling)return;polling=true;try{const data=await request('celestial');online=true;render(data)}catch(error){online=false;syncControls();if(signedIn)notice('Live updates unavailable: '+error.message+'. Controls disabled.',true)}finally{polling=false}}
+el('loginForm').onsubmit=async event=>{event.preventDefault();try{await request('login','POST',{password:el('password').value});el('password').value='';showDesk();el('notice').hidden=true;await refresh()}catch(error){notice(error.message,true)}};
+el('logout').onclick=async()=>{try{await request('logout','POST',{})}finally{snapshot=null;showLogin()}};
+el('saveThreshold').onclick=()=>write('kadima/config',{score_threshold:Number(el('threshold').value),revision:snapshot.config.revision});
+for(const [id,path] of Object.entries({pause:'kadima/pause',resume:'kadima/resume',kill:'kadima/kill',resetKill:'kadima/reset-kill',squareoff:'order/squareoff-all'}))el(id).onclick=()=>write(path);
+el('setStop').onclick=()=>{const signal_id=Number(el('positionId').value),price=Number(el('stopPrice').value);if(signal_id>0&&price>0)write('order/modify-sl',{signal_id,price});else notice('Select a position and enter a positive stop price.',true)};
+el('setTrail').onclick=()=>{const signal_id=Number(el('positionId').value);if(signal_id>0)write('order/trailing-sl',{signal_id,retain:Number(el('retain').value)});else notice('Select a position first.',true)};
+el('cancelOrder').onclick=()=>{const order_id=el('orderId').value;if(order_id)write('order/cancel',{order_id});else notice('Select a tracked pending order first.',true)};
+setInterval(()=>{el('clock').textContent=timeIST(new Date().toISOString())+' IST';updateGammaPlans()},1000);setInterval(refresh,5000);
+const emptyGlobal=empty;
+const legacy=(()=>{
+const $=id=>document.getElementById("legacy-"+id), esc=x=>String(x??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const num=x=>typeof x==='number'&&Number.isFinite(x), fmt=(x,d=2)=>num(x)?x.toLocaleString('en-IN',{maximumFractionDigits:d,minimumFractionDigits:d}):'—', money=x=>num(x)?'₹'+fmt(x):'Unavailable';
 const stamp=x=>{const t=new Date(x);return x&&Number.isFinite(t.getTime())?new Intl.DateTimeFormat('en-IN',{timeZone:'Asia/Kolkata',year:'numeric',day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(t)+' IST':'No source timestamp'};
 const age=x=>x&&Number.isFinite(Date.parse(x))?Date.now()-Date.parse(x):Infinity, fresh=x=>age(x)>=-30000&&age(x)<=120000;
@@ -239,26 +110,36 @@ let authenticated=false, generation=0, busyExit=false;
 const feeds={state:{path:'state',label:'Market',ms:4000},dashboard:{path:'dashboard_data',label:'Positions',ms:4000},universe:{path:'universe_snapshot',label:'Scanner',ms:20000},macro:{path:'macro_snapshot',label:'Macro',ms:20000}};
 const history=Object.fromEntries(names.map(n=>[n,[]]));
 async function request(path,options={}){const c=new AbortController(),timer=setTimeout(()=>c.abort(),10000);try{const r=await fetch('/dashboard-api/'+path,{...options,credentials:'same-origin',cache:'no-store',signal:c.signal,headers:{'Content-Type':'application/json',...(options.headers||{})}});let data={};try{data=await r.json()}catch{}if(!r.ok){const e=new Error(r.status===401?'Sign-in required':r.status===502?'Backend unavailable':'Request failed (HTTP '+r.status+')');e.status=r.status;throw e}return data}finally{clearTimeout(timer)}}
-function lock(){authenticated=false;generation++;$('auth').hidden=false;for(const f of Object.values(feeds)){f.data=null;f.ok=false;f.received=null;f.next=0}for(const n of names)history[n]=[];renderAll()}
+function lock(){showLogin()}
 async function poll(key){const f=feeds[key];if(!authenticated||f.busy)return;f.busy=true;const g=generation;try{const data=await request(f.path);if(g!==generation)return;if(!data||typeof data!=='object'||Array.isArray(data))throw Error('Invalid response');if(key==='state'&&(!data.indices||typeof data.indices!=='object'))throw Error('Invalid market response');if(key==='dashboard'&&(!data.session||!Array.isArray(data.positions)))throw Error('Invalid position response');f.data=data;f.received=Date.now();f.ok=true;f.error='';if(key==='state')sampleHistory(data)}catch(e){if(g!==generation)return;f.ok=false;f.error=e.message;if(e.status===401)lock()}finally{f.busy=false;f.next=Date.now()+f.ms;renderAll()}}
-function online(key){const f=feeds[key];return authenticated&&f.ok&&Date.now()-f.received<f.ms*3}
+function onlineLegacy(key){const f=feeds[key];return authenticated&&f.ok&&Date.now()-f.received<f.ms*3}
 function freshness(key,ts,{responseOnly=false,responseLabel='Response generated'}={}){
 const hasTime=ts&&Number.isFinite(Date.parse(ts));
-const state=!hasTime?'UPDATE TIME UNKNOWN':responseOnly?'SOURCE TIME UNVERIFIED':!online(key)?'LAST KNOWN · DISCONNECTED':fresh(ts)?'RECENT SOURCE UPDATE':'LAST KNOWN / STALE';
-return '<div class="muted"><span class="'+(!responseOnly&&online(key)&&fresh(ts)?'good':'warn')+'">'+state+'</span><br>'+
+const state=!hasTime?'UPDATE TIME UNKNOWN':responseOnly?'SOURCE TIME UNVERIFIED':!onlineLegacy(key)?'LAST KNOWN · DISCONNECTED':fresh(ts)?'RECENT SOURCE UPDATE':'LAST KNOWN / STALE';
+return '<div class="muted"><span class="'+(!responseOnly&&onlineLegacy(key)&&fresh(ts)?'good':'warn')+'">'+state+'</span><br>'+
 (hasTime?(responseOnly?responseLabel+': ':'Source updated: ')+stamp(ts):'Source update time unavailable')+
 '<br>Last fetched: '+(feeds[key].received?stamp(feeds[key].received):'Not fetched')+'</div>';
 }
 function sourceState(ts){return fresh(ts)?'<span class="good">Fresh</span>':'<span class="warn">Last known / stale</span>'}
 function table(headers,rows){return '<div class="table-wrap"><table><thead><tr>'+headers.map(h=>'<th>'+esc(h)+'</th>').join('')+'</tr></thead><tbody>'+rows.join('')+'</tbody></table></div>'}
 const empty=t=>'<div class="empty">'+esc(t)+'</div>';
-function renderStatus(){$('statusbar').innerHTML=Object.entries(feeds).map(([k,f])=>'<span class="badge '+(online(k)?'good':'warn')+'">'+f.label+': '+(online(k)?'API connected':esc(f.error||'Waiting'))+'<br><small>'+ (f.received?'Received '+stamp(f.received):'No response yet')+'</small></span>').join('');$('market').textContent=online('state')?(feeds.state.data?.market_open?'Engine market window: open':'Engine market window: closed'):'Market state unavailable';}
+function renderStatus(){$('statusbar').innerHTML=Object.entries(feeds).map(([k,f])=>'<span class="badge '+(onlineLegacy(k)?'good':'warn')+'">'+f.label+': '+(onlineLegacy(k)?'API connected':esc(f.error||'Waiting'))+'<br><small>'+ (f.received?'Received '+stamp(f.received):'No response yet')+'</small></span>').join('');$('market').textContent=onlineLegacy('state')?(feeds.state.data?.market_open?'Engine market window: open':'Engine market window: closed'):'Market state unavailable';}
 function renderLedger(){const s=feeds.dashboard.data?.session||{};const vals=[['Realized P&L',money(s.realized_gain_today_inr),'Execution ledger'],['Capital deployed',money(s.capital_deployed_inr),'Ceiling '+money(s.capital_ceiling_inr)],['Daily loss used',money(s.daily_loss_used_inr),'Limit '+money(s.daily_loss_limit_inr)],['Position slots',num(s.position_slots_used)&&num(s.position_slots_max)?s.position_slots_used+' / '+s.position_slots_max:'Unavailable','Engine open positions']];$('ledger').innerHTML=vals.map(([a,b,c])=>'<div class="card"><div class="muted">'+a+'</div><div class="value">'+b+'</div><small>'+c+'</small>'+freshness('dashboard',feeds.dashboard.data?.ts,{responseOnly:true})+'</div>').join('');}
 function renderIndices(){const ds=feeds.state.data?.indices||{};$('indices').innerHTML=names.map(n=>{const d=ds[n],s=d?.shield||{},t=d?.technicals||{};return '<article class="index"><h3>'+n+'</h3><div class="value">'+fmt(d?.spot)+'</div><div>'+esc(s.tier||'Unavailable')+' · '+esc(s.direction||'No direction')+'</div><p>Shield '+(num(s.score)?fmt(s.score,0)+'/100':'Unavailable')+'</p><dl>'+[['VWAP',t.vwap],['EMA20 / EMA50',num(t.ema20)&&num(t.ema50)?fmt(t.ema20)+' / '+fmt(t.ema50):null],['RSI',t.rsi],['PCR',d?.option_chain?.pcr]].map(([k,v])=>'<div><dt>'+k+'</dt><dd>'+(typeof v==='string'?esc(v):fmt(v))+'</dd></div>').join('')+'</dl><small>'+ freshness('state',d?.last_updated)+'</small></article>'}).join('')}
-function renderPositions(){const d=feeds.dashboard.data;$('positionsTime').innerHTML=freshness('dashboard',d?.ts,{responseOnly:true});if(!d){$('positions').innerHTML=empty('Position state unavailable');return}if(!d.positions.length){$('positions').innerHTML=empty(online('dashboard')?'No open positions reported by the engine':'Position state unverified — last response contained no open positions');return}const rows=d.positions.map(p=>'<tr><td>'+esc(p.symbol)+'<br><small>'+esc(p.index)+' · '+esc(p.direction)+'</small></td><td>'+money(p.entry_price)+'</td><td>'+money(p.ltp)+'<br><small>Freshness unverified</small></td><td>'+money(p.effective_stop)+(p.trail_active?'<br>Trailing':'')+'</td><td>'+['T1','T2','T3'].map(t=>t+' '+money(p.levels?.[t]?.price)).join('<br>')+'</td><td>'+esc(p.lots)+' / '+esc(p.remaining_qty)+'</td><td class="'+(p.unrealized_pnl_inr<0?'bad':'good')+'">'+money(p.unrealized_pnl_inr)+'<br><small>Based on reported price</small></td><td><button data-exit="'+esc(p.signal_id)+'" '+(!online('dashboard')||!fresh(d.ts)||busyExit?'disabled':'')+'>Exit position</button></td></tr>');$('positions').innerHTML=table(['Contract','Entry','Reported LTP','Stop','Targets','Lots / qty','Unrealized P&L','Action'],rows)}
-function renderChecklist(){const n=$('focus').value,d=feeds.state.data?.indices?.[n];if(!d){$('checklist').innerHTML=empty('No backend checklist for '+n+' · Source update time unavailable');return}const s=d.shield||{},valid=online('state')&&fresh(d.last_updated);const rows=[['vwap','VWAP',25],['ema','EMA alignment',20],['rsi','RSI regime',20],['volume_spike','Volume spike',15],['oi_velocity','OI shift',15],['failed_break','Failed break',5]].map(([k,label,w])=>{const v=d.components?.[k];return '<tr><td>'+label+'</td><td>'+w+'%</td><td>'+ (v===undefined?'Not reported':esc(typeof v==='object'?JSON.stringify(v):v))+'</td></tr>'});$('checklist').innerHTML='<p class="'+(valid?'good':'warn')+'">'+(valid?'Current backend tier: ':'Last known tier: ')+esc(s.tier||'Unavailable')+' · '+esc(s.direction||'No direction')+' · '+(num(s.score)?fmt(s.score,0)+'/100':'Unavailable')+'</p>'+freshness('state',d.last_updated)+table(['Component','Weight','Backend value'],rows)+'<p class="muted">A shield tier is not an order instruction. Position sizing and entry execution remain with the server.</p>'}
-function candidates(){const idx=Object.entries(feeds.state.data?.indices||{}).filter(([n,d])=>num(d.gamma?.score)).map(([name,d])=>({name,score:d.gamma.score,tier:d.gamma.tier,direction:d.gamma.direction,last_updated:d.last_updated,kind:'Index',feed:'state'}));const stk=(feeds.universe.data?.tracked||[]).filter(r=>num(r.score)).map(r=>({...r,kind:'Stock',feed:'universe'}));return [...idx,...stk].filter(r=>r.score>0&&['WATCH','ACTIVE','CONFIRMED'].includes(String(r.tier).toUpperCase())&&r.direction&&!['NONE','NEUTRAL','—'].includes(String(r.direction).toUpperCase())).sort((a,b)=>Number(online(b.feed)&&fresh(b.last_updated))-Number(online(a.feed)&&fresh(a.last_updated))||b.score-a.score).slice(0,20)}
-function renderGamma(){const list=candidates();$('gamma').innerHTML=list.length?table(['Instrument','Score','Tier / side','Source time'],list.map(r=>'<tr><td>'+esc(r.name)+'<br><small>'+r.kind+'</small></td><td>'+fmt(r.score,0)+'/100</td><td>'+esc(r.tier)+' / '+esc(r.direction||'—')+'</td><td>'+freshness(r.feed,r.last_updated)+'</td></tr>')):empty('No qualifying directional gamma candidates supplied.');$('gamma').innerHTML+='<p class="muted">Candidate strikes are unavailable in these API responses. No strike is inferred or generated.</p>'}
+function renderPositions(){const d=feeds.dashboard.data;$('positionsTime').innerHTML=freshness('dashboard',d?.ts,{responseOnly:true});if(!d){$('positions').innerHTML=empty('Position state unavailable');return}if(!d.positions.length){$('positions').innerHTML=empty(onlineLegacy('dashboard')?'No open positions reported by the engine':'Position state unverified — last response contained no open positions');return}const rows=d.positions.map(p=>'<tr><td>'+esc(p.symbol)+'<br><small>'+esc(p.index)+' · '+esc(p.direction)+'</small></td><td>'+money(p.entry_price)+'</td><td>'+money(p.ltp)+'<br><small>Freshness unverified</small></td><td>'+money(p.effective_stop)+(p.trail_active?'<br>Trailing':'')+'</td><td>'+['T1','T2','T3'].map(t=>t+' '+money(p.levels?.[t]?.price)).join('<br>')+'</td><td>'+esc(p.lots)+' / '+esc(p.remaining_qty)+'</td><td class="'+(p.unrealized_pnl_inr<0?'bad':'good')+'">'+money(p.unrealized_pnl_inr)+'<br><small>Based on reported price</small></td><td><button data-exit="'+esc(p.signal_id)+'" '+(!onlineLegacy('dashboard')||!fresh(d.ts)||busyExit?'disabled':'')+'>Exit position</button></td></tr>');$('positions').innerHTML=table(['Contract','Entry','Reported LTP','Stop','Targets','Lots / qty','Unrealized P&L','Action'],rows)}
+function renderChecklist(){const n=$('focus').value,d=feeds.state.data?.indices?.[n];if(!d){$('checklist').innerHTML=empty('No backend checklist for '+n+' · Source update time unavailable');return}const s=d.shield||{},valid=onlineLegacy('state')&&fresh(d.last_updated);const rows=[['vwap','VWAP',25],['ema','EMA alignment',20],['rsi','RSI regime',20],['volume_spike','Volume spike',15],['oi_velocity','OI shift',15],['failed_break','Failed break',5]].map(([k,label,w])=>{const v=d.components?.[k];return '<tr><td>'+label+'</td><td>'+w+'%</td><td>'+ (v===undefined?'Not reported':esc(typeof v==='object'?JSON.stringify(v):v))+'</td></tr>'});$('checklist').innerHTML='<p class="'+(valid?'good':'warn')+'">'+(valid?'Current backend tier: ':'Last known tier: ')+esc(s.tier||'Unavailable')+' · '+esc(s.direction||'No direction')+' · '+(num(s.score)?fmt(s.score,0)+'/100':'Unavailable')+'</p>'+freshness('state',d.last_updated)+table(['Component','Weight','Backend value'],rows)+'<p class="muted">A shield tier is not an order instruction. Position sizing and entry execution remain with the server.</p>'}
+function candidates(){const idx=Object.entries(feeds.state.data?.indices||{}).filter(([n,d])=>num(d.gamma?.score)).map(([name,d])=>({name,score:d.gamma.score,tier:d.gamma.tier,direction:d.gamma.direction,last_updated:d.last_updated,kind:'Index',feed:'state'}));const stk=(feeds.universe.data?.tracked||[]).filter(r=>num(r.score)).map(r=>({...r,kind:'Stock',feed:'universe'}));return [...idx,...stk].filter(r=>r.score>0&&['WATCH','ACTIVE','CONFIRMED'].includes(String(r.tier).toUpperCase())&&r.direction&&!['NONE','NEUTRAL','—'].includes(String(r.direction).toUpperCase())).sort((a,b)=>Number(onlineLegacy(b.feed)&&fresh(b.last_updated))-Number(onlineLegacy(a.feed)&&fresh(a.last_updated))||b.score-a.score).slice(0,20)}
+function renderGamma(){
+if(!authenticated || (snapshot?.config.rollout_enabled && online))return;
+const list=candidates(),body=el('candidates').tBodies[0];body.replaceChildren();
+el('gammaSource').textContent='Legacy Gamma watchlist · ranked from available index/stock scores · not full-universe contract ranking · scores are not probabilities · trading unavailable here';
+el('candidateCount').textContent=list.length+' / 20 candidates';
+for(const [i,r] of list.entries()){
+const tr=document.createElement('tr');const c=validDisplayContract(r.best_contract)?r.best_contract:null;const current=onlineLegacy(r.feed)&&fresh(r.last_updated)&&(!c||age(c.updated_at)<=30000);
+[i+1,c?.symbol||'Contract unavailable',r.name,r.direction,c?fmt(c.strike)+' '+c.type+'\n'+c.expiry:'Unavailable',c?fmt(c.ltp):'—',...gammaPlan({symbol:c?.symbol,option_ltp:c?.ltp,expiry:c?.expiry,last_updated:c?.updated_at,baseline_at:c?.baseline_at,premium_move_pct:c?.premium_move_pct,pace_status:c?.pace_status},{...planSettings(),current,positions:feeds.dashboard.data?.positions||[],positionsCurrent:onlineLegacy('dashboard')&&fresh(feeds.dashboard.data?.ts)}),'—',fmt(r.score,0),'—','—','Unavailable','—',r.tier,'—','—','Unverified',current?'WATCH ONLY':'LAST KNOWN',stamp(r.last_updated),'Read only'].forEach(v=>cell(tr,v));body.append(tr);
+}
+if(!list.length)emptyGlobal(body,24,'No qualifying directional Gamma scores in the available legacy feeds. Scanner coverage is not yet verified.');
+}
 function sampleHistory(d){for(const n of names){const v=d.indices?.[n];if(!fresh(v?.last_updated)||!num(v?.spot))continue;const bucket=Math.floor(Date.parse(v.last_updated)/300000)*300000,h=history[n],p={ts:bucket,sourceTs:v.last_updated,value:v.spot};if(h.length&&h[h.length-1].ts===bucket)h[h.length-1]=p;else if(!h.length||bucket>h[h.length-1].ts){h.push(p);if(h.length>72)h.shift()}}}
 function renderHistory(){$('history').innerHTML=names.map(n=>{const h=history[n];let chart=empty('Waiting for two 5-minute samples');if(h.length>=2){const min=Math.min(...h.map(p=>p.value)),max=Math.max(...h.map(p=>p.value)),span=max-min||1;const pts=h.map(p=>(5+(p.ts-h[0].ts)/(h.at(-1).ts-h[0].ts)*290).toFixed(1)+','+(90-(p.value-min)/span*75).toFixed(1)).join(' ');chart='<svg class="chart" viewBox="0 0 300 100" role="img" aria-label="'+n+' observed spot history"><polyline points="'+pts+'" fill="none" stroke="#e8c878" stroke-width="2"/></svg><small>'+fmt(min)+' – '+fmt(max)+'<br>'+stamp(h[0].ts)+' → '+stamp(h.at(-1).ts)+'</small>'}return '<div class="chartbox"><h3>'+n+'</h3>'+chart+freshness('state',h.at(-1)?.sourceTs)+'</div>'}).join('')}
 function renderMacro(){const m=feeds.macro.data||{};const v=m.india_vix,rows=m.fii_dii?.rows||[];
@@ -269,20 +150,24 @@ rows.map(r=>'<p>'+esc(r.category)+': '+fmt(r.net_cr)+' Cr<br>Reporting date: '+e
 ((m.economic_calendar||[]).length?'':'<p class="muted">Calendar unavailable · Source update time unavailable</p>');
 $('news').innerHTML='<li>'+freshness('macro',m.ts,{responseOnly:true})+'</li>'+
 ((m.news||[]).map(n=>{let u;try{u=new URL(n.url);if(!['http:','https:'].includes(u.protocol))u=null}catch{}return '<li>'+(u?'<a target="_blank" rel="noopener noreferrer" href="'+esc(u.href)+'">'+esc(n.title)+'</a>':esc(n.title))+'<br><small>'+esc(n.source)+' · Published: '+stamp(n.published_at)+'</small>'+freshness('macro',n.last_updated)+'</li>'}).join('')||'<li>No headlines supplied · Source update time unavailable</li>');}
+function validDisplayContract(c){
+const today=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Kolkata',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
+return c&&num(c.strike)&&c.strike>0&&['CE','PE'].includes(c.type)&&typeof c.symbol==='string'&&c.symbol&&/^\d{4}-\d{2}-\d{2}$/.test(c.expiry||'')&&c.expiry>=today&&age(c.updated_at)>=0&&Number.isFinite(age(c.updated_at));
+}
 function renderUniverse(){const u=feeds.universe.data,tracked=u?.tracked||[],prices=u?.prices||{};const map=new Map(tracked.map(r=>[r.name,r]));const syms=[...new Set([...Object.keys(prices),...map.keys(),...(u?.coverage?.missing||[])])].sort();
 $('universeCount').innerHTML=Object.keys(prices).length+' priced / '+esc(u?.coverage?.expected??'unknown')+' expected · '+tracked.length+' scored'+freshness('universe',u?.ts,{responseOnly:true,responseLabel:'Snapshot generated'});
 $('universe').innerHTML=syms.length?table(['Stock','Reported price','Price time','Gamma score','Score time'],syms.map(n=>{const r=map.get(n),q=prices[n];return '<tr><td>'+esc(n)+'</td><td>'+fmt(q?.ltp)+'</td><td>'+freshness('universe',q?.received_at,{responseOnly:true,responseLabel:'Quote fetched by scanner'})+'</td><td>'+(num(r?.score)?fmt(r.score,0)+'/100 · '+esc(r.tier):'Unavailable')+'</td><td>'+freshness('universe',r?.last_updated)+'</td></tr>'})):empty('No universe snapshot yet · Source update time unavailable');}
-function renderCoverage(){const gaps=feeds.state.data?.unavailable||{};$('coverage').innerHTML='<p>Unavailable from the current API: ranked candidate strikes, per-position broker quote timestamps, and a verified MCX trading calendar/feed.</p>'+Object.entries(gaps).map(([k,v])=>'<p>'+esc(k.replaceAll('_',' '))+': '+esc(v)+'</p>').join('')}
+function renderCoverage(){const gaps=feeds.state.data?.unavailable||{};$('coverage').innerHTML='<p>Stock strikes come from the scanner snapshot when a qualified contract is available. Per-position broker quote timestamps remain unverified. Celestial contract ranking is shown above when available. MCX calendar/feed coverage remains unverified.</p>'+Object.entries(gaps).map(([k,v])=>'<p>'+esc(k.replaceAll('_',' '))+': '+esc(v)+'</p>').join('')}
 
 let forecastRenderKey='';
 function renderForecast(){
 const f=feeds.dashboard.data?.forecaster, r=f?.latest;
 const expired=r?.expires_at ? Date.now()>Date.parse(r.expires_at) : true;
-const key=JSON.stringify([f,online('dashboard'),expired]);if(key===forecastRenderKey)return;forecastRenderKey=key;
+const key=JSON.stringify([f,onlineLegacy('dashboard'),expired]);if(key===forecastRenderKey)return;forecastRenderKey=key;
 const box=$('forecastPanel');if(!box)return;
 if(!f){box.innerHTML=empty('Forecaster status unavailable');return}
 let html='<p><strong>Observation only — no order or exit authority.</strong></p><p>'+esc(f.status)+' · Checked '+stamp(f.checked_at)+'</p>';
-if(!online('dashboard'))html+='<p class="warn">Dashboard disconnected · last received forecast below.</p>';
+if(!onlineLegacy('dashboard'))html+='<p class="warn">Dashboard disconnected · last received forecast below.</p>';
 if(r){
 html+='<p class="'+(expired?'warn':'muted')+'">'+(expired?'EXPIRED · LAST KNOWN':'Recorded forecast')+' · Model '+esc(r.model)+'<br>Inputs as of '+stamp(r.as_of)+'<br>Issued '+stamp(r.issued_at)+' · Horizon ends '+stamp(r.expires_at)+'</p>';
 for(const a of r.assets||[]){
@@ -298,35 +183,16 @@ box.innerHTML=html;
 }
 
 function renderAll(){renderForecast();renderStatus();renderLedger();renderIndices();renderPositions();renderChecklist();renderGamma();renderHistory();renderMacro();renderUniverse();renderCoverage()}
-$('loginForm').addEventListener('submit',async e=>{e.preventDefault();const b=e.submitter;b.disabled=true;$('loginError').textContent='';try{await request('login',{method:'POST',body:JSON.stringify({password:$('password').value})});$('password').value='';authenticated=true;generation++;$('auth').hidden=true;for(const k of Object.keys(feeds))poll(k)}catch(e){$('loginError').textContent=e.message}finally{b.disabled=false}});
-$('logout').onclick=async()=>{try{await request('logout',{method:'POST',body:'{}'});lock()}catch(e){$('exitMessage').textContent='Sign-out failed: '+e.message}};
+
 $('refresh').onclick=()=>Object.keys(feeds).forEach(poll);$('focus').onchange=renderChecklist;
-$('positions').onclick=async e=>{const b=e.target.closest('[data-exit]');if(!b||b.disabled||busyExit)return;const id=b.dataset.exit;if(!/^[0-9]+$/.test(id)||!online('dashboard')||!fresh(feeds.dashboard.data.ts))return;busyExit=true;renderPositions();$('exitMessage').textContent='Sending exit request…';try{const d=await request('manual_exit/'+id,{method:'POST',body:JSON.stringify({reason:'manual_exit_dashboard'})});$('exitMessage').textContent=d.ok?'Exit request processed by engine; check refreshed position status.':'Exit not confirmed by engine.'}catch(e){$('exitMessage').textContent=e.message+'. Outcome unconfirmed; verify position before retrying.'}finally{busyExit=false;poll('dashboard')}};
-setInterval(()=>{$('clock').textContent=new Intl.DateTimeFormat('en-IN',{timeZone:'Asia/Kolkata',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(new Date())+' IST';renderAll();if(authenticated&&!document.hidden)for(const [k,f]of Object.entries(feeds))if(Date.now()>=(f.next||0))poll(k)},1000);
+$('positions').onclick=async e=>{const b=e.target.closest('[data-exit]');if(!b||b.disabled||busyExit)return;const id=b.dataset.exit;if(!/^[0-9]+$/.test(id)||!onlineLegacy('dashboard')||!fresh(feeds.dashboard.data.ts))return;busyExit=true;renderPositions();$('exitMessage').textContent='Sending exit request…';try{const d=await request('manual_exit/'+id,{method:'POST',body:JSON.stringify({reason:'manual_exit_dashboard'})});$('exitMessage').textContent=d.ok?'Exit request processed; check refreshed position status.':'Exit not confirmed.'}catch(e){$('exitMessage').textContent=e.message+'. Outcome unconfirmed; verify before retrying.'}finally{busyExit=false;poll('dashboard')}};
+const scrolling=[{box:el('gammaScroll'),button:el('gammaScrollToggle')},...['macro','news'].map(id=>({box:$(id+'Scroll'),button:$(id+'ScrollToggle')}))].map(({box,button})=>{const state={box,paused:false,hold:0};button.onclick=()=>{state.paused=!state.paused;button.textContent=state.paused?'Resume scrolling':'Pause scrolling';button.setAttribute('aria-pressed',String(state.paused))};for(const event of ['wheel','touchstart','pointerdown','keydown'])box.addEventListener(event,()=>state.hold=Date.now()+8000,{passive:true});return state});
+const reduced=matchMedia('(prefers-reduced-motion: reduce)');
+setInterval(()=>{if(!authenticated||document.hidden)return;for(const s of scrolling)if(!reduced.matches&&!s.paused&&Date.now()>s.hold&&!s.box.matches(':hover,:focus-within')){if(s.box.scrollTop+s.box.clientHeight>=s.box.scrollHeight-1){s.box.scrollTop=0;s.hold=Date.now()+2500}else s.box.scrollTop+=5}},100);
+setInterval(()=>{if(!authenticated||document.hidden)return;renderAll();for(const[k,f]of Object.entries(feeds))if(Date.now()>=(f.next||0))poll(k)},1000);
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&authenticated)Object.keys(feeds).forEach(poll)});
-$('matrixToggle').onclick=()=>{const paused=$('kadimaRain').classList.toggle('paused');$('matrixToggle').setAttribute('aria-pressed',String(paused));$('matrixToggle').textContent=paused?'Resume animation':'Pause animation'};
+return {renderGamma,start(){if(authenticated)return;authenticated=true;generation++;Object.keys(feeds).forEach(poll)},stop(){authenticated=false;generation++;for(const f of Object.values(feeds)){f.data=null;f.ok=false;f.received=null;f.next=0}for(const n of names)history[n]=[];forecastRenderKey='';renderAll()}};
 
-const reducedScroll=window.matchMedia('(prefers-reduced-motion: reduce)');
-const scrollingPanels=['gamma','macro','news'].map(id=>{
-const box=$(id+'Scroll'),button=$(id+'ScrollToggle');
-const state={box,button,paused:false,holdUntil:performance.now()+2000,endUntil:0};
-button.onclick=()=>{state.paused=!state.paused;button.setAttribute('aria-pressed',String(state.paused));button.textContent=state.paused?'Resume scrolling':'Pause scrolling'};
-for(const event of ['wheel','touchstart','pointerdown','keydown'])box.addEventListener(event,()=>{state.holdUntil=performance.now()+8000;state.endUntil=0},{passive:true});
-return state;
-});
-function scrollStep(state,now,seconds){
-const box=state.box,max=box.scrollHeight-box.clientHeight;
-if(document.hidden||reducedScroll.matches||state.paused||box.matches(':hover')||box.contains(document.activeElement)||now<state.holdUntil||max<=1){state.endUntil=0;return}
-if(box.scrollTop>=max-1){
-if(!state.endUntil)state.endUntil=now+2500;
-if(now>=state.endUntil){box.scrollTop=0;state.endUntil=0;state.holdUntil=now+2000}
-}else{state.endUntil=0;box.scrollTop=Math.min(max,box.scrollTop+seconds*96)}
-}
-let scrollPrevious=performance.now();
-function scrollFrame(now){const seconds=Math.min((now-scrollPrevious)/1000,.1);scrollPrevious=now;for(const state of scrollingPanels)scrollStep(state,now,seconds);requestAnimationFrame(scrollFrame)}
-requestAnimationFrame(scrollFrame);
-
-renderAll();request('session').then(()=>{authenticated=true;$('auth').hidden=true;Object.keys(feeds).forEach(poll)}).catch(()=>{});
+})();
+request('session').then(()=>{showDesk();return refresh()}).catch(showLogin);
 </script></body></html>
-
-
