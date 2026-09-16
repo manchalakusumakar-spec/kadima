@@ -67,7 +67,7 @@ const assert=require('assert');
   fixture.candidates[0].expiry=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Kolkata',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
   await page.evaluate(()=>refresh());
   await page.waitForFunction(()=>document.querySelector('#legacy-universe tbody tr td:nth-child(3)')?.textContent.includes('25,000.00 CE'));
-  assert.strictEqual(await page.locator('#legacy-universe th').nth(2).innerText(),'Best strike');
+  assert.strictEqual(await page.locator('#legacy-universe th').nth(2).textContent(),'Best strike');
   assert.ok((await page.locator('#legacy-universe tbody tr').nth(1).locator('td').nth(2).innerText()).includes('Unavailable'));
   fixture.candidates[0].last_updated=new Date(Date.now()-120000).toISOString();
   await page.evaluate(()=>refresh());
