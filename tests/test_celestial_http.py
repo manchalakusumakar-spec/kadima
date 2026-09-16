@@ -42,6 +42,22 @@ class HttpControls(unittest.TestCase):
     def post(self,path,payload=None):
         return self.client.post(path,json=payload or {},headers=self.auth)
 
+    def test_operations_hold_is_authenticated_persistent_and_serialized(self):
+        from kadima import memory_guard as guard
+        token='a'*32
+        self.assertEqual(self.client.get('/api/operations/state').status_code,401)
+        self.assertEqual(self.client.post('/api/operations/entries',json={}).status_code,401)
+        with patch.object(guard.config,'DATA_DIR',self.tmp.name):
+            r=self.post('/api/operations/entries',{'action':'hold','token':token})
+            self.assertEqual(r.status_code,200);self.assertEqual(guard.hold_status(),token)
+            r=self.post('/api/operations/entries',{'action':'release','token':'b'*32})
+            self.assertFalse(r.json()['ok']);self.assertEqual(guard.hold_status(),token)
+            self.ex._execution_lock=Mock(acquire=Mock(return_value=False))
+            r=self.post('/api/operations/entries',{'action':'release','token':token})
+            self.assertEqual(r.status_code,409);self.assertEqual(guard.hold_status(),token)
+            self.ex._execution_lock.release.assert_not_called()
+            self.ex.squareoff.assert_not_called()
+
     def test_all_new_control_routes_require_auth(self):
         for path in ('/api/kadima/config','/api/order/buy','/api/order/sell','/api/order/exit',
                      '/api/order/sl','/api/order/trailing-sl','/api/order/modify-sl','/api/order/cancel',

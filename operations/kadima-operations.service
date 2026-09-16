@@ -1,0 +1,16 @@
+[Unit]
+Description=KADIMA guarded service operations
+Requires=kadima-operations.socket
+After=kadima-operations.socket
+
+[Service]
+ExecStart=/usr/bin/python3 /opt/kadima-operations/control.py --serve
+User=root
+Group=root
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=read-only
+UMask=0077
+Restart=on-failure
+RestartSec=3

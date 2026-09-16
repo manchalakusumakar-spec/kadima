@@ -19,11 +19,12 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 from . import alerts, audit, indicators, killswitch, last_known, storage, strike_selector
-from . import auto_executor
+from . import auto_executor, celestial
 from .shield_confirmation import (SHIELD_MIN_SCORE, BANK_NAMES, ShieldEvidence,
     alignment, fresh, confirmation_checks, is_shield_confirmed)
 from .stock_execution import StockExecutionWorker
 from .forecast_observer import ForecastObserver
+from .config import STRIKES_EACH_SIDE
 from . import gamma_blast_scanner as gamma
 from .candles import Candle, CandleBuilder
 from .config import (EMA_FAST, EMA_SLOW, GAMMA_EXPIRY_ONLY, GAMMA_INDICES,
@@ -91,10 +92,17 @@ class IndexState:
 
 class Engine:
     def __init__(self) -> None:
+        from . import memory_guard
+        memory_guard.start()
         self.scrips = ScripMaster.load()
         from . import celestial
         from .celestial_scanner import Radar
         self.radar = Radar()
+        from .cas_blast_scanner import CasBlastScanner
+        self.cas = CasBlastScanner()
+        self._entry_jobs = {}
+        self._entry_jobs_lock = threading.Lock()
+        self._entry_jobs_ready = threading.Event()
         self.scan_indices = GAMMA_INDICES
         if celestial.enabled():
             from .celestial_universe import discover_indices
@@ -187,6 +195,7 @@ class Engine:
         auto_executor.EXECUTOR.reconcile_on_startup()
         auto_executor.EXECUTOR.start_monitor_thread()
         self.stock_worker.start()
+        threading.Thread(target=self._entry_work_loop,daemon=True,name="index-entry-work").start()
         self.forecaster.start()
         for name, idx in self.scan_indices.items():
             self.feed.subscribe(EXCHANGE_TYPE[idx.exchange], [idx.token])
@@ -338,13 +347,24 @@ class Engine:
                 self._warm_bank_history()
                 for st in self.states.values():
                     from . import celestial
-                    if not celestial.enabled() and st.name in GAMMA_EXPIRY_ONLY and self._dte(st) > 1.0:
-                        continue  # monthly-only index -- scan only on its own expiry day
                     if st.spot:
                         try:
+                            # Expand the existing single-request ladder for closing-session
+                            # observation: 42 contracts, still below the 50-token batch limit.
+                            clock=now_ist()
+                            width=max(10,STRIKES_EACH_SIDE) if (clock.hour,clock.minute)>=(14,50) else STRIKES_EACH_SIDE
+                            width=min(12,width)
+                            if st.chain.strikes_each_side!=width:
+                                st.chain.strikes_each_side=width
+                                st.chain.atm=None
                             st.chain.rebuild_ladder(st.spot)
                             polled = st.chain.poll()
                             if polled:
+                                # Detection runs before entry preparation and never checks RAM admission.
+                                try:
+                                    self.cas.observe(st.chain,st.spot,spot_at=st.last_updated.isoformat() if st.last_updated and st.is_live_tick else None)
+                                except Exception as exc:
+                                    audit.log("cas_detection_failed",index=st.name,error=type(exc).__name__)
                                 auto_executor.EXECUTOR.state.premium_tracker.record_chain(st.chain)
                             if polled:
                                 auto_executor.EXECUTOR.update_structure(st.name, st.chain, st.spot)
@@ -354,8 +374,7 @@ class Engine:
                                     st.gamma_result,shield_score=st.score,shield_direction=st.direction,
                                     vwap=st.snap.vwap)
                                 if celestial.enabled():
-                                    auto_executor.EXECUTOR.prepare_celestial_context(
-                                        st.name,st.chain,st.spot,st.snap,self._dte(st))
+                                    self._queue_entry_work(st)
                         except Exception as exc:        # noqa: BLE001
                             audit.log("oi_loop_error", index=st.name,
                                       error=str(exc))
@@ -396,8 +415,7 @@ class Engine:
         # not an oversight — Bull Shield's _evaluate() below is unchanged.
         if killswitch.engaged() or not in_market_hours():
             return
-        if past_cutoff(GAMMA_SIGNAL_CUTOFF):
-            return
+        # Detection continues through the session; entry cutoff stays in the executor.
 
         payload = {"index": st.name, "tier": result.tier, "score": result.score,
                    "direction": result.direction, "spot": st.spot,
@@ -416,11 +434,51 @@ class Engine:
     
             st._gamma_entry_signal = sid
 
-        auto_executor.EXECUTOR.evaluate_and_enter(
-            index_name=st.name, direction=result.direction, chain=st.chain,
-            spot=st.spot, snap=st.snap, days_to_expiry=self._dte(st),
-            kind="gamma_blast", source_signal_id=sid,
-            tier=result.tier, score=result.score)
+        if not celestial.enabled():
+            self._queue_entry_work(st,sid)
+
+    def _queue_entry_work(self, st, sid=None):
+        # Latest complete observation per underlying, bounded by index count.
+        # Never run network/session/order preparation on the detector thread.
+        import copy
+        original=st.chain
+        chain=copy.copy(original)
+        chain.quotes={k:copy.copy(v) for k,v in original.quotes.items()}
+        chain.velocity=copy.copy(original.velocity)
+        chain.velocity.samples=original.velocity.samples.copy()
+        observed=original._last_poll
+        expiry=original._expiry
+        chain._entry_guard=lambda: original._last_poll==observed and original._expiry==expiry
+        job=dict(name=st.name,chain=chain,spot=st.spot,snap=st.snap,days=self._dte(st),
+                 sid=sid,result=st.gamma_result,created=time.monotonic())
+        with self._entry_jobs_lock:
+            self._entry_jobs[st.name]=job
+        self._entry_jobs_ready.set()
+
+    def _entry_work_loop(self):
+        while not self._stop.is_set():
+            self._entry_jobs_ready.wait(1)
+            if self._stop.is_set():
+                break
+            with self._entry_jobs_lock:
+                job=self._entry_jobs.pop(next(iter(self._entry_jobs))) if self._entry_jobs else None
+                if not self._entry_jobs:self._entry_jobs_ready.clear()
+            if not job:
+                continue
+            if not 0<=time.monotonic()-job['created']<=25 or not job['chain']._entry_guard():
+                audit.log('entry_preparation_expired',index=job['name'])
+                continue
+            try:
+                if job['sid'] is None:
+                    auto_executor.EXECUTOR.prepare_celestial_context(job['name'],job['chain'],
+                        job['spot'],job['snap'],job['days'])
+                else:
+                    result=job['result']
+                    auto_executor.EXECUTOR.evaluate_and_enter(index_name=job['name'],direction=result.direction,
+                        chain=job['chain'],spot=job['spot'],snap=job['snap'],days_to_expiry=job['days'],
+                        kind='gamma_blast',source_signal_id=job['sid'],tier=result.tier,score=result.score)
+            except Exception as exc:
+                audit.log('entry_preparation_failed',index=job['name'],error=type(exc).__name__)
 
     # --------------------------------------------------------------- scoring
     def _score(self, st: IndexState, closed_at=None, closed_price=None) -> None:
@@ -617,6 +675,5 @@ class Engine:
                 audit.log("market_close_shutdown")
                 self.stop()
                 return
-
 
 

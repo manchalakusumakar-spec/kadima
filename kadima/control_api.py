@@ -581,3 +581,52 @@ def celestial_news(body: dict = Body(...), authorization: Optional[str] = Header
                       covered_symbols=body['covered_symbols'])
     except (ValueError,TypeError,KeyError) as exc:
         raise HTTPException(422,str(exc))
+
+
+@app.get('/api/operations/state')
+def operations_state(authorization: Optional[str] = Header(None)):
+    _check_auth(authorization)
+    from . import memory_guard, storage
+    from datetime import timedelta
+    rows = storage.conn().execute(
+        "SELECT id,ts,index_name,tier,score,direction,payload,kind FROM signals "
+        "WHERE kind IN ('gamma_blast','gamma_strike','cas_blast') AND ts>=? ORDER BY id DESC LIMIT 40",
+        ((now_ist()-timedelta(days=1)).isoformat(),)).fetchall()
+    detections=[]
+    for r in rows:
+        d=dict(r)
+        try:
+            import json
+            payload=json.loads(d.pop('payload'))
+            d['symbol']=payload.get('symbol') if isinstance(payload,dict) else None
+        except (ValueError,TypeError):
+            d['symbol']=None
+        detections.append(d)
+    return dict(ts=now_ist().isoformat(),memory_guard=memory_guard.status(),
+        cas=celestial.health('cas_detection'),detections=detections,
+        reconciliation_blocked=EXECUTOR is None or EXECUTOR._reconcile_blocked)
+
+
+@app.post('/api/operations/entries')
+def operations_entries(body: dict = Body(...), authorization: Optional[str] = Header(None)):
+    _check_auth(authorization)
+    from . import memory_guard
+    import re
+    if set(body)!={'action','token'} or body.get('action') not in ('hold','release') or not isinstance(body.get('token'),str) or not re.fullmatch('[a-f0-9]{32}',body['token']):
+        raise HTTPException(422,'invalid_operations_request')
+    if EXECUTOR is None:
+        raise HTTPException(503,'executor_unavailable')
+    # The acknowledgement waits for any in-flight serialized entry to finish.
+    # Subsequent entry checks, including the broker boundary, read this hold.
+    if not EXECUTOR._execution_lock.acquire(timeout=2):
+        raise HTTPException(409,'entry_operation_in_progress')
+    try:
+        if body['action']=='hold':
+            memory_guard.hold_entries(body['token'])
+            ok=True
+        else:
+            ok=memory_guard.release_entries(body['token'])
+        audit.log('operations_entry_hold',action=body['action'],ok=ok)
+        return {'ok':ok}
+    finally:
+        EXECUTOR._execution_lock.release()

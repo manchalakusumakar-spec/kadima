@@ -2,20 +2,30 @@ openapi: 3.1.0
 info:
   title: KADIMA state API
   description: Read-only intraday state and session review for KADIMA.
-  version: 0.1.0
+  version: 0.2.0
 servers:
   - url: https://YOUR-DOMAIN-HERE
 paths:
   /state:
     get:
       operationId: getState
-      summary: Current KADIMA state across NIFTY, BANKNIFTY, SENSEX, MIDCPNIFTY.
+      summary: Current KADIMA indices and F&O stock universe shortlist.
       description: >
         Returns spot, Shield tier and score, technicals (VWAP, EMA20/50, MA55,
         RSI, Ichimoku, volume), option chain (ATM, PCR, max pain, OI walls, OI
         velocity alerts) per index, plus an explicit list of checklist items
         that are unavailable from this data source. Treat anything listed under
         "unavailable" as not observable - do not infer or estimate it.
+        fno_universe includes the stock scanner's top20, selected option contracts,
+        coverage and original timestamps. Its stock_gamma scores are separate from
+        index Shield confirmation. Check status, fresh and each row/contract's
+        freshness; market_closed or stale observations are historical, not live
+        signals or permission to place orders. Scanner freshness measures receipt
+        time, not the exchange's last trade time.
+        commodities includes read-only MCX futures and option observations with
+        exchange feed and trade timestamps. Context monitoring runs 24/7; quotes
+        are polled in the configured weekday 09:00-23:30 IST window. This is not
+        an exchange holiday calendar. MCX execution remains disabled.
       responses:
         "200":
           description: Current state

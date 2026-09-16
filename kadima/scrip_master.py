@@ -10,6 +10,7 @@ contract list - trading a delisted token is a silent, expensive failure.
 from __future__ import annotations
 
 import json
+import tempfile
 import os
 import re
 import urllib.request
@@ -39,23 +40,45 @@ class ScripMaster:
         fresh = (os.path.exists(CACHE) and
                  (datetime.now().timestamp() - os.path.getmtime(CACHE))
                  < max_age_hours * 3600)
+        data = None
         if not fresh:
+            temporary = None
             try:
-                with urllib.request.urlopen(MASTER_URL, timeout=60) as r:
-                    data = json.loads(r.read().decode())
-                with open(CACHE, "w") as fh:
-                    json.dump(data, fh)
+                # Download to disk in bounded chunks, then parse exactly once.
+                # The old path held the decoded JSON and two parsed masters.
+                with tempfile.NamedTemporaryFile(dir=DATA_DIR, prefix='scrip-master-', delete=False) as fh:
+                    temporary = fh.name
+                    with urllib.request.urlopen(MASTER_URL, timeout=60) as response:
+                        size = 0
+                        while True:
+                            chunk = response.read(1024*1024)
+                            if not chunk:
+                                break
+                            size += len(chunk)
+                            if size > 128*1024*1024:
+                                raise ValueError('contract_master_too_large')
+                            fh.write(chunk)
+                with open(temporary) as fh:
+                    data = json.load(fh)
+                if not isinstance(data,list) or not data or not all(isinstance(r,dict) for r in data):
+                    raise ValueError('invalid_contract_master')
+                os.replace(temporary,CACHE)
+                temporary = None
                 audit.log("scrip_master_downloaded", rows=len(data))
-            except Exception as exc:                    # noqa: BLE001
-                audit.log("scrip_master_download_failed", error=str(exc))
+            except Exception as exc:
+                data = None
+                audit.log("scrip_master_download_failed", error=type(exc).__name__)
                 if os.environ.get('KADIMA_CELESTIAL_ENABLED','0')=='1':
                     raise RuntimeError('Celestial requires a fresh contract master') from exc
                 if not os.path.exists(CACHE):
-                    raise RuntimeError(
-                        "Cannot start: scrip master unavailable and no cache."
-                    ) from exc
-        with open(CACHE) as fh:
-            return cls(json.load(fh))
+                    raise RuntimeError('Cannot start: scrip master unavailable and no cache.') from exc
+            finally:
+                if temporary is not None:
+                    os.unlink(temporary)
+        if data is None:
+            with open(CACHE) as fh:
+                data = json.load(fh)
+        return cls(data)
 
     # --------------------------------------------------------------- queries
     def _options_for(self, index) -> Iterable[dict]:

@@ -49,6 +49,8 @@ class OptionQuote:
     vega: float | None = None
     bid: float | None = None
     ask: float | None = None
+    exchange_feed_time: str | None = None
+    exchange_trade_time: str | None = None
 
     @property
     def spread_pct(self) -> float | None:
@@ -223,6 +225,8 @@ class OptionChain:
             q.oi = _i(row.get("opnInterest"))
             q.oi_change = _i(row.get("netChangeOpnInterest"))
             q.volume = _i(row.get("tradeVolume"))
+            q.exchange_feed_time = row.get("exchFeedTime")
+            q.exchange_trade_time = row.get("exchTradeTime")
             depth = row.get("depth") or {}
             buy, sell = depth.get("buy") or [], depth.get("sell") or []
             q.bid = _f(buy[0].get("price")) if buy else None

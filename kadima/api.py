@@ -6,7 +6,7 @@ Two read-only endpoints. Nothing here can write to config, place an order, or
 change engine behaviour. That is deliberate: an LLM reads this, and an LLM
 should not be able to reach anything consequential.
 
-    GET /state    current picture across four indices  (~40 lines of JSON)
+    GET /state    current picture across indices and the F&O stock shortlist
     GET /session  today's signals + 30-min outcomes
     GET /health   liveness, for the watchdog
 
@@ -30,11 +30,13 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from . import storage
 from .config import INDICES, IST
 from .utils import in_market_hours, now_ist
+from .universe_api import read_universe
+from .commodity_watch import read_snapshot as read_commodities
 
 API_TOKEN = os.environ.get("KADIMA_API_TOKEN", "")
 OUTCOME_HORIZON_MIN = int(os.environ.get("KADIMA_OUTCOME_MIN", "30"))
 
-app = FastAPI(title="KADIMA state API", version="0.1.0")
+app = FastAPI(title="KADIMA state API", version="0.2.0")
 _bearer = HTTPBearer(auto_error=True)
 
 # The engine sets this at startup so the API can read live in-memory state.
@@ -127,6 +129,8 @@ def state() -> dict:
         }
 
     out["global_context"] = getattr(ENGINE, "global_context", None)
+    out["fno_universe"] = read_universe(now=now_ist())
+    out["commodities"] = read_commodities(now=now_ist())
     return out
 
 
@@ -263,5 +267,3 @@ REVIEW_GUARDRAIL = (
     "Below that threshold the correct answer is 'insufficient sample'. "
     "Patterns found in 20-40 outcomes are almost always noise."
 )
-
-

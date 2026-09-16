@@ -2,11 +2,16 @@
 import hashlib
 import hmac
 import json
+import math
 import os
+from pathlib import Path
 import re
 import secrets
+import shutil
+import socket
 import time
 import threading
+from datetime import datetime, timezone
 import urllib.request
 import urllib.error
 from fastapi import FastAPI, Request, HTTPException
@@ -49,6 +54,146 @@ async def security_headers(request, call_next):
 @app.get('/health')
 def health():
     return {'ok': True}
+
+
+class ResourceSampler:
+    """Bounded, read-only host observations shared by all dashboard viewers."""
+    def __init__(self, proc='/proc'):
+        self.proc = Path(proc)
+        self.lock = threading.Lock()
+        self.cached = None
+        self.sampled_at = None
+        self.previous_cpu = None
+
+    def read(self, name):
+        # Only constant host-wide filenames are used; never process environments.
+        with (self.proc / name).open() as handle:
+            raw = handle.read(65537)
+        if len(raw) > 65536:
+            raise ValueError('oversized_metric')
+        return raw
+
+    def snapshot(self):
+        with self.lock:
+            mono = time.monotonic()
+            if self.cached is not None and 0 <= mono - self.sampled_at < 1:
+                return self.cached
+            out = dict(ts=datetime.now(timezone.utc).isoformat(), refresh_seconds=2,
+                       memory=None, swap=None, cpu=None, disk=None, uptime_seconds=None,
+                       missing=[], alerts=[])
+            memory = {}
+            try:
+                wanted = {'MemTotal', 'MemAvailable', 'SwapTotal', 'SwapFree'}
+                for line in self.read('meminfo').splitlines():
+                    key, _, value = line.partition(':')
+                    if key in wanted:
+                        parts = value.split()
+                        if len(parts) != 2 or parts[1] != 'kB' or not parts[0].isdigit():
+                            raise ValueError('invalid_memory_metric')
+                        memory[key] = int(parts[0]) * 1024
+                total, available = memory['MemTotal'], memory['MemAvailable']
+                if not 0 <= available <= total or total <= 0:
+                    raise ValueError('invalid_memory_range')
+                out['memory'] = dict(total_bytes=total, available_bytes=available,
+                                     used_bytes=total-available,
+                                     used_percent=round(100*(total-available)/total, 1),
+                                     available_percent=round(100*available/total, 1))
+            except (OSError, ValueError, KeyError):
+                out['missing'].append('RAM')
+            try:
+                total, free = memory['SwapTotal'], memory['SwapFree']
+                if not 0 <= free <= total:
+                    raise ValueError('invalid_swap_range')
+                out['swap'] = dict(enabled=total > 0, total_bytes=total,
+                                   used_bytes=total-free,
+                                   used_percent=round(100*(total-free)/total, 1) if total else None)
+            except (ValueError, KeyError):
+                out['missing'].append('swap')
+            try:
+                fields = self.read('stat').splitlines()[0].split()
+                if len(fields) < 9 or fields[0] != 'cpu':
+                    raise ValueError('invalid_cpu_metric')
+                counters = tuple(int(value) for value in fields[1:9])
+                if any(value < 0 for value in counters):
+                    raise ValueError('invalid_cpu_counter')
+                cpu = dict(busy_percent=None, iowait_percent=None, steal_percent=None,
+                           interval_seconds=None, logical_cpus=os.cpu_count(), load_1m=None)
+                if self.previous_cpu:
+                    before, before_at = self.previous_cpu
+                    elapsed = mono - before_at
+                    delta = tuple(a-b for a, b in zip(counters, before))
+                    total = sum(delta)
+                    # Long gaps and reset/decreasing counters are not live intervals.
+                    if 1 <= elapsed <= 10 and min(delta) >= 0 and total > 0:
+                        cpu.update(busy_percent=round(100*(total-delta[3]-delta[4]-delta[7])/total, 1),
+                                   iowait_percent=round(100*delta[4]/total, 1),
+                                   steal_percent=round(100*delta[7]/total, 1),
+                                   interval_seconds=round(elapsed, 2))
+                self.previous_cpu = counters, mono
+                try:
+                    load = os.getloadavg()[0]
+                    if math.isfinite(load) and load >= 0:
+                        cpu['load_1m'] = round(load, 2)
+                except OSError:
+                    pass
+                out['cpu'] = cpu
+            except (OSError, ValueError, IndexError):
+                self.previous_cpu = None
+                out['missing'].append('CPU')
+            try:
+                disk = shutil.disk_usage('/')
+                if not 0 <= disk.free <= disk.total or disk.total <= 0:
+                    raise ValueError('invalid_disk_range')
+                out['disk'] = dict(total_bytes=disk.total, available_bytes=disk.free,
+                                   used_percent=round(100*(disk.total-disk.free)/disk.total, 1))
+            except (OSError, ValueError):
+                out['missing'].append('disk')
+            try:
+                uptime = float(self.read('uptime').split()[0])
+                if math.isfinite(uptime) and uptime >= 0:
+                    out['uptime_seconds'] = round(uptime)
+            except (OSError, ValueError, IndexError):
+                pass
+
+            def alert(level, message):
+                out['alerts'].append(dict(level=level, message=message))
+            if out['memory']:
+                available = out['memory']['available_percent']
+                if available < 10:
+                    alert('critical', 'RAM available below 10%')
+                elif available < 20:
+                    alert('warning', 'RAM available below 20%')
+            if out['disk']:
+                used = out['disk']['used_percent']
+                if used > 95:
+                    alert('critical', 'Disk space available below 5%')
+                elif used > 85:
+                    alert('warning', 'Disk space available below 15%')
+            if out['cpu']:
+                for key, limit, message in (
+                        ('busy_percent', 85, 'High CPU use in latest sample'),
+                        ('iowait_percent', 20, 'High reported I/O wait'),
+                        ('steal_percent', 10, 'High hypervisor CPU wait')):
+                    value = out['cpu'][key]
+                    if value is not None and value >= limit:
+                        alert('warning', message)
+            levels = {item['level'] for item in out['alerts']}
+            out['status'] = ('critical' if 'critical' in levels else 'warning' if levels else
+                             'unavailable' if all(out[key] is None for key in ('memory', 'cpu', 'disk')) else
+                             'partial' if out['missing'] else
+                             'warming_up' if out['cpu']['busy_percent'] is None else 'healthy')
+            self.cached, self.sampled_at = out, mono
+            return out
+
+
+RESOURCES = ResourceSampler()
+
+
+@app.get('/server_health')
+def server_health(request: Request):
+    authenticated(request)
+    return RESOURCES.snapshot()
+
 
 @app.post('/login')
 async def login(request: Request):
@@ -118,6 +263,90 @@ def upstream(port, path, method='GET', payload=None):
         raise HTTPException(502, 'backend_request_failed') from exc
     except (OSError, ValueError) as exc:
         raise HTTPException(502, 'backend_unavailable') from exc
+
+OPERATIONS_JOBS = {}
+OPERATIONS_LOCK = threading.Lock()
+
+
+def operation_request(payload, timeout=9):
+    """Private socket: gateway keeps its existing unprivileged sandbox."""
+    try:
+        with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as conn:
+            conn.settimeout(timeout)
+            conn.connect('/run/kadima-operations.sock')
+            conn.sendall(json.dumps(payload).encode()+b'\n')
+            raw=b''
+            while b'\n' not in raw:
+                chunk=conn.recv(min(16384,262145-len(raw)))
+                if not chunk:raise ValueError('incomplete_reply')
+                raw+=chunk
+                if len(raw)>262144:raise ValueError('oversized_reply')
+        data=json.loads(raw)
+        if not isinstance(data,dict):raise ValueError('invalid_reply')
+        return data
+    except (OSError,ValueError):
+        raise HTTPException(503,'operations_unavailable_check_service_state') from None
+
+
+@app.get('/operations')
+def operations_read(request: Request):
+    authenticated(request)
+    return operation_request({'action':'status'})
+
+
+@app.post('/operations')
+async def operations_write(request: Request):
+    origin_check(request)
+    authenticated(request)
+    raw=await request.body()
+    if len(raw)>1024:raise HTTPException(413,'request_too_large')
+    try:
+        payload=json.loads(raw)
+        if not isinstance(payload,dict) or set(payload)-{'action','service','minutes'}:raise ValueError()
+        if payload.get('action') not in ('start','stop','restart','delay','pause_entries'):raise ValueError()
+        if payload.get('service') not in ('engine','scanner','macro'):raise ValueError()
+        if 'minutes' in payload and (type(payload['minutes']) is not int or payload['minutes'] not in (5,15,30,60)):raise ValueError()
+        if payload['action']=='pause_entries' and payload['service']!='engine':raise ValueError()
+    except (ValueError,TypeError,UnicodeDecodeError):
+        raise HTTPException(422,'invalid_operations_request') from None
+    # Return immediately through the existing 12s Nginx proxy timeout. Each
+    # mutation runs once in a bounded worker; polling a job never repeats it.
+    with OPERATIONS_LOCK:
+        now=time.monotonic()
+        for key,job in list(OPERATIONS_JOBS.items()):
+            if job['state']=='done' and now-job['created']>900:
+                del OPERATIONS_JOBS[key]
+        if any(job['state']=='running' for job in OPERATIONS_JOBS.values()):
+            raise HTTPException(409,'operation_in_progress')
+        if len(OPERATIONS_JOBS)>=32:
+            oldest=min(OPERATIONS_JOBS,key=lambda k:OPERATIONS_JOBS[k]['created'])
+            del OPERATIONS_JOBS[oldest]
+        identity=secrets.token_hex(16)
+        OPERATIONS_JOBS[identity]=dict(owner=request.cookies.get(COOKIE),created=now,state='running',result=None)
+    def work():
+        try:
+            result=operation_request(payload,180)
+        except Exception:
+            result={'ok':False,'reason':'operation_outcome_unknown_check_service_state'}
+        with OPERATIONS_LOCK:
+            OPERATIONS_JOBS[identity].update(state='done',result=result)
+    try:
+        threading.Thread(target=work,daemon=True,name='website-operation').start()
+    except RuntimeError:
+        with OPERATIONS_LOCK:
+            OPERATIONS_JOBS[identity].update(state='done',result={'ok':False,'reason':'operation_not_started'})
+    return JSONResponse({'accepted':True,'job_id':identity},status_code=202)
+
+
+@app.get('/operations/jobs/{identity}')
+def operation_job(identity: str, request: Request):
+    authenticated(request)
+    with OPERATIONS_LOCK:
+        job=OPERATIONS_JOBS.get(identity)
+        if job is None or job['owner']!=request.cookies.get(COOKIE):
+            raise HTTPException(404,'operation_job_unavailable')
+        return {'state':job['state'],'result':job['result']}
+
 
 @app.get('/{name}')
 def read_data(name: str, request: Request):
