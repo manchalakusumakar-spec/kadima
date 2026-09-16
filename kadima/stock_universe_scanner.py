@@ -419,8 +419,10 @@ class UniverseScanner:
 
 def main() -> int:
     audit.log("universe_scanner_starting")
+    from . import memory_guard
+    memory_guard.start()
     from . import celestial
-    if celestial.enabled():
+    if celestial.enabled() or os.environ.get("KADIMA_FULL_UNIVERSE_MONITOR", "1") == "1":
         from .full_universe_scanner import FullUniverseScanner
         scanner = FullUniverseScanner()
     else:

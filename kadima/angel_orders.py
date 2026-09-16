@@ -67,6 +67,11 @@ def place_limit_order(*, tradingsymbol: str, symboltoken: str, exchange: str,
         return OrderResult(False, None, "invalid_price")
     if transactiontype not in ("BUY", "SELL"):
         return OrderResult(False, None, "invalid_transactiontype")
+    from . import memory_guard
+    if transactiontype == 'BUY':
+        blocked = memory_guard.entry_block_reason()
+        if blocked:
+            return OrderResult(False, None, blocked)
 
     orderparams = {
         "variety": "NORMAL",
@@ -100,6 +105,13 @@ def place_limit_order(*, tradingsymbol: str, symboltoken: str, exchange: str,
     request_started = False
     try:
         SESSION.ensure()
+        # Session refresh may take time: sample again at the actual send boundary.
+        # SELL closes a long position and is deliberately never memory-gated.
+        if transactiontype == 'BUY':
+            blocked = memory_guard.entry_block_reason()
+            if blocked:
+                audit.log('ANGELONE_BLOCKED', signal_id=signal_id, reason=blocked)
+                return OrderResult(False, None, blocked)
         audit.log('ANGELONE_REQUEST', signal_id=signal_id, intent=ordertag,
                   symbol=tradingsymbol, side=transactiontype, quantity=quantity, price=price)
         request_started = True

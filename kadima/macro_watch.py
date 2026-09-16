@@ -360,7 +360,8 @@ class MacroWatcher:
                 last_vix = now
                 self._save_snapshot()
 
-            if now - last_fiidii >= FIIDII_POLL_SEC:
+            from .memory_guard import optional_work_allowed
+            if optional_work_allowed() and now - last_fiidii >= FIIDII_POLL_SEC:
                 rows = _fetch_fiidii()
                 if rows:
                     self._last_fiidii = {"rows": rows, "fetched_at": now_ist().isoformat()}
@@ -368,7 +369,7 @@ class MacroWatcher:
                 last_fiidii = now
                 self._save_snapshot()
 
-            if now - last_news >= NEWS_POLL_SEC:
+            if optional_work_allowed() and now - last_news >= NEWS_POLL_SEC:
                 articles = _fetch_news()
                 if articles:
                     self._last_news = articles
@@ -384,6 +385,8 @@ class MacroWatcher:
 
 def main() -> int:
     audit.log("macro_watch_starting")
+    from . import memory_guard
+    memory_guard.start()
     watcher = MacroWatcher()
     watcher._save_snapshot()   # write an initial snapshot immediately, even
                                # if everything is still null -- so the

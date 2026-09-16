@@ -84,18 +84,18 @@ class Integrations(unittest.TestCase):
             components=types.SimpleNamespace(as_dict=lambda:{})) for d in ['CE','CE','PE']]
         execution=Mock()
         saves=Mock(side_effect=[101,102])
-        ns=dict(IndexState=object,gamma=types.SimpleNamespace(score=Mock(side_effect=results),
+        ns=dict(IndexState=object,celestial=types.SimpleNamespace(enabled=lambda:False),gamma=types.SimpleNamespace(score=Mock(side_effect=results),
             GammaSnapshot=lambda **kw:None),audit=audit,killswitch=types.SimpleNamespace(engaged=lambda:False),
-            in_market_hours=lambda:True,past_cutoff=lambda _:False,GAMMA_SIGNAL_CUTOFF=(15,35),
+            in_market_hours=lambda:True,past_cutoff=lambda _:True,GAMMA_SIGNAL_CUTOFF=(15,35),
             storage=types.SimpleNamespace(insert_signal=saves),json=__import__('json'),
             alerts=types.SimpleNamespace(enqueue=Mock()),auto_executor=types.SimpleNamespace(EXECUTOR=execution))
         exec(compile(ast.Module(body=[fn],type_ignores=[]),'gamma','exec'),ns)
         st=types.SimpleNamespace(name='TEST',chain=None,gamma_result=None,gamma_history=None,
             spot=100,snap=types.SimpleNamespace(above_vwap=True,ema_bull=True))
-        owner=types.SimpleNamespace(_dte=lambda st:1)
+        owner=types.SimpleNamespace(_dte=lambda st:1,_queue_entry_work=Mock())
         for _ in results:ns['_score_gamma'](owner,st)
-        self.assertEqual([c.kwargs['source_signal_id'] for c in execution.evaluate_and_enter.call_args_list],
-                         [101,101,102])
+        self.assertEqual([c.args[1] for c in owner._queue_entry_work.call_args_list],[101,101,102])
+        execution.evaluate_and_enter.assert_not_called()
         self.assertEqual(saves.call_count,2)
 
 if __name__=='__main__':unittest.main()

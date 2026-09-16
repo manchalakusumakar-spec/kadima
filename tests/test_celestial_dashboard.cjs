@@ -20,6 +20,12 @@ const assert=require('assert');
     positions:[{signal_id:7,symbol:'FIXTURE26SEP100CE',source:'MANUAL_ADOPTED',status:'open',remaining_qty:10,
       entry_price:100,ltp:112,unrealized_pnl_inr:120,effective_stop:107.2,trail_active:true}]};
   const writes=[];
+  const opsWrites=[];let opsFails=false;const opsJobs=new Map();let jobPolls=0;
+  const opsFixture={ok:true,services:['engine','scanner','macro'].map(id=>({id,state:'active',detail:'running',installed:true,scan_protected:true,delayed:false,delay_until:null})),
+    engine:{memory_guard:{state:'normal',entries_blocked:false,optional_work_delayed:false,manual_entry_hold:false,gamma_cas_protected:true},
+      cas:{indices:{NIFTY:{status:'observing',fresh_contracts:42,ladder_contracts:42}}},
+      detections:[{id:123,kind:'cas_blast',symbol:'CAS_FIXTURE_CE',direction:'CE',ts:now}]}};
+
   let marketFails=false;
   let healthFails=false,healthStale=false,healthInvalid=false,healthUnauthorized=false,healthCalls=0;
   const serverHealth={status:'healthy',memory:{total_bytes:2147483648,used_bytes:1073741824,available_bytes:1073741824,used_percent:50,available_percent:50},
@@ -41,6 +47,23 @@ const assert=require('assert');
     if(url.pathname==='/dashboard.html')return route.fulfill({contentType:'text/html',body:fs.readFileSync(path.join(__dirname,'../dashboard_live/dashboard.html'),'utf8')});
     if(url.pathname==='/dashboard-api/session')return route.fulfill({json:{ok:true}});
     if(url.pathname==='/dashboard-api/celestial')return route.fulfill({json:fixture});
+    if(url.pathname.startsWith('/dashboard-api/operations/jobs/')){
+      const job=opsJobs.get(url.pathname.split('/').pop());assert.ok(job);jobPolls++;
+      return route.fulfill({json:job.polls++===0?{state:'running',result:null}:{state:'done',result:{ok:true,reason:'fixture_operation_completed'}}});
+    }
+    if(url.pathname==='/dashboard-api/operations'){
+      if(request.method()==='POST'){
+        const body=request.postDataJSON();opsWrites.push(body);
+        if(body.action==='pause_entries')opsFixture.engine.memory_guard.manual_entry_hold=true;
+        if(body.action==='start')opsFixture.engine.memory_guard.manual_entry_hold=false;
+        if(body.action==='delay'){const row=opsFixture.services.find(r=>r.id===body.service);row.state='inactive';row.delayed=true;row.delay_until=new Date(Date.now()+body.minutes*60000).toISOString();}
+        const identity=String(opsWrites.length).padStart(32,'0');opsJobs.set(identity,{polls:0});
+        return route.fulfill({status:202,json:{accepted:true,job_id:identity}});
+      }
+      if(opsFails)return route.fulfill({status:503,json:{detail:'operations_unavailable'}});
+      const stamp=new Date().toISOString();opsFixture.engine.memory_guard.ts=stamp;opsFixture.engine.cas.ts=stamp;
+      return route.fulfill({json:{...opsFixture,ts:stamp}});
+    }
     if(url.pathname==='/dashboard-api/server_health'){
       healthCalls++;
       assert.strictEqual(request.method(),'GET');
@@ -70,6 +93,31 @@ const assert=require('assert');
   assert.ok((await page.locator('#serverRamDetail').textContent()).includes('1.00 GiB available'));
   assert.strictEqual(await page.locator('#serverHealth').getAttribute('data-current'),'true');
   assert.strictEqual(await page.locator('#serverHealthStatus').textContent(),'Resources normal');
+  await page.waitForFunction(()=>document.getElementById('operationsStatus').textContent==='Service status current');
+  const opsCards=page.locator('#operationsServices .ops-card');
+  assert.strictEqual(await opsCards.count(),3);
+  assert.ok(!(await opsCards.nth(0).getByRole('button',{name:'Restart',exact:true}).isEnabled()));
+  assert.ok(!(await opsCards.nth(1).getByRole('button',{name:'Stop',exact:true}).isEnabled()));
+  page.on('dialog',dialog=>dialog.accept());
+  await opsCards.nth(0).getByRole('button',{name:'Pause new entries'}).click();
+  await page.waitForFunction(()=>document.getElementById('operationsGuard').textContent.includes('manual entry hold'));
+  assert.deepStrictEqual(opsWrites[0],{service:'engine',action:'pause_entries'});
+  await opsCards.nth(0).getByRole('button',{name:'Start / resume entries'}).click();
+  await page.waitForFunction(()=>!document.getElementById('operationsGuard').textContent.includes('manual entry hold'));
+  opsFixture.services[1].scan_protected=false;await page.click('#operationsRefresh');
+  await page.waitForFunction(()=>!document.querySelectorAll('#operationsServices .ops-card')[1].querySelectorAll('button')[3].disabled);
+  await opsCards.nth(1).getByRole('combobox').selectOption('5');
+  await opsCards.nth(1).getByRole('button',{name:'Delay',exact:true}).click();
+  await page.waitForFunction(()=>document.querySelectorAll('#operationsServices .ops-card')[1].textContent.includes('delayed start scheduled'));
+  assert.deepStrictEqual(opsWrites[2],{service:'scanner',action:'delay',minutes:5});
+  await page.waitForFunction(()=>document.getElementById('operationsMessage').textContent.includes('fixture operation completed'));
+  assert.strictEqual(opsWrites.length,3);assert.ok(jobPolls>=6);
+  assert.ok((await page.locator('#operationsDetections').textContent()).includes('CAS_FIXTURE_CE'));
+  opsFails=true;await page.click('#operationsRefresh');
+  await page.waitForFunction(()=>document.getElementById('operationsStatus').textContent==='Operations status unavailable');
+  assert.ok(!(await opsCards.nth(0).getByRole('button',{name:'Start / resume entries'}).isEnabled()));
+  opsFails=false;await page.click('#operationsRefresh');
+  await page.waitForFunction(()=>document.getElementById('operationsStatus').textContent==='Service status current');
   Object.assign(serverHealth.memory,{used_percent:75,available_percent:25,used_bytes:1610612736,available_bytes:536870912});
   // No click or reload: the live timer must bring the changed observation in.
   await page.waitForFunction(()=>document.getElementById('serverRam').textContent==='75.0%');
@@ -121,6 +169,7 @@ const assert=require('assert');
   await page.evaluate(()=>refresh());
   await page.waitForFunction(()=>document.querySelectorAll('#candidates tbody tr').length===20);
   assert.strictEqual(await page.locator('[data-buy]').count(),0);
+  assert.ok(await opsCards.nth(0).getByRole('button',{name:'Start / resume entries'}).isEnabled());
   await page.waitForFunction(()=>document.querySelector('#candidates tbody tr td:nth-child(5)')?.textContent.includes('100.00 CE'));
   assert.ok((await page.locator('#candidates tbody tr').first().locator('td').nth(4).innerText()).includes(expiry));
   assert.ok((await page.locator('#candidates tbody tr').first().locator('td').nth(10).innerText()).includes('pace only'));

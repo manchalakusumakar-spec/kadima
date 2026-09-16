@@ -8,6 +8,7 @@ from pathlib import Path
 import re
 import secrets
 import shutil
+import socket
 import time
 import threading
 from datetime import datetime, timezone
@@ -262,6 +263,90 @@ def upstream(port, path, method='GET', payload=None):
         raise HTTPException(502, 'backend_request_failed') from exc
     except (OSError, ValueError) as exc:
         raise HTTPException(502, 'backend_unavailable') from exc
+
+OPERATIONS_JOBS = {}
+OPERATIONS_LOCK = threading.Lock()
+
+
+def operation_request(payload, timeout=9):
+    """Private socket: gateway keeps its existing unprivileged sandbox."""
+    try:
+        with socket.socket(socket.AF_UNIX,socket.SOCK_STREAM) as conn:
+            conn.settimeout(timeout)
+            conn.connect('/run/kadima-operations.sock')
+            conn.sendall(json.dumps(payload).encode()+b'\n')
+            raw=b''
+            while b'\n' not in raw:
+                chunk=conn.recv(min(16384,262145-len(raw)))
+                if not chunk:raise ValueError('incomplete_reply')
+                raw+=chunk
+                if len(raw)>262144:raise ValueError('oversized_reply')
+        data=json.loads(raw)
+        if not isinstance(data,dict):raise ValueError('invalid_reply')
+        return data
+    except (OSError,ValueError):
+        raise HTTPException(503,'operations_unavailable_check_service_state') from None
+
+
+@app.get('/operations')
+def operations_read(request: Request):
+    authenticated(request)
+    return operation_request({'action':'status'})
+
+
+@app.post('/operations')
+async def operations_write(request: Request):
+    origin_check(request)
+    authenticated(request)
+    raw=await request.body()
+    if len(raw)>1024:raise HTTPException(413,'request_too_large')
+    try:
+        payload=json.loads(raw)
+        if not isinstance(payload,dict) or set(payload)-{'action','service','minutes'}:raise ValueError()
+        if payload.get('action') not in ('start','stop','restart','delay','pause_entries'):raise ValueError()
+        if payload.get('service') not in ('engine','scanner','macro'):raise ValueError()
+        if 'minutes' in payload and (type(payload['minutes']) is not int or payload['minutes'] not in (5,15,30,60)):raise ValueError()
+        if payload['action']=='pause_entries' and payload['service']!='engine':raise ValueError()
+    except (ValueError,TypeError,UnicodeDecodeError):
+        raise HTTPException(422,'invalid_operations_request') from None
+    # Return immediately through the existing 12s Nginx proxy timeout. Each
+    # mutation runs once in a bounded worker; polling a job never repeats it.
+    with OPERATIONS_LOCK:
+        now=time.monotonic()
+        for key,job in list(OPERATIONS_JOBS.items()):
+            if job['state']=='done' and now-job['created']>900:
+                del OPERATIONS_JOBS[key]
+        if any(job['state']=='running' for job in OPERATIONS_JOBS.values()):
+            raise HTTPException(409,'operation_in_progress')
+        if len(OPERATIONS_JOBS)>=32:
+            oldest=min(OPERATIONS_JOBS,key=lambda k:OPERATIONS_JOBS[k]['created'])
+            del OPERATIONS_JOBS[oldest]
+        identity=secrets.token_hex(16)
+        OPERATIONS_JOBS[identity]=dict(owner=request.cookies.get(COOKIE),created=now,state='running',result=None)
+    def work():
+        try:
+            result=operation_request(payload,180)
+        except Exception:
+            result={'ok':False,'reason':'operation_outcome_unknown_check_service_state'}
+        with OPERATIONS_LOCK:
+            OPERATIONS_JOBS[identity].update(state='done',result=result)
+    try:
+        threading.Thread(target=work,daemon=True,name='website-operation').start()
+    except RuntimeError:
+        with OPERATIONS_LOCK:
+            OPERATIONS_JOBS[identity].update(state='done',result={'ok':False,'reason':'operation_not_started'})
+    return JSONResponse({'accepted':True,'job_id':identity},status_code=202)
+
+
+@app.get('/operations/jobs/{identity}')
+def operation_job(identity: str, request: Request):
+    authenticated(request)
+    with OPERATIONS_LOCK:
+        job=OPERATIONS_JOBS.get(identity)
+        if job is None or job['owner']!=request.cookies.get(COOKIE):
+            raise HTTPException(404,'operation_job_unavailable')
+        return {'state':job['state'],'result':job['result']}
+
 
 @app.get('/{name}')
 def read_data(name: str, request: Request):

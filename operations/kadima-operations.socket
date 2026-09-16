@@ -1,0 +1,12 @@
+[Unit]
+Description=KADIMA private operations socket
+
+[Socket]
+ListenStream=/run/kadima-operations.sock
+SocketUser=ubuntu
+SocketGroup=ubuntu
+SocketMode=0600
+RemoveOnStop=true
+
+[Install]
+WantedBy=sockets.target

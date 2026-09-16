@@ -35,8 +35,9 @@ Unavailable counters remain unavailable, never healthy zeroes.
 The resource badge describes these measurements, not trading readiness, broker
 connectivity or an overall efficiency percentage. Warnings apply to the latest
 sample; there is no sustained-pressure analysis, crash prevention, capacity
-guarantee or alert delivery while the dashboard is closed. This patch neither
-adds swap nor changes instance size or service memory limits.
+guarantee or alert delivery while the dashboard is closed. The resource-panel patch itself neither adds swap nor changes instance size or service
+memory limits. The later protection release adds a separate memory guard and
+optional guarded swap installer; see [memory protection and operations](memory_operations_detection.md).
 
 ## Deployment and verification
 
