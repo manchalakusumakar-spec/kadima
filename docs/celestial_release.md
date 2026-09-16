@@ -33,7 +33,7 @@ remain unverified.
 
 ### F&O best-strike column follow-up
 
-The F&O Universe table replaces Price time with Best strike. Both scanner modes
+Following the user’s placement correction, **Best strike appears only in the Gamma Blast Top 20 table**, with CE/PE and expiry. The full F&O Universe table retains its Price time column. This placement correction is a dashboard-only update; the previously installed scanner export remains unchanged. Both scanner modes
 now export `best_contract` and `strike_status` with each scored stock, including
 the selected symbol, strike, CE/PE side, expiry, premium and observation time.
 The read-only legacy Gamma Top 20 also displays these exported contracts.
