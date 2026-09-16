@@ -52,6 +52,8 @@ class Diagnostic(unittest.TestCase):
             data, api = self.run_check(exchanges, dict(status=True, data=dict(totalMarginRequired=100)))
             self.assertTrue(data['mcx_listed_in_profile'])
             self.assertEqual(api.getMarginApi.call_args.args[0]['positions'][0]['price'], 9815)
+            self.assertEqual(api.getMarginApi.call_args.args[0]['positions'][0]['orderType'], 'LIMIT')
+            self.assertEqual(data['mcx_margin_probe']['request_order_type'], 'LIMIT')
             self.assertTrue(data['mcx_margin_probe']['ok'])
 
     def test_rejection_reports_code_without_raw_message(self):

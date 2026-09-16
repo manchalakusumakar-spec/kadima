@@ -176,7 +176,8 @@ with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.St
                 qty = int(future['lotsize'])
                 if qty <= 0: raise ValueError('invalid_quantity')
                 request = {'positions': [{'exchange': 'MCX', 'qty': qty, 'price': 0,
-                    'productType': 'INTRADAY', 'token': future['token'], 'tradeType': 'BUY'}]}
+                    'productType': 'INTRADAY', 'token': future['token'], 'tradeType': 'BUY',
+                    'orderType': 'LIMIT'}]}
                 quote = next((r for r in result.get('mcx_quotes', []) if r['token'] == future['token']), {})
                 reference = numeric(quote.get('ltp'))
                 if reference is not None and reference > 0:
@@ -188,6 +189,8 @@ with contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.St
                 result['mcx_margin_probe'] = {'ok': bool(margin is not None and margin > 0),
                     'symbol': future['symbol'], 'request_qty_from_master': qty,
                     'reference_price': request['positions'][0]['price'],
+                    'request_order_type': request['positions'][0]['orderType'],
+                    'quantity_note': 'Raw master quantity is a margin probe, not a verified live-order lot size.',
                     'broker_response': response_summary(response),
                     'total_margin_required': margin, 'order_sent': False}
             except Exception as exc: result['margin_error_type'] = error_type(exc)

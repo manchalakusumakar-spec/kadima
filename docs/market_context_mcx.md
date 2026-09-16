@@ -108,14 +108,27 @@ before claiming the new monitor is running. Refresh the dashboard with Ctrl+F5.
 Run `bash tools/check_mcx_access.sh` from the release archive for the improved
 read-only check. It recognizes MCX profile aliases, reports an allowlisted
 broker error code and error categories, and sends a margin calculation with
-the observed reference price. It never submits, modifies or cancels orders,
+the observed reference price and explicit `orderType: LIMIT`. It never submits, modifies or cancels orders,
 logs out, changes services or prints raw broker account/session details.
 
-The earlier EC2 output established MCX quote access but no successful margin
-calculation. A profile alias can explain an unrecognized MCX label; neither
-quotes nor a profile label verifies live order entitlement. MCX execution is
-not implemented by this release. Before adding it, resolve broker segment and
-margin checks, verify each contract's price tick/quantity/P&L units and expiry
+EC2 deployment completed on 17 September 2026 at approximately 00:55 IST:
+the backend services restarted successfully and the dashboard gateway passed
+health checks. The profile includes `MCX_FO`, and MCX quote access succeeded.
+
+The follow-up read-only check at 01:02:44 IST resolved `CRUDEOIL21SEP26FUT`
+to token `565899`, matching the cached master. With an explicit `orderType:
+LIMIT` and reference price 9815, both INTRADAY and CARRYFORWARD returned
+positive margins: 4167.19 for request quantity 1 and 416718.75 for request
+quantity 100. These are API input quantities, not verified tradable lot sizes
+or P&L multipliers. No orders were submitted.
+
+The earlier margin request without an explicit order type returned `AB4033`.
+Because the successful check ran later with a new session, it does not isolate
+the error's cause. The standard diagnostic now explicitly sends LIMIT to match
+the successful request. Order acceptance remains unverified.
+
+MCX execution is not implemented by this release. Before adding it, verify
+live order entitlement, each contract's price tick/quantity/P&L units and expiry
 mapping, and extend the single central ledger for futures direction, signed
 reconciliation, margin reservation and session-specific exits. Angel One lists
 23:15 intraday square-off for a 23:30 commodity close, so future intraday exit
