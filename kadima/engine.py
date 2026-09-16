@@ -14,12 +14,14 @@ from __future__ import annotations
 import json
 import threading
 import time
-from dataclasses import dataclass, field
-from datetime import datetime
+from dataclasses import dataclass, field, replace
+from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 from . import alerts, audit, indicators, killswitch, last_known, storage, strike_selector
 from . import auto_executor
-from .trade_policy import SHIELD_MIN_SCORE
+from .shield_confirmation import (SHIELD_MIN_SCORE, BANK_NAMES, ShieldEvidence,
+    alignment, fresh, confirmation_checks, is_shield_confirmed)
 from .stock_execution import StockExecutionWorker
 from .forecast_observer import ForecastObserver
 from . import gamma_blast_scanner as gamma
@@ -62,6 +64,11 @@ class IndexState:
     tier: str = "NONE"
     tier_since: datetime | None = None
     components: dict = field(default_factory=dict)
+    technical_at: datetime | None = None
+    shield_evidence: ShieldEvidence | None = None
+    shield_ready: bool = False
+    shield_invalidated: bool = False
+    shield_signal_id: int | None = None
     # Gamma blast scanner: a SEPARATE signal stream from Bull Shield above.
     # Same tier convention (WATCH/ACTIVE/CONFIRMED) so both read the same
     # way, but scored on different factors (OI velocity, IV expansion,
@@ -69,13 +76,8 @@ class IndexState:
     # for why this is 7 factors, not the "11" referenced in earlier notes).
     gamma_history: "gamma.GammaHistory" = field(default_factory=lambda: gamma.GammaHistory())
     gamma_result: "gamma.GammaResult | None" = None
-    # Guards against re-firing every 5-min candle for as long as a single
-    # CONFIRMED streak persists. tier_since changes only on a genuine tier
-    # transition (see _score()), so it's a ready-made "episode id" — once
-    # a signal has been emitted for a given tier_since, _evaluate() won't
-    # fire again until the tier drops out of CONFIRMED and re-enters
-    # (a new tier_since), i.e. a genuinely new episode, not the same
-    # trending regime re-triggering every candle close.
+    # The signal ID is reused after pre-submission rejection. The durable
+    # execution ledger prevents a second submission for that episode.
     last_signaled_tier_since: datetime | None = None
     # Last-known persistence (added so /state and the dashboard show
     # real last-traded data outside market hours / right after a
@@ -111,6 +113,22 @@ class Engine:
             self.states[name] = st
             self.token_to_index[idx.token] = name
 
+        self.bank_states = {}
+        self.bank_tokens = {}
+        for name in BANK_NAMES:
+            matches = [r for r in self.scrips.rows if r.get('exch_seg') == 'NSE'
+                       and r.get('symbol') == name + '-EQ' and r.get('token')]
+            if len(matches) != 1:
+                audit.log('bank_confirmation_source_unavailable', bank=name)
+                continue
+            token = str(matches[0]['token'])
+            bank = IndexState(name=name)
+            bank.builder = CandleBuilder(token, on_close=self._on_bank_close)
+            self.bank_states[name] = bank
+            self.bank_tokens[token] = name
+
+        self.bank_history = StockExecutionWorker(auto_executor.EXECUTOR, self.scrips)
+        self._bank_warmup_at = {}
         self.stock_worker = StockExecutionWorker(auto_executor.EXECUTOR, self.scrips)
         self._seed_last_known()
         self.forecaster = ForecastObserver(self, auto_executor.EXECUTOR)
@@ -128,7 +146,13 @@ class Engine:
                 continue
             st.spot = entry.get("spot")
             st.score = entry.get("score", 0.0)
-            st.tier = entry.get("tier", "NONE")
+            # Persisted display data is not live confirmation evidence.
+            st.tier = "NONE"
+            st.tier_since = None
+            st.shield_evidence = None
+            st.shield_ready = False
+            st.shield_signal_id = None
+            st.last_signaled_tier_since = None
             st.direction = entry.get("direction")
             ts = entry.get("ts")
             if ts:
@@ -166,6 +190,8 @@ class Engine:
         self.forecaster.start()
         for name, idx in self.scan_indices.items():
             self.feed.subscribe(EXCHANGE_TYPE[idx.exchange], [idx.token])
+        if self.bank_tokens:
+            self.feed.subscribe(EXCHANGE_TYPE['NSE'], list(self.bank_tokens))
         self.feed.start()
         threading.Thread(target=self._oi_loop, daemon=True, name="oi-poll").start()
         threading.Thread(target=self._shutdown_loop, daemon=True,
@@ -179,6 +205,7 @@ class Engine:
         self._stop.set()
         self.forecaster.stop()
         self.stock_worker.stop()
+        self.bank_history.stop()
         self.feed.stop()
         auto_executor.EXECUTOR.stop()
         # Explicit daily logout, not just an abandoned session. The feed
@@ -204,6 +231,12 @@ class Engine:
 
     # ------------------------------------------------------------------ ticks
     def _on_tick(self, tick: dict) -> None:
+        bank_name = self.bank_tokens.get(tick["token"])
+        if bank_name:
+            bank = self.bank_states[bank_name]
+            bank.spot, bank.last_updated = tick['ltp'], now_ist()
+            bank.builder.add_tick(tick['ts'], tick['ltp'], tick['volume'])
+            return
         name = self.token_to_index.get(tick["token"])
         if not name:
             return
@@ -212,41 +245,97 @@ class Engine:
         st.chain._spot_received_at = time.monotonic()
         st.last_updated = now_ist()
         st.is_live_tick = True
+        self._invalidate_shield(st)
         st.builder.add_tick(tick["ts"], tick["ltp"], tick["volume"])
+
+    def _on_bank_close(self, candle: Candle) -> None:
+        if candle.interval != 5:
+            return
+        bank = self.bank_states[self.bank_tokens[candle.token]]
+        bank.snap = indicators.compute(storage.recent_candles(candle.token, 5, limit=150),
+            session_vwap=bank.builder.session_vwap(), ema_fast_p=20, ema_slow_p=50,
+            ma_long_p=55, rsi_p=14)
+        bank.technical_at = candle.start + timedelta(minutes=5)
+
+    def _warm_bank_history(self):
+        # Read-only history uses the existing validated candle loader. A separate
+        # worker keeps its history cache/throttle independent of stock execution.
+        for token, name in self.bank_tokens.items():
+            bank = self.bank_states[name]
+            if bank.snap.ema_slow is not None:
+                continue
+            clock = time.monotonic()
+            if clock - self._bank_warmup_at.get(name, -60) < 60:
+                continue
+            self._bank_warmup_at[name] = clock
+            try:
+                bars = self.bank_history.history(SimpleNamespace(name=name, exchange='NSE', token=token))
+                bank.snap = indicators.compute(bars[5], session_vwap=bank.builder.session_vwap(),
+                    ema_fast_p=20, ema_slow_p=50, ma_long_p=55, rsi_p=14)
+                bank.technical_at = datetime.fromisoformat(bars[5][-1]['start_ts']) + timedelta(minutes=5)
+            except Exception as exc:
+                audit.log('bank_confirmation_warmup_pending', bank=name, reason=type(exc).__name__)
+
+    def _bank_votes(self, direction, now):
+        return {name: (fresh(bank.technical_at, now, 360)
+                       and fresh(bank.last_updated, now, 30)
+                       and all(alignment(direction, bank.snap, bank.spot).values()))
+                for name, bank in self.bank_states.items()}
+
+    @staticmethod
+    def _oi_direction(chain):
+        if chain is None:
+            return None
+        alerts_now = chain.velocity.alerts()
+        ce = {q.token for q in chain.quotes.values() if q.opt_type == 'CE'}
+        pe = {q.token for q in chain.quotes.values() if q.opt_type == 'PE'}
+        ce_hits = len({v['token'] for v in alerts_now if v['token'] in ce})
+        pe_hits = len({v['token'] for v in alerts_now if v['token'] in pe})
+        return 'CE' if ce_hits > pe_hits else 'PE' if pe_hits > ce_hits else None
+
+    def _shield_context(self, st):
+        if st.shield_evidence is None:
+            return None
+        now = now_ist()
+        poll = getattr(st.chain, '_last_poll', 0)
+        oi_at = now - timedelta(seconds=time.monotonic() - poll) if poll else None
+        return replace(st.shield_evidence, snap=st.snap, spot=st.spot,
+            technical_at=st.technical_at, spot_at=st.last_updated, oi_at=oi_at,
+            oi_confirmed=self._oi_direction(st.chain) == st.direction,
+            invalidated=st.shield_invalidated,
+            banks=self._bank_votes(st.direction, now))
+
+    def _invalidate_shield(self, st):
+        if st.shield_evidence and not all(alignment(st.direction, st.snap, st.spot).values()):
+            st.shield_invalidated = True
+            st.shield_ready = False
+            if st.tier == 'CONFIRMED':
+                st.tier, st.tier_since = 'ACTIVE', now_ist()
+                audit.log('shield_invalidated', index=st.name, direction=st.direction)
 
     def _on_candle_close(self, candle: Candle) -> None:
         name = self.token_to_index.get(candle.token)
-        if not name or candle.interval != 3:
-            return                                  # score on 3-min closes.
-                                  # Moved from 5-min on 2026-08-24 to cut
-                                  # detection lag (trader's explicit
-                                  # request) -- see config.py's EMA_FAST/
-                                  # EMA_SLOW/MA_LONG/RSI_PERIOD comments for
-                                  # the period rescaling that keeps each
-                                  # indicator's real-world lookback window
-                                  # the same as it was on 5-min candles,
-                                  # so this is genuinely "same confirmation,
-                                  # less lag" and not a different, noisier
-                                  # indicator set. This line and the
-                                  # recent_candles() call below are the
-                                  # actual trigger -- the period rescaling
-                                  # in config.py alone does nothing unless
-                                  # both stay in sync with the interval used
-                                  # here.
+        if not name:
+            return
         st = self.states[name]
-        rows = storage.recent_candles(candle.token, 3, limit=150)
-        st.snap = indicators.compute(
-            rows, session_vwap=st.builder.session_vwap(),
-            ema_fast_p=EMA_FAST, ema_slow_p=EMA_SLOW,
-            ma_long_p=MA_LONG, rsi_p=RSI_PERIOD)
-        st.chain._alignment_at = time.monotonic()
-        self._score(st)
-        self._evaluate()
+        if candle.interval == 3:
+            # Keep existing real-time indicator/Gamma lookbacks unchanged.
+            rows = storage.recent_candles(candle.token, 3, limit=150)
+            st.snap = indicators.compute(rows, session_vwap=st.builder.session_vwap(),
+                ema_fast_p=EMA_FAST, ema_slow_p=EMA_SLOW,
+                ma_long_p=MA_LONG, rsi_p=RSI_PERIOD)
+            st.technical_at = candle.start + timedelta(minutes=3)
+            st.chain._alignment_at = time.monotonic()
+            self._invalidate_shield(st)
+        elif candle.interval == 5:
+            self._score(st, candle.start + timedelta(minutes=5), candle.close)
+            self._evaluate()
 
     # ------------------------------------------------------------------ OI
     def _oi_loop(self) -> None:
         while not self._stop.is_set():
             if in_market_hours() and not killswitch.engaged():
+                self._warm_bank_history()
                 for st in self.states.values():
                     from . import celestial
                     if not celestial.enabled() and st.name in GAMMA_EXPIRY_ONLY and self._dte(st) > 1.0:
@@ -334,7 +423,7 @@ class Engine:
             tier=result.tier, score=result.score)
 
     # --------------------------------------------------------------- scoring
-    def _score(self, st: IndexState) -> None:
+    def _score(self, st: IndexState, closed_at=None, closed_price=None) -> None:
         s = st.snap
         bull = bear = 0.0
         comp = {}
@@ -391,25 +480,38 @@ class Engine:
             bear += WEIGHTS["failed_break"]
             comp["failed_break"] = "breakout_failed(bearish)"
 
+        previous_direction = st.direction
         st.direction = "CE" if bull >= bear else "PE"
         st.score = max(bull, bear)
         st.components = comp
 
-        prev_tier = st.tier
-        if st.score >= TIER_CONFIRMED:
-            tier = "CONFIRMED"
-        elif st.score >= TIER_ACTIVE:
-            tier = "ACTIVE"
-        elif st.score >= TIER_WATCH:
-            tier = "WATCH"
-        else:
-            tier = "NONE"
-
-        if tier != prev_tier:
+        prior = st.shield_evidence
+        st.shield_evidence = ShieldEvidence(st.name, st.direction, st.score, s, st.spot,
+            closed_at=closed_at, prior_closed_at=prior.closed_at if prior else None,
+            prior_direction=prior.direction if prior else None, prior_ready=st.shield_ready)
+        context = self._shield_context(st)
+        # Both the completed bar and the current quote must align.
+        if not all(alignment(st.direction, s, closed_price).values()):
+            st.shield_invalidated = True
+            context = replace(context, invalidated=True)
+        checks = confirmation_checks(context, now_ist())
+        st.shield_ready = all(v for k, v in checks.items() if k != 'extra_5m_hold')
+        tier = ('CONFIRMED' if is_shield_confirmed(context, now_ist()) else
+                'ACTIVE' if st.score >= TIER_ACTIVE else
+                'WATCH' if st.score >= TIER_WATCH else 'NONE')
+        comp['confirmation'] = checks
+        comp['bank_confirmations'] = context.banks
+        audit.log('SHIELD_SCORE', index=st.name, score=st.score, direction=st.direction,
+                  closed_at=closed_at, components=comp)
+        audit.log('CONFIRMATION_GATE', index=st.name, direction=st.direction,
+                  passed=tier == 'CONFIRMED', checks=checks, closed_at=closed_at)
+        if tier != st.tier or previous_direction != st.direction or st.tier_since is None:
             st.tier, st.tier_since = tier, now_ist()
-            audit.log("tier_change", index=st.name, tier=tier,
-                      score=round(st.score, 1), direction=st.direction,
-                      components=comp)
+            st.shield_signal_id = None
+            audit.log('tier_change', index=st.name, tier=tier, score=st.score,
+                      direction=st.direction, components=comp)
+        # A flip during this bar prevents its hold. The next bar starts fresh.
+        st.shield_invalidated = False
 
     # ---------------------------------------------------- four-index confirm
     def _evaluate(self) -> None:
@@ -434,48 +536,60 @@ class Engine:
                        if n in INDICES and s.direction == "PE" and s.tier in ("ACTIVE", "CONFIRMED"))
         total = sum(i.weight for i in INDICES.values())
 
-        lead = max((s for n, s in self.states.items() if n in INDICES),
-                   key=lambda s: s.score)
-        if lead.tier != "CONFIRMED":
-            return
-
-        if lead.tier_since == lead.last_signaled_tier_since:
-            return  # already signaled this CONFIRMED episode — wait for the
-                     # tier to drop and re-confirm before firing again, not
-                     # every 5-min candle close for as long as this streak lasts
-
-        agreement = (votes_ce if lead.direction == "CE" else votes_pe) / total
-        if agreement < 0.5:
-            audit.log("confirmation_failed", lead=lead.name,
-                      direction=lead.direction, agreement=round(agreement, 2))
-            return
-
-        # hold one extra candle before firing, per v2.1
-        if lead.tier_since and (now_ist() - lead.tier_since).total_seconds() < 300:
-            return
-
-        pick = strike_selector.best(lead.chain, lead.direction, lead.spot,
-                                    days_to_expiry=self._dte(lead))
-        if not pick:
-            audit.log("no_tradeable_strike", index=lead.name)
-            return
-
-        payload = {"index": lead.name, "tier": lead.tier,
-                   "score": round(lead.score, 1), "direction": lead.direction,
-                   "agreement": round(agreement, 2), "spot": lead.spot,
-                   "components": lead.components, "strike": pick.as_dict(),
-                   "pcr": lead.chain.pcr(), "max_pain": lead.chain.max_pain()}
-        sid = storage.insert_signal(lead.name, lead.tier, lead.score,
-                                    lead.direction, json.dumps(payload, default=str))
-        lead.last_signaled_tier_since = lead.tier_since
-        audit.log("signal_emitted", signal_id=sid, **payload)
-        alerts.send_signal(sid, payload)
-
-        auto_executor.EXECUTOR.evaluate_and_enter(
-            index_name=lead.name, direction=lead.direction, chain=lead.chain,
-            spot=lead.spot, snap=lead.snap, days_to_expiry=self._dte(lead),
-            kind="bull_shield", source_signal_id=sid,
-            tier=lead.tier, score=lead.score)
+        candidates = sorted((s for n, s in self.states.items() if n in INDICES),
+                            key=lambda s: s.score, reverse=True)
+        for lead in candidates:
+            context = self._shield_context(lead)
+            if lead.tier != 'CONFIRMED' or not is_shield_confirmed(context, now_ist()):
+                continue
+            agreement = (votes_ce if lead.direction == 'CE' else votes_pe) / total
+            if agreement < 0.5:
+                audit.log('SHIELD_DISPATCH_BLOCKED', index=lead.name,
+                          reason='four_index_agreement', agreement=agreement)
+                continue
+            from . import celestial
+            candidate_id = None
+            if celestial.enabled():
+                eligible = [r for r in celestial.top20() if r['eligible']
+                            and r['underlying'] == lead.name and r['direction'] == lead.direction]
+                if not eligible:
+                    audit.log('SHIELD_DISPATCH_BLOCKED', index=lead.name,
+                              reason='celestial_top20_or_controls')
+                    continue
+                candidate_id = eligible[0]['id']
+            if lead.shield_signal_id is None:
+                pick = strike_selector.best(lead.chain, lead.direction, lead.spot,
+                                            days_to_expiry=self._dte(lead))
+                if candidate_id:
+                    pick = next((r for r in strike_selector.rank(lead.chain, lead.direction,
+                        lead.spot, self._dte(lead)) if not r.rejected
+                        and lead.chain.index.opt_exchange + ':' + r.quote.token == candidate_id), None)
+                if not pick:
+                    audit.log('SHIELD_DISPATCH_BLOCKED', index=lead.name,
+                              reason='no_tradeable_strike')
+                    continue
+                payload = {'index': lead.name, 'tier': lead.tier, 'score': lead.score,
+                    'direction': lead.direction, 'agreement': round(agreement, 2),
+                    'spot': lead.spot, 'since': lead.tier_since.isoformat(),
+                    'closed_at': context.closed_at.isoformat(),
+                    'components': lead.components, 'strike': pick.as_dict(),
+                    'pcr': lead.chain.pcr(), 'max_pain': lead.chain.max_pain()}
+                sid = storage.insert_signal(lead.name, lead.tier, lead.score,
+                    lead.direction, json.dumps(payload, default=str))
+                lead.shield_signal_id = sid
+                lead.last_signaled_tier_since = lead.tier_since
+                audit.log('CONFIRMED_EVENT', signal_id=sid, **payload)
+                alerts.send_signal(sid, payload)
+            sid = lead.shield_signal_id
+            if auto_executor.execution_ledger.seen(sid):
+                continue
+            result = auto_executor.EXECUTOR.evaluate_and_enter(
+                index_name=lead.name, direction=lead.direction, chain=lead.chain,
+                spot=lead.spot, snap=lead.snap, days_to_expiry=self._dte(lead),
+                kind='bull_shield' if lead.direction == 'CE' else 'bear_shield',
+                source_signal_id=sid, tier=lead.tier, score=lead.score,
+                shield_context=lambda st=lead: self._shield_context(st), candidate_id=candidate_id)
+            audit.log('SHIELD_DISPATCH_RESULT', signal_id=sid, index=lead.name, **result)
 
     def _dte(self, st: IndexState) -> float:
         expiry = self.scrips.nearest_expiry(st.chain.index)

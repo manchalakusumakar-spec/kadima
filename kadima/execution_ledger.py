@@ -91,7 +91,7 @@ def submit(pos, side, quantity, price):
     try:
         result = angel_orders.place_limit_order(tradingsymbol=pos.symbol,
             symboltoken=pos.token, exchange=pos.exchange, transactiontype=side,
-            quantity=quantity, price=price, ordertag=intent)
+            quantity=quantity, price=price, ordertag=intent, signal_id=pos.signal_id)
     except Exception:
         # Includes unexpected wrapper errors after an HTTP request may have left.
         audit.log('order_submission_unknown', signal_id=pos.signal_id, intent=intent)

@@ -472,7 +472,7 @@ class AutoExecutor:
     def evaluate_and_enter(self, index_name: str, direction: str, chain, spot: float,
                            snap, days_to_expiry: float, kind: str,
                            source_signal_id: int, tier: str, score: float,
-                           candidate_id=None, manual_request=False):
+                           candidate_id=None, manual_request=False, shield_context=None):
         """snap: indicators.Snapshot from the calling IndexState, used for
         real VWAP (not a stub) in the entry-quality check."""
         if not getattr(chain, '_entry_guard', lambda: True)():
@@ -486,7 +486,8 @@ class AutoExecutor:
             if selected is None:
                 return self._reject('celestial_top20_gate',index_name,direction)
             minimum = celestial.read_config()['score_threshold']
-            score = selected['final_score']
+            if kind not in ('bull_shield', 'bear_shield'):
+                score = selected['final_score']
         if self._reconcile_blocked:
             return self._reject("startup_reconcile_not_complete", index_name, direction)
         if killswitch.engaged():
@@ -513,7 +514,12 @@ class AutoExecutor:
             return self._reject('underlying_quote_stale', index_name, direction)
         if not 0 <= time.monotonic() - getattr(chain, '_alignment_at', 0) <= 240:
             return self._reject('alignment_snapshot_stale', index_name, direction)
-        if not trade_policy.eligible(kind, tier, score, direction, snap, spot,minimum=minimum):
+        evidence = shield_context() if callable(shield_context) else None
+        if kind in ('bull_shield', 'bear_shield') and (
+                evidence is None or evidence.index != index_name):
+            return self._reject('shield_confirmation_evidence_missing', index_name, direction)
+        if not trade_policy.eligible(kind, tier, score, direction, snap, spot,minimum=minimum,
+                                     shield_evidence=evidence, now=now_ist()):
             return self._reject('eligibility_alignment_or_gamma_score', index_name, direction)
         structure = self._structure(chain, direction, spot)
         if structure is None:
@@ -623,6 +629,13 @@ class AutoExecutor:
             latest = celestial.entry_candidate(index_name,direction,manual=manual_request,candidate_id=selected['id'])
             if latest is None or latest['last_updated'] != selected['last_updated']:
                 return self._reject('celestial_candidate_changed_before_submission',index_name,direction)
+        if kind in ('bull_shield', 'bear_shield'):
+            latest_evidence = shield_context()
+            if (latest_evidence is None or latest_evidence.index != index_name
+                    or latest_evidence.direction != direction or latest_evidence.score != score
+                    or not trade_policy.is_shield_confirmed(latest_evidence, now_ist(),
+                                                            minimum or trade_policy.SHIELD_MIN_SCORE)):
+                return self._reject('shield_invalidated_before_submission', index_name, direction)
         pos = Position(
             signal_id=source_signal_id, kind=kind, index=index_name, direction=direction,
             symbol=chosen_quote.symbol, token=chosen_quote.token,
