@@ -69,7 +69,8 @@ function gammaPlan(row, {current, t1, t2, positions=[], positionsCurrent=false, 
  return values;
 }
 // END GAMMA PLAN
-for(const id of ['planT1','planT2'])el(id).addEventListener('change',()=>{if(snapshot&&online&&snapshot.config.rollout_enabled)render(snapshot)});
+function updateGammaPlans(){if(signedIn&&online&&snapshot?.config.rollout_enabled){const rows=el('candidates').tBodies[0].rows;for(const [i,r] of snapshot.candidates.entries()){if(rows[i]?.cells.length===24)gammaPlan(r,{...planSettings(),current:online,positions:snapshot.positions,positionsCurrent:Date.now()-Date.parse(snapshot.ts)>=0&&Date.now()-Date.parse(snapshot.ts)<=30000}).forEach((v,j)=>rows[i].cells[6+j].textContent=v)}}}
+for(const id of ['planT1','planT2'])el(id).addEventListener('change',updateGammaPlans);
 function planSettings(){return {t1:Number(el('planT1').value),t2:Number(el('planT2').value)}}
 function notice(s,bad=false){el('notice').textContent=s;el('notice').hidden=false;el('notice').className=bad?'bad':'';}
 async function request(path,method='GET',body){const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),9000);try{const response=await fetch('/dashboard-api/'+path,{method,credentials:'same-origin',cache:'no-store',signal:controller.signal,headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined});let data;try{data=await response.json()}catch{throw new Error('Invalid backend response')}if(!response.ok){if(response.status===401)showLogin();const detail=typeof data.detail==='string'?data.detail:'Request rejected';throw new Error(detail.replaceAll('_',' '))}return data}finally{clearTimeout(timer)}}
@@ -95,7 +96,7 @@ for(const [id,path] of Object.entries({pause:'kadima/pause',resume:'kadima/resum
 el('setStop').onclick=()=>{const signal_id=Number(el('positionId').value),price=Number(el('stopPrice').value);if(signal_id>0&&price>0)write('order/modify-sl',{signal_id,price});else notice('Select a position and enter a positive stop price.',true)};
 el('setTrail').onclick=()=>{const signal_id=Number(el('positionId').value);if(signal_id>0)write('order/trailing-sl',{signal_id,retain:Number(el('retain').value)});else notice('Select a position first.',true)};
 el('cancelOrder').onclick=()=>{const order_id=el('orderId').value;if(order_id)write('order/cancel',{order_id});else notice('Select a tracked pending order first.',true)};
-setInterval(()=>{el('clock').textContent=timeIST(new Date().toISOString())+' IST';if(signedIn&&online&&snapshot?.config.rollout_enabled){const rows=el('candidates').tBodies[0].rows;for(const [i,r] of snapshot.candidates.entries()){if(rows[i]?.cells.length===24)gammaPlan(r,{...planSettings(),current:online,positions:snapshot.positions,positionsCurrent:Date.now()-Date.parse(snapshot.ts)>=0&&Date.now()-Date.parse(snapshot.ts)<=30000}).forEach((v,j)=>rows[i].cells[6+j].textContent=v)}}},1000);setInterval(refresh,5000);
+setInterval(()=>{el('clock').textContent=timeIST(new Date().toISOString())+' IST';updateGammaPlans()},1000);setInterval(refresh,5000);
 const emptyGlobal=empty;
 const legacy=(()=>{
 const $=id=>document.getElementById("legacy-"+id), esc=x=>String(x??'—').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
