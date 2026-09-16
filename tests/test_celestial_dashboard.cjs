@@ -19,12 +19,24 @@ const assert=require('assert');
     positions:[{signal_id:7,symbol:'FIXTURE26SEP100CE',source:'MANUAL_ADOPTED',status:'open',remaining_qty:10,
       entry_price:100,ltp:112,unrealized_pnl_inr:120,effective_stop:107.2,trail_active:true}]};
   const writes=[];
+  let marketFails=false;
+  const legacyFeeds={
+    state:{market_open:true,indices:{NIFTY:{spot:25000,last_updated:now,shield:{score:75,tier:'ACTIVE',direction:'CE'},gamma:{score:80,tier:'ACTIVE',direction:'CE'},technicals:{vwap:24900,ema20:24980,ema50:24950,rsi:61},components:{vwap:25}}}},
+    dashboard_data:{ts:now,positions:[],session:{realized_gain_today_inr:1234,capital_deployed_inr:5000,capital_ceiling_inr:50000,daily_loss_used_inr:0,daily_loss_limit_inr:2500,position_slots_used:0,position_slots_max:1},forecaster:{status:'observing',checked_at:now,metrics:{}}},
+    universe_snapshot:{ts:now,coverage:{expected:25},prices:{},tracked:Array.from({length:25},(_,i)=>({name:'STOCK'+i,score:90-i,tier:'ACTIVE',direction:'CE',last_updated:now}))},
+    macro_snapshot:{ts:now,india_vix:{value:14,last_updated:now},news:[{title:'Fixture company announcement',source:'Fixture',url:'https://example.test/news',published_at:now,last_updated:now}],economic_calendar:[]}
+  };
   await page.route('**/*',async route=>{
     const request=route.request(),url=new URL(request.url());
     if(url.hostname!=='kadima.test')return route.abort();
     if(url.pathname==='/dashboard.html')return route.fulfill({contentType:'text/html',body:fs.readFileSync(path.join(__dirname,'../dashboard_live/dashboard.html'),'utf8')});
     if(url.pathname==='/dashboard-api/session')return route.fulfill({json:{ok:true}});
     if(url.pathname==='/dashboard-api/celestial')return route.fulfill({json:fixture});
+    const feed=url.pathname.replace('/dashboard-api/','');
+    if(legacyFeeds[feed]){
+      if(feed==='state'&&marketFails)return route.fulfill({status:502,json:{detail:'unavailable'}});
+      return route.fulfill({json:legacyFeeds[feed]});
+    }
     if(request.method()==='POST'){
       writes.push({path:url.pathname,body:request.postDataJSON()});
       if(url.pathname.endsWith('/config'))Object.assign(fixture.config,request.postDataJSON(),{revision:1});
@@ -45,11 +57,32 @@ const assert=require('assert');
   await page.waitForFunction(()=>!document.querySelector('[data-buy]').disabled);
   assert.strictEqual(writes[1].body.candidate_id,'NFO:1');
   assert.ok(!JSON.stringify(writes).includes('quantity'));
+  await page.waitForFunction(()=>document.getElementById('legacy-ledger').textContent.includes('1,234'));
+  assert.ok((await page.locator('#legacy-indices').innerText()).includes('25,000'));
+  assert.ok((await page.locator('#legacy-news').innerText()).includes('Fixture company announcement'));
+  assert.ok((await page.locator('#legacy-forecastPanel').innerText()).includes('observing'));
+  assert.ok(await page.locator('#legacy-focus').isEnabled());
   await page.screenshot({path:process.env.KADIMA_SCREENSHOT || '/tmp/kadima-celestial-desktop.png',fullPage:true});
   fixture.candidates=[];fixture.positions=[];
   await page.evaluate(()=>refresh());
   assert.ok((await page.locator('#candidates tbody').innerText()).includes('No fresh qualifying candidates'));
+  fixture.config.rollout_enabled=false;
+  await page.evaluate(()=>refresh());
+  await page.waitForFunction(()=>document.querySelectorAll('#candidates tbody tr').length===20);
+  assert.strictEqual(await page.locator('[data-buy]').count(),0);
+  assert.ok((await page.locator('#gammaSource').innerText()).includes('Legacy Gamma watchlist'));
+  assert.ok(await page.locator('#legacy-focus').isEnabled());
+  await page.selectOption('#legacy-focus','BANKNIFTY');
+  assert.ok((await page.locator('#legacy-checklist').innerText()).includes('No backend checklist for BANKNIFTY'));
+  legacyFeeds.state.indices.NIFTY.spot=25123;
+  await page.click('#legacy-refresh');
+  await page.waitForFunction(()=>document.getElementById('legacy-indices').textContent.includes('25,123'));
+  marketFails=true;await page.click('#legacy-refresh');
+  await page.waitForFunction(()=>document.getElementById('legacy-statusbar').textContent.includes('Backend unavailable'));
+  assert.ok((await page.locator('#legacy-indices').innerText()).includes('LAST KNOWN'));
+  assert.strictEqual(writes.length,2);
   await page.setViewportSize({width:390,height:844});
+  assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth+1));
   await page.screenshot({path:'/tmp/kadima-celestial-mobile.png',fullPage:true});
   assert.deepStrictEqual(errors,[]);
   await browser.close();

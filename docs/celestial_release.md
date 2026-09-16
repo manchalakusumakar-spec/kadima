@@ -31,6 +31,36 @@ remain unverified.
 
 ## What is implemented
 
+### Dashboard restoration follow-up
+
+The first Gamma Desk page replaced panels that should have been retained.
+The dashboard now combines its Gamma Top 20 and order controls with the previous
+Five Pillars, session P&L/capital/risk ledger, entry/stop/target position view,
+Master Checklist, observed five-minute price history, macro/events, news,
+F&O universe, forecast observation and data coverage panels. They use the
+existing authenticated gateway routes and refresh independently of Celestial's
+rollout flag. Market/positions poll every four seconds; macro/universe every
+20 seconds. Failed feeds retain explicit last-known labels. News and macro
+scrolling can be paused and respects reduced-motion preferences.
+
+There is one Gamma Top 20 table. When Celestial is active and its API responds,
+it uses server-ranked contracts and the existing candidate-ID execution path.
+When Celestial is off or its snapshot is unavailable, it displays a labelled,
+read-only legacy watchlist: up to 20 directional index/stock signals ranked
+by available source freshness then Gamma score. It does not infer strikes,
+manufacture probabilities, enable BUY or claim full-universe coverage from
+that legacy feed. Existing legacy position exits remain routed through their
+original owned-position exit endpoint. No trading flags or backend code change.
+
+Install this frontend update with `dashboard_live/upgrade.py --apply` from
+the reviewed checkout. Its manifest accepts the exact currently deployed HTML
+blob `c3d510005ba0b99a0c176aabc2823b9b19420f12`. The updater backs up the two
+dashboard files and restarts only the dashboard gateway; it does not require
+the backend maintenance installer. The new page still requires EC2 installation
+and user verification after sign-in. Offline browser fixtures cover the added
+panels, live refresh, fallback ranking limit, off-mode read-only behavior,
+failure labels and mobile width as well as existing controls.
+
 | Requirement | Implementation / boundary |
 |---|---|
 | One Gamma Top 20 list | Shared SQLite ranking used by dashboard, BUY and auto-entry. One best strike per underlying/direction. Expiry first, then score; never padded with weak rows. |
