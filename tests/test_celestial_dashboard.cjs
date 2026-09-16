@@ -21,6 +21,11 @@ const assert=require('assert');
       entry_price:100,ltp:112,unrealized_pnl_inr:120,effective_stop:107.2,trail_active:true}]};
   const writes=[];
   let marketFails=false;
+  let healthFails=false,healthStale=false,healthInvalid=false,healthUnauthorized=false,healthCalls=0;
+  const serverHealth={status:'healthy',memory:{total_bytes:2147483648,used_bytes:1073741824,available_bytes:1073741824,used_percent:50,available_percent:50},
+    cpu:{busy_percent:25,iowait_percent:0,steal_percent:0,logical_cpus:2,load_1m:0.15,interval_seconds:2},
+    disk:{total_bytes:21474836480,available_bytes:10737418240,used_percent:50},
+    swap:{enabled:false,total_bytes:0,used_bytes:0,used_percent:null},uptime_seconds:3661,missing:[],alerts:[]};
   const legacyFeeds={
     state:{market_open:true,indices:{NIFTY:{spot:25000,last_updated:now,shield:{score:75,tier:'ACTIVE',direction:'CE'},gamma:{score:80,tier:'ACTIVE',direction:'CE'},technicals:{vwap:24900,ema20:24980,ema50:24950,rsi:61},components:{vwap:25}}}},
     dashboard_data:{ts:now,positions:[],session:{realized_gain_today_inr:1234,capital_deployed_inr:5000,capital_ceiling_inr:50000,daily_loss_used_inr:0,daily_loss_limit_inr:2500,position_slots_used:0,position_slots_max:1},forecaster:{status:'observing',checked_at:now,metrics:{}}},
@@ -36,6 +41,14 @@ const assert=require('assert');
     if(url.pathname==='/dashboard.html')return route.fulfill({contentType:'text/html',body:fs.readFileSync(path.join(__dirname,'../dashboard_live/dashboard.html'),'utf8')});
     if(url.pathname==='/dashboard-api/session')return route.fulfill({json:{ok:true}});
     if(url.pathname==='/dashboard-api/celestial')return route.fulfill({json:fixture});
+    if(url.pathname==='/dashboard-api/server_health'){
+      healthCalls++;
+      assert.strictEqual(request.method(),'GET');
+      if(healthUnauthorized)return route.fulfill({status:401,json:{detail:'sign_in_required'}});
+      if(healthFails)return route.fulfill({status:503,json:{detail:'unavailable'}});
+      if(healthInvalid)return route.fulfill({json:{status:'healthy',ts:new Date().toISOString()}});
+      return route.fulfill({json:{...serverHealth,ts:new Date(Date.now()-(healthStale?20000:0)).toISOString()}});
+    }
     const feed=url.pathname.replace('/dashboard-api/','');
     if(legacyFeeds[feed]){
       if(feed==='state'&&marketFails)return route.fulfill({status:502,json:{detail:'unavailable'}});
@@ -51,6 +64,18 @@ const assert=require('assert');
   await page.goto('https://kadima.test/dashboard.html');
   await page.waitForSelector('#desk:not([hidden])');
   await page.waitForSelector('[data-buy]');
+  await page.waitForFunction(()=>document.getElementById('serverRam').textContent==='50.0%');
+  assert.strictEqual(await page.locator('#serverCpu').textContent(),'25.0%');
+  assert.strictEqual(await page.locator('#serverSwap').textContent(),'Not configured');
+  assert.ok((await page.locator('#serverRamDetail').textContent()).includes('1.00 GiB available'));
+  assert.strictEqual(await page.locator('#serverHealth').getAttribute('data-current'),'true');
+  assert.strictEqual(await page.locator('#serverHealthStatus').textContent(),'Resources normal');
+  Object.assign(serverHealth.memory,{used_percent:75,available_percent:25,used_bytes:1610612736,available_bytes:536870912});
+  // No click or reload: the live timer must bring the changed observation in.
+  await page.waitForFunction(()=>document.getElementById('serverRam').textContent==='75.0%');
+  assert.strictEqual(await page.locator('#serverRamMeter').evaluate(m=>m.value),75);
+  assert.ok(healthCalls>=2);
+  assert.ok((await page.locator('#serverHealthPeaks').textContent()).includes('RAM 75.0%'));
   assert.strictEqual(await page.locator('#candidates tbody tr').count(),1);
   assert.strictEqual(await page.locator('#candidates th').count(),24);
   assert.ok((await page.locator('#candidates tbody tr td').nth(8).innerText()).includes('137.50'));
@@ -113,9 +138,39 @@ const assert=require('assert');
   await page.waitForFunction(()=>document.getElementById('legacy-statusbar').textContent.includes('Backend unavailable'));
   assert.ok((await page.locator('#legacy-indices').innerText()).includes('LAST KNOWN'));
   assert.strictEqual(writes.length,2);
+  serverHealth.status='critical';
+  Object.assign(serverHealth.memory,{used_percent:95,available_percent:5,used_bytes:2040109466,available_bytes:107374182});
+  serverHealth.alerts=[{level:'critical',message:'RAM available below 10%'}];
+  await page.waitForFunction(()=>document.getElementById('serverHealthStatus').textContent==='Critical resource pressure');
+  assert.strictEqual(await page.locator('#serverHealthStatus').getAttribute('data-level'),'critical');
+  assert.ok((await page.locator('#serverHealthAlerts').textContent()).includes('RAM available below 10%'));
+  healthStale=true;
+  await page.waitForFunction(()=>document.getElementById('serverHealth').dataset.current==='false');
+  assert.ok((await page.locator('#serverHealthStatus').textContent()).includes('Last known'));
+  assert.strictEqual(await page.locator('#serverRamMeter').evaluate(m=>getComputedStyle(m).visibility),'hidden');
+  healthStale=false;healthFails=true;
+  await page.waitForFunction(()=>document.getElementById('serverHealthAlerts').textContent.includes('unavailable'));
+  assert.strictEqual(await page.locator('#serverHealth').getAttribute('data-current'),'false');
+  healthFails=false;healthInvalid=true;
+  // Malformed responses must not replace the last observation with healthy zeroes.
+  const callsBeforeInvalid=healthCalls;
+  await page.waitForTimeout(2600);
+  assert.ok(healthCalls>callsBeforeInvalid);
+  assert.strictEqual(await page.locator('#serverHealth').getAttribute('data-current'),'false');
+  assert.strictEqual(await page.locator('#serverRam').textContent(),'95.0%');
+  healthInvalid=false;serverHealth.status='healthy';serverHealth.alerts=[];
+  Object.assign(serverHealth.memory,{used_percent:50,available_percent:50,used_bytes:1073741824,available_bytes:1073741824});
+  await page.waitForFunction(()=>document.getElementById('serverHealth').dataset.current==='true');
+  assert.strictEqual(await page.locator('#serverHealthStatus').textContent(),'Resources normal');
   await page.setViewportSize({width:390,height:844});
   assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=window.innerWidth+1));
   await page.screenshot({path:'/tmp/kadima-celestial-mobile.png',fullPage:true});
+  healthUnauthorized=true;
+  await page.waitForSelector('#login:not([hidden])');
+  const callsAfterSignOut=healthCalls;
+  await page.waitForTimeout(2500);
+  assert.strictEqual(healthCalls,callsAfterSignOut);
+  assert.strictEqual(writes.length,2);
   assert.deepStrictEqual(errors,[]);
   await browser.close();
   process.stdout.write('Dashboard fixture: rendering, threshold, BUY payload, empty state, mobile and JS errors passed.\n');
