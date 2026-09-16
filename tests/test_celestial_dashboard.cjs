@@ -71,6 +71,8 @@ const assert=require('assert');
   await page.waitForFunction(()=>document.querySelectorAll('#candidates tbody tr').length===20);
   assert.strictEqual(await page.locator('[data-buy]').count(),0);
   assert.ok((await page.locator('#gammaSource').innerText()).includes('Legacy Gamma watchlist'));
+  await page.click('#gammaScrollToggle');
+  assert.strictEqual(await page.locator('#gammaScrollToggle').getAttribute('aria-pressed'),'true');
   assert.ok(await page.locator('#legacy-focus').isEnabled());
   await page.selectOption('#legacy-focus','BANKNIFTY');
   assert.ok((await page.locator('#legacy-checklist').innerText()).includes('No backend checklist for BANKNIFTY'));
