@@ -24,8 +24,11 @@ const assert=require('assert');
   const legacyFeeds={
     state:{market_open:true,indices:{NIFTY:{spot:25000,last_updated:now,shield:{score:75,tier:'ACTIVE',direction:'CE'},gamma:{score:80,tier:'ACTIVE',direction:'CE'},technicals:{vwap:24900,ema20:24980,ema50:24950,rsi:61},components:{vwap:25}}}},
     dashboard_data:{ts:now,positions:[],session:{realized_gain_today_inr:1234,capital_deployed_inr:5000,capital_ceiling_inr:50000,daily_loss_used_inr:0,daily_loss_limit_inr:2500,position_slots_used:0,position_slots_max:1},forecaster:{status:'observing',checked_at:now,metrics:{}}},
-    universe_snapshot:{ts:now,coverage:{expected:25},prices:{},tracked:Array.from({length:25},(_,i)=>({name:'STOCK'+i,score:90-i,tier:'ACTIVE',direction:'CE',last_updated:now}))},
-    macro_snapshot:{ts:now,india_vix:{value:14,last_updated:now},news:[{title:'Fixture company announcement',source:'Fixture',url:'https://example.test/news',published_at:now,last_updated:now}],economic_calendar:[]}
+    universe_snapshot:{ts:now,coverage:{expected:26},prices:{UNSCORED:{ltp:100,received_at:now}},tracked:Array.from({length:25},(_,i)=>({name:'STOCK'+i,score:90-i,tier:'ACTIVE',direction:'CE',last_updated:now}))},
+    macro_snapshot:{ts:now,india_vix:{value:14,last_updated:now},news:[{title:'Fixture company announcement',source:'Fixture',url:'https://example.test/news',published_at:now,
+      context:{matches:[{watch_assets:'MCX CRUDEOIL',reason:'Verify the inventory surprise'}],action:'Watchlist only'}}],
+      economic_calendar:[{name:'RBI MPC Meeting',date:'2026-10-05',end_date:'2026-10-07',source:'rbi.org.in',calendar_verified_on:'2026-09-16'}],
+      commodities:{status:'observing',monitoring_window_open:true,checked_at:now,execution_enabled:false,note:'Read-only quote references',contracts:[{name:'CRUDEOIL',symbol:'CRUDEOILTESTFUT',instrumenttype:'FUTCOM',expiry:'2099-09-16',ltp:9815,exchange_feed_at:now,exchange_trade_at:now,fresh:true}]}}
   };
   await page.route('**/*',async route=>{
     const request=route.request(),url=new URL(request.url());
@@ -66,6 +69,13 @@ const assert=require('assert');
   await page.waitForFunction(()=>document.getElementById('legacy-ledger').textContent.includes('1,234'));
   assert.ok((await page.locator('#legacy-indices').innerText()).includes('25,000'));
   assert.ok((await page.locator('#legacy-news').innerText()).includes('Fixture company announcement'));
+  assert.ok(!(await page.locator('#legacy-news').innerText()).includes('NO SOURCE TIMESTAMP'));
+  assert.ok((await page.locator('#legacy-news').innerText()).includes('Published:'));
+  assert.ok((await page.locator('#legacy-news').innerText()).includes('MCX CRUDEOIL'));
+  assert.ok((await page.locator('#legacy-macro').innerText()).includes('2026-10-05 to 2026-10-07'));
+  assert.ok((await page.locator('#legacy-universe').innerText()).includes('Not in current scored shortlist'));
+  assert.ok((await page.locator('#legacy-commodities').innerText()).includes('CRUDEOILTESTFUT'));
+  assert.ok((await page.locator('#legacy-commodities').innerText()).includes('MCX execution disabled'));
   assert.ok((await page.locator('#legacy-forecastPanel').innerText()).includes('observing'));
   assert.ok(await page.locator('#legacy-focus').isEnabled());
   assert.strictEqual(await page.locator('#candidates th').nth(4).textContent(),'Best strike');
@@ -74,6 +84,10 @@ const assert=require('assert');
   const expiry='2099-09-16';
   legacyFeeds.universe_snapshot.tracked[0].best_contract={symbol:'STOCK0TEST100CE',strike:100,type:'CE',expiry,ltp:5,updated_at:new Date().toISOString(),baseline_at:new Date(Date.now()-300000).toISOString(),premium_move_pct:10,pace_status:'ready'};
   await page.click('#legacy-refresh');
+  legacyFeeds.macro_snapshot.commodities.contracts[0].exchange_trade_at='1970-01-01T00:00:00Z';
+  await page.click('#legacy-refresh');
+  await page.waitForFunction(()=>document.getElementById('legacy-commodities').textContent.includes('Last known / unavailable'));
+  assert.ok(!(await page.locator('#legacy-commodities').innerText()).includes('Recent quote'));
   await page.screenshot({path:process.env.KADIMA_SCREENSHOT || '/tmp/kadima-celestial-desktop.png',fullPage:true});
   fixture.candidates=[];fixture.positions=[];
   await page.evaluate(()=>refresh());

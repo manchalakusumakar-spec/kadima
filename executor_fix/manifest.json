@@ -147,9 +147,22 @@
     "6c3907cac87bdafb985879f8e38b5720e1457797"
   ],
   "kadima/api.py": [
-    "2e9fc0e4e0ad940f289bb113ac19f30c3d475009"
+    "2e9fc0e4e0ad940f289bb113ac19f30c3d475009",
+    "f2bef2e334822562dadc38242d18c88f151fbbbd"
   ],
   "kadima/shield_confirmation.py": [
+    null
+  ],
+  "kadima/macro_watch.py": [
+    "ae75f89a2a3de658b639097f83387dfc72df7866"
+  ],
+  "kadima/universe_api.py": [
+    null
+  ],
+  "kadima/commodity_watch.py": [
+    null
+  ],
+  "kadima/news_context.py": [
     null
   ]
 }
