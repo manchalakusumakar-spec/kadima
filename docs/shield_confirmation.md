@@ -79,7 +79,7 @@ retry identity, final revalidation, and correlated request/response logs.
 
 Use the consolidated `executor_fix/install.py` deployment from this release. Its
 manifest includes the new confirmation module and API changes and allows the
-verified predecessor hashes. Its existing maintenance, source-identity,
+verified predecessor hashes. It permits updates 24/7; its source-identity,
 flat-account, dependency and service-health checks remain intact. Do not bypass
 an unknown deployed source hash.
 

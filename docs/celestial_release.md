@@ -201,7 +201,7 @@ Do not enable either live mode or automatic entries until the NO-GO items above
 are resolved or an explicitly narrower, tested scope is approved.
 
 The consolidated `executor_fix/install.py` manifest includes the complete new
-backend dependency set and exact reviewed source hashes. It retains maintenance,
+backend dependency set and exact reviewed source hashes. It allows updates 24/7 and retains
 flat-account preflight, unknown-version refusal, backup and rollback safeguards.
 It does not deploy dashboard files or enable the mode. Review
 `docs/release_readiness.md` before any installation; do not sequence historical
@@ -268,12 +268,13 @@ changes. A broker failure at the first check leaves services and source alone.
 It does not infer zero exposure from an expired contract date or a screenshot.
 Broker checks authenticate and read position/order books; they send no orders.
 
-Run during **19:00–08:00 IST**, using the reviewed checkout above. The backend
+Run **at any hour**, using the reviewed checkout above. The backend
 step checks local and broker exposure, backs up source, and restarts the three
 backend services. The next step updates the two dashboard files with its own
 backup and gateway restart. The sequence stops at the first failure; a backend
 success followed by a dashboard failure is a partial installation, not a
-completed release. Each installer has its own source rollback. Neither changes
+completed release. Backend source rollback applies before restart; once restart begins, installed
+source is retained and services are recovered because trading may have resumed. Neither changes
 the rollout flag, broker gate, credentials or stored trading configuration.
 
 ```bash

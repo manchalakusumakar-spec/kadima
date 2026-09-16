@@ -14,8 +14,6 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
-from datetime import datetime
-from zoneinfo import ZoneInfo
 
 REPO = Path('/home/ubuntu/kadima-py')
 PACKAGE = Path(__file__).resolve().parents[1]
@@ -120,9 +118,7 @@ def failure_summary(exc, operation):
 def main():
     if os.geteuid() != 0:
         raise SystemExit('Run with sudo -n python3 '+str(Path(__file__).resolve()))
-    hour = datetime.now(ZoneInfo('Asia/Kolkata')).hour
-    if 8 <= hour < 19:
-        raise SystemExit('Maintenance installer runs only from 19:00 to 08:00 IST. No files changed.')
+    # Updates are allowed at any hour; exposure and source checks still apply.
     manifest = json.loads((PACKAGE/'forecaster_update/manifest.json').read_text())
     # Validate every source before stopping any service.
     for name, allowed in manifest.items():
@@ -141,8 +137,7 @@ def main():
         if b'=' in item:
             k,v=item.split(b'=',1)
             env[os.fsdecode(k)] = os.fsdecode(v)
-    # Check local exposure while the engine is still running. The maintenance
-    # window prevents normal new entries between this check and service stop.
+    # Check exposure before stopping; repeat after stopping to catch new entries.
     db = Path(env.get('KADIMA_DATA_DIR', '/var/lib/kadima'))/'kadima.db'
     if not db.is_file():
         raise SystemExit('Local position database is unavailable. No services stopped.')
@@ -159,6 +154,17 @@ def main():
     user=pwd.getpwnam('ubuntu')
     if Path('/proc/'+pid).stat().st_uid != user.pw_uid:
         raise SystemExit('Unexpected engine owner. No files changed.')
+    def as_user():
+        os.initgroups(user.pw_name,user.pw_gid)
+        os.setgid(user.pw_gid)
+        os.setuid(user.pw_uid)
+    try:
+        check=run([python,'-c',PREFLIGHT],cwd=REPO,env=env,preexec_fn=as_user,timeout=60)
+        if 'KADIMA_PREFLIGHT_OK' not in check.stdout:
+            raise RuntimeError('Broker preflight did not confirm flat state')
+    except Exception as exc:
+        print('Failed check:',failure_summary(exc,'broker_preflight_before_stop'))
+        raise SystemExit('Install stopped before service shutdown. No source files changed.')
     active=[u for u in UNITS if subprocess.run(['systemctl','is-active','--quiet',u]).returncode==0]
     backup=Path(tempfile.mkdtemp(prefix='kadima-forecaster-backup-',dir='/home/ubuntu'))
     os.chmod(backup,0o700)
@@ -173,10 +179,6 @@ def main():
     operation='stop_services'
     try:
         run(['systemctl','stop',*active],timeout=60)
-        def as_user():
-            os.initgroups(user.pw_name,user.pw_gid)
-            os.setgid(user.pw_gid)
-            os.setuid(user.pw_uid)
         operation='broker_preflight'
         check=run([python,'-c',PREFLIGHT],cwd=REPO,env=env,preexec_fn=as_user,timeout=60)
         if 'KADIMA_PREFLIGHT_OK' not in check.stdout:
@@ -199,8 +201,16 @@ def main():
         detail = failure_summary(exc, operation)
         (backup/'install-status.json').write_text(json.dumps({'failed_check':detail}))
         print('Failed check:', detail)
-        # Maintenance window + flat broker preflight ensure this rollback is
-        # before a market entry cycle. Never roll back or replace the database.
+        # Once restart is attempted, live entries may already have resumed.
+        # Retain the installed source and recover services instead of reverting
+        # code under a potentially open position. Never roll back the database.
+        if copied and operation in {'start_services', 'verify_services'}:
+            subprocess.run(['systemctl','start',*active],capture_output=True,timeout=60)
+            print('Installed source retained after restart failure; trading may have resumed.')
+            print('Check service health and broker/local positions before a recovery deployment.')
+            print('Backup:',backup)
+            raise SystemExit(1)
+        # Before restart, the engine is stopped and source rollback is safe.
         if copied:
             run(['systemctl','stop',*active],timeout=60)
             for name,allowed in manifest.items():

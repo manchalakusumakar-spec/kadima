@@ -44,8 +44,6 @@ class InstallerDiagnostics(unittest.TestCase):
                     stack.enter_context(patch.object(installer.os,'geteuid',return_value=0))
                     stack.enter_context(patch.object(installer.pwd,'getpwnam',return_value=types.SimpleNamespace(
                         pw_name='ubuntu',pw_uid=process.stat().st_uid,pw_gid=process.stat().st_gid)))
-                    clock=stack.enter_context(patch.object(installer,'datetime'))
-                    clock.now.return_value.hour=1
                     run=stack.enter_context(patch.object(installer,'run',side_effect=call))
                     direct=stack.enter_context(patch.object(installer.subprocess,'run'))
                     backup=stack.enter_context(patch.object(installer.tempfile,'mkdtemp'))

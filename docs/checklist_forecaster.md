@@ -31,7 +31,7 @@ Official API references: [Structured Outputs](https://developers.openai.com/api/
 
 ## Deployment
 
-Use the pinned commit supplied with the release. The installer checks hashes, permits maintenance only from 19:00 to 08:00 IST, requires local and broker flat/no-pending-order state, captures the existing service environment privately, backs up source, restarts previously active services, and restores source if deployment fails. No test orders are sent. This is the existing repository's maintenance deployment gate, not a request to close positions automatically.
+Use the pinned commit supplied with the release. The installer checks hashes, permits updates at any hour, requires local and broker flat/no-pending-order state, captures the existing service environment privately, backs up source, restarts previously active services, and restores source on failure before restart; after restart begins it retains installed source and recovers services because trading may have resumed. No test orders are sent. This is the existing repository's maintenance deployment gate, not a request to close positions automatically.
 
 After extracting `kadima forecaster_update`:
 

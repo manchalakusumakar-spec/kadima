@@ -35,7 +35,7 @@ Whole lots must fit both planned risk and allocated purchase capital including t
 
 Protective exits run in the existing approximately ten-second monitor, including the former no-auto-exit window. Stops are application-monitored, not newly created broker-hosted stop orders. Existing pending-exit alerts/reconciliation remain essential if an exit does not fill.
 
-The installer requires a maintenance window (19:00–08:00 IST), matching source hashes, no unresolved local positions/orders, and a read-only broker confirmation that the account is flat. It backs up changed source, preserves trading flags/credentials, restarts the prior active services, and restores source on installation failure. This window is a deployment policy, not a statement of exchange hours. Database changes are additive; the database is never rolled back.
+The installer permits updates 24/7 and requires matching source hashes, no unresolved local positions/orders, and a read-only broker confirmation that the account is flat. It backs up changed source, preserves trading flags/credentials, restarts the prior active services, and restores source on installation failure before restart. After restart begins, it retains installed source and recovers services because trading may have resumed. Database changes are additive; the database is never rolled back.
 
 Legacy restored positions without the new fields retain the old emergency percentage fallback. The flat-only installer prevents opening the amended deployment with such a position. New entries cannot use that fallback.
 
