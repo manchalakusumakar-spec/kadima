@@ -1,8 +1,33 @@
 # KADIMA Celestial — implementation draft
 
 Built from PR #1 head `e1d42a175b2e3bf29886b16474fa79f57aaedecd`.
-This is a separate, stacked draft. No AWS deployment, broker orders, merge,
-credential changes or live-configuration changes were performed.
+This is a separate, stacked draft. The user installed backend and dashboard
+commit `cb482d77961af34ea65d7f9ff8af316bb2d37810` on EC2 on 16 September 2026
+at 07:02 IST. No merge, test broker orders, credential changes or activation
+of Celestial were performed.
+
+## Confirmed installation — 16 September 2026, 07:02 IST
+
+The supplied terminal transcript reports successful backend installation and
+dashboard upgrade. All 33 backend files match the reviewed release and all four
+systemd services are active/running. The installer passed its flat broker/local
+preflight; the subsequent local inventory has zero open positions and pending
+execution intents. These are observations at installation, not a continuing
+guarantee of account flatness.
+
+Celestial rollout and automatic entries remain false; threshold is 65. The
+existing broker-order gate is true, so legacy trading settings still matter.
+Backend backup: `/home/ubuntu/kadima-executor-backup-dp8l88yo`.
+Dashboard backup: `/var/backups/kadima-dashboard-upgrade-xa7jf5ev`.
+
+The first inventory incorrectly reported `celestial_api: false` after reading
+its configuration successfully: unset reconciliation/news health is JSON null,
+and the reporter attempted `.get()` on that null value. The reporter now records
+API reachability separately from unavailable worker health. Two regressions
+cover null health and invalid snapshots/health flags. This is a diagnostic-only
+fix and needs no engine or dashboard restart. Authenticated browser display,
+market-session feed capacity, fresh news coverage and unattended live readiness
+remain unverified.
 
 ## What is implemented
 
@@ -94,7 +119,8 @@ credential changes or live-configuration changes were performed.
   external fill deltas are accounted for. Account-wide realized/unrealized
   loss reconciliation still requires live validation.
 - Exact exchange/broker session, expiry cutoffs, static-IP registration,
-  runtime process ownership and market-session resource headroom are unverified.
+  market-session resource headroom are unverified. Installer process ownership
+  checks passed during the reported EC2 installation.
   Existing session/cutoff values were not asserted correct or changed.
 - Real browser rendering and live dashboard/gateway wiring must be verified
   before release. The browser fixture is fully intercepted and never uses the
@@ -131,8 +157,9 @@ incremental installers.
 For a previously installed dashboard gateway, review/install the new gateway
 and HTML together while preserving its private configuration and password.
 The historical `dashboard_live/install.py` is a fresh-install path. The new
-`dashboard_live/upgrade.py` is the conservative in-place path; it has not run
-on AWS. Actual deployed hashes and process ownership must be checked first.
+`dashboard_live/upgrade.py` is the conservative in-place path; the user ran it
+successfully on EC2 as recorded above. Actual deployed hashes and process
+ownership must still pass its checks on subsequent upgrades.
 
 ### First EC2 action: read-only report
 
@@ -244,7 +271,7 @@ the API cannot prove an external collector actually checked a source.
 
 ## Offline verification
 
-Validation performed locally for the follow-up: 163 Python tests passed,
+Validation performed locally through the reporting fix: 166 Python tests passed,
 including real authenticated FastAPI/control-gateway requests with
 broker boundaries mocked or login forbidden. All Python source compiled; actual
 engine/control/scanner imports passed with socket connections forbidden, and
@@ -252,8 +279,9 @@ dashboard JavaScript syntax is checked separately. The 157-test backend release
 also passed GitHub's desktop/mobile browser fixture at the commit linked above.
 Six further installer regressions cover process ownership, malformed position
 quantities, bounded startup waits and immediate auth/schema refusal. Inspect
-GitHub workflow status at the actual release commit. No AWS/broker live test
-is claimed.
+GitHub workflow status at the actual release commit. The user-reported AWS
+installation and broker-flat preflight are recorded above; no live order or
+market-session validation is claimed.
 
 ```bash
 python3 -m pip install -r requirements.txt httpx

@@ -33,6 +33,21 @@ def run(args):
     except (OSError,subprocess.TimeoutExpired):return ''
 
 
+def api_checks(status):
+    """API reachability and worker health are separate, including before startup."""
+    if not isinstance(status,dict) or not isinstance(status.get('config'),dict):
+        raise ValueError('Invalid API snapshot')
+    checks={'celestial_api':True}
+    for key in ('rollout_enabled','auto_trade_enabled','kill_latched','broker_orders_enabled','score_threshold'):
+        value=status['config'].get(key)
+        if isinstance(value,(bool,int)) or value is None:checks[key]=value
+    system=status.get('system')
+    for name,key in (('reconciliation','broker_reconciliation_ok'),('news','news_ok')):
+        health=system.get(name) if isinstance(system,dict) else None
+        checks[key]=isinstance(health,dict) and health.get('ok') is True
+    return checks
+
+
 def report(target):
     result=dict(timestamp=datetime.now(ZoneInfo('Asia/Kolkata')).isoformat(),
                 read_only=True,target=str(target),source={},services={},checks={})
@@ -75,12 +90,7 @@ def report(target):
         config=json.loads(Path('/etc/kadima-dashboard/config.json').read_text())
         req=urllib.request.Request('http://127.0.0.1:8081/api/kadima/top20',headers={'Authorization':'Bearer '+config['api_token']})
         with urllib.request.urlopen(req,timeout=10) as r:status=json.load(r)
-        result['checks']['celestial_api']=True
-        for key in ('rollout_enabled','auto_trade_enabled','kill_latched','broker_orders_enabled','score_threshold'):
-            value=status.get('config',{}).get(key)
-            if isinstance(value,(bool,int)) or value is None:result['checks'][key]=value
-        result['checks']['broker_reconciliation_ok']=status.get('system',{}).get('reconciliation',{}).get('ok') is True
-        result['checks']['news_ok']=status.get('system',{}).get('news',{}).get('ok') is True
+        result['checks'].update(api_checks(status))
     except Exception:result['checks']['celestial_api']=False
     result['dashboard']={name:blob(Path(name)) for name in
         ('/opt/kadima-dashboard/gateway.py','/var/www/html/dashboard.html')}

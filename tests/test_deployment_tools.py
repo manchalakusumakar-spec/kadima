@@ -18,6 +18,25 @@ def module(name,path):
 
 
 class DeploymentTools(unittest.TestCase):
+    def test_unset_worker_health_does_not_mark_reachable_api_down(self):
+        report=module('deployment_inventory','tools/deployment_report.py')
+        for system in (None,{}, {'reconciliation':None,'news':None}):
+            with self.subTest(system=system):
+                result=report.api_checks({'config':{'rollout_enabled':False,'score_threshold':65},'system':system})
+                self.assertTrue(result['celestial_api'])
+                self.assertFalse(result['broker_reconciliation_ok'])
+                self.assertFalse(result['news_ok'])
+                self.assertFalse(result['rollout_enabled'])
+                self.assertEqual(result['score_threshold'],65)
+
+    def test_snapshot_requires_config_and_explicit_worker_success(self):
+        report=module('deployment_inventory','tools/deployment_report.py')
+        for invalid in (None,[],{}, {'config':None}):
+            with self.subTest(invalid=invalid),self.assertRaises(ValueError):report.api_checks(invalid)
+        result=report.api_checks({'config':{},'system':{'reconciliation':{'ok':True},'news':{'ok':'true'}}})
+        self.assertTrue(result['broker_reconciliation_ok'])
+        self.assertFalse(result['news_ok'])
+
     def test_backend_restart_delay_then_ready(self):
         upgrade=module('dashboard_upgrade','dashboard_live/upgrade.py')
         with patch.object(upgrade.urllib.request,'urlopen',side_effect=[
