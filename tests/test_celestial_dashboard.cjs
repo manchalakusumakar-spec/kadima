@@ -1,3 +1,4 @@
+require('./test_gamma_plan.cjs');
 // Fully intercepted local fixture. This test never contacts the live dashboard.
 const {chromium}=require('playwright');
 const fs=require('fs');
@@ -13,7 +14,7 @@ const assert=require('assert');
     system:{news:{ok:true,ts:now},reconciliation:{ok:true,positions:[]},
       stock_universe:{priced:207,expected:208,option_chains_tracked:208,option_chain_limit:null,option_chains_fresh:207,missing:[]}},
     candidates:[{id:'NFO:1',rank:1,symbol:'TEST26SEP25000CE',underlying:'NIFTY',direction:'CE',
-      best_strike:25000,option_ltp:125,premium_move_pct:12.5,gamma_score:80,bull_shield_score:75,
+      expiry:'2099-09-16',baseline_at:new Date(Date.now()-300000).toISOString(),best_strike:25000,option_ltp:125,premium_move_pct:12.5,gamma_score:80,bull_shield_score:75,
       bear_shield_score:null,news_available:true,news_score:10,final_score:90,tier:'BLAST',volume_ratio:2.4,
       oi_support:true,spread_status:'CLEAN',action:'RADAR',last_updated:now,blocked_reasons:['auto_paused']}],
     positions:[{signal_id:7,symbol:'FIXTURE26SEP100CE',source:'MANUAL_ADOPTED',status:'open',remaining_qty:10,
@@ -48,6 +49,11 @@ const assert=require('assert');
   await page.waitForSelector('#desk:not([hidden])');
   await page.waitForSelector('[data-buy]');
   assert.strictEqual(await page.locator('#candidates tbody tr').count(),1);
+  assert.strictEqual(await page.locator('#candidates th').count(),24);
+  assert.ok((await page.locator('#candidates tbody tr td').nth(8).innerText()).includes('137.50'));
+  await page.fill('#planT1','15');await page.locator('#planT1').dispatchEvent('change');
+  assert.ok((await page.locator('#candidates tbody tr td').nth(8).innerText()).includes('143.75'));
+  assert.strictEqual(writes.length,0);
   assert.ok((await page.locator('#coverage').innerText()).includes('207/208'));
   assert.ok((await page.locator('#coverage').innerText()).includes('Nearest expiry'));
   await page.selectOption('#threshold','75');await page.click('#saveThreshold');

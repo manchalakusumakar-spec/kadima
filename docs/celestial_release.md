@@ -346,3 +346,7 @@ The HTTP tests use real FastAPI routing with broker login forbidden. The existin
 execution tests replace broker boundaries. Browser fixture: install Playwright
 and its Chromium runtime, then run `node tests/test_celestial_dashboard.cjs`.
 All browser requests are intercepted at `kadima.test`; no live order is sent.
+
+
+## Gamma candidate display plans
+Top 20 adds Entry reference, Exit/stop, T1, T2 and Holding estimate. T1/T2 are editable display-only percentage scenarios (10/20% defaults), reset on reload and never sent to execution. A fresh matching single open position supplies its reported fill and engine stop; otherwise entry is LTP reference and exit awaits engine validation. Prices are unavailable for missing/expired contracts or quotes older than 30 seconds. Holding time requires a measured 5–6.5 minute premium baseline and extrapolates its logarithmic pace, suppressing estimates past session/expiry close. This is not a validated optimal-entry or duration forecast. Legacy snapshots have no pace baseline, so holding time is unavailable there. No trading flags, stops or targets are changed. Dashboard-only installation; authenticated/live validation remains pending.
