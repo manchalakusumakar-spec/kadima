@@ -54,6 +54,8 @@ function gammaPlan(row, {current, t1, t2, positions=[], positionsCurrent=false, 
  const values=[money(entry)+(p?' · filled':' · LTP reference'),p&&positive(p.effective_stop)?money(p.effective_stop)+' · engine stop':'Unavailable · await engine plan','Unavailable','Unavailable','Unavailable · no measured pace'];
  if(!positive(t1)||!positive(t2)||t2<=t1||t2>200)return [values[0],values[1],'Invalid target %','Invalid target %','Unavailable'];
  values[2]=money(entry*(1+t1/100)); values[3]=money(entry*(1+t2/100));
+ if(row.pace_status==='warming_up')values[4]='Collecting 5 min of quotes';
+ if(row.pace_status==='not_rising')values[4]='No rising pace · no target ETA';
  const span=(observed-Date.parse(row.baseline_at))/60000, move=row.premium_move_pct;
  if(positive(move)&&span>=5&&span<=6.5){
   const rate=Math.log1p(move/100)/span;
@@ -134,7 +136,7 @@ el('gammaSource').textContent='Legacy Gamma watchlist · ranked from available i
 el('candidateCount').textContent=list.length+' / 20 candidates';
 for(const [i,r] of list.entries()){
 const tr=document.createElement('tr');const c=validDisplayContract(r.best_contract)?r.best_contract:null;const current=onlineLegacy(r.feed)&&fresh(r.last_updated)&&(!c||age(c.updated_at)<=30000);
-[i+1,c?.symbol||'Contract unavailable',r.name,r.direction,c?fmt(c.strike)+' '+c.type+'\n'+c.expiry:'Unavailable',c?fmt(c.ltp):'—',...gammaPlan({symbol:c?.symbol,option_ltp:c?.ltp,expiry:c?.expiry,last_updated:c?.updated_at},{...planSettings(),current,positions:feeds.dashboard.data?.positions||[],positionsCurrent:onlineLegacy('dashboard')&&fresh(feeds.dashboard.data?.ts)}),'—',fmt(r.score,0),'—','—','Unavailable','—',r.tier,'—','—','Unverified',current?'WATCH ONLY':'LAST KNOWN',stamp(r.last_updated),'Read only'].forEach(v=>cell(tr,v));body.append(tr);
+[i+1,c?.symbol||'Contract unavailable',r.name,r.direction,c?fmt(c.strike)+' '+c.type+'\n'+c.expiry:'Unavailable',c?fmt(c.ltp):'—',...gammaPlan({symbol:c?.symbol,option_ltp:c?.ltp,expiry:c?.expiry,last_updated:c?.updated_at,baseline_at:c?.baseline_at,premium_move_pct:c?.premium_move_pct,pace_status:c?.pace_status},{...planSettings(),current,positions:feeds.dashboard.data?.positions||[],positionsCurrent:onlineLegacy('dashboard')&&fresh(feeds.dashboard.data?.ts)}),'—',fmt(r.score,0),'—','—','Unavailable','—',r.tier,'—','—','Unverified',current?'WATCH ONLY':'LAST KNOWN',stamp(r.last_updated),'Read only'].forEach(v=>cell(tr,v));body.append(tr);
 }
 if(!list.length)emptyGlobal(body,24,'No qualifying directional Gamma scores in the available legacy feeds. Scanner coverage is not yet verified.');
 }

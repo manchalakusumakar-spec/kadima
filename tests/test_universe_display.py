@@ -62,3 +62,45 @@ class UniverseDisplay(unittest.TestCase):
             data=json.loads(Path(tmp,'snapshot.json').read_text())
         self.assertEqual(data['tracked'][0]['best_contract'],{'strike':100,'type':'CE'})
         self.assertEqual(data['tracked'][0]['strike_status'],'selected')
+
+class PremiumPace(unittest.TestCase):
+    def setUp(self):
+        self.chain=UniverseDisplay().chain()
+
+    def sample(self, seconds, price=10, direction='CE'):
+        from datetime import timedelta
+        now=NOW+timedelta(seconds=seconds)
+        q=self.chain.quotes['1'];q.ltp=price;q.bid=price*.999;q.ask=price*1.001
+        with patch.object(display,'now_ist',return_value=now):
+            return display.selected_contract(self.chain,direction,100,14,now.isoformat())[0]
+
+    def test_five_minute_pace_exported_for_same_contract(self):
+        self.assertEqual(self.sample(0)['pace_status'],'warming_up')
+        for second in range(30,301,30):c=self.sample(second,10+second/300)
+        self.assertAlmostEqual(c['premium_move_pct'],10)
+        self.assertEqual(c['baseline_at'],NOW.isoformat())
+        self.assertEqual(c['pace_status'],'ready')
+
+    def test_history_collected_before_direction_confirmation(self):
+        for second in range(0,300,30):self.sample(second,direction=None)
+        self.assertEqual(self.sample(300,11)['pace_status'],'ready')
+
+    def test_gap_and_contract_change_reset_history(self):
+        for second in range(0,301,30):self.sample(second)
+        self.assertEqual(self.sample(420)['pace_status'],'warming_up')
+        self.chain.quotes['1'].symbol='DIFFERENT'
+        self.assertEqual(self.sample(450)['pace_status'],'warming_up')
+        self.assertEqual(len(self.chain._display_premiums),1)
+
+    def test_flat_and_falling_are_not_positive_eta(self):
+        for second in range(0,301,30):c=self.sample(second)
+        self.assertEqual(c['pace_status'],'not_rising')
+        self.assertEqual(self.sample(330,9)['pace_status'],'not_rising')
+
+    def test_invalid_quote_breaks_continuity(self):
+        for second in range(0,301,30):self.sample(second)
+        self.chain.quotes['1'].bid=0
+        from datetime import timedelta
+        now=NOW+timedelta(seconds=330)
+        with patch.object(display,'now_ist',return_value=now):display.premium_pace(self.chain,now.isoformat())
+        self.assertEqual(self.sample(360)['pace_status'],'warming_up')
