@@ -93,17 +93,16 @@ No broker orders were sent during verification.
 ## Deployment
 
 `executor_fix/install.py` checks file hashes and compiles all replacement Python
-files before stopping services. It only runs between 19:00 and 08:00 IST, a chosen
-maintenance window. It reads the running engine's existing environment and Python
+files before stopping services. It permits updates at any hour while retaining flat-account checks. It reads the running engine's existing environment and Python
 interpreter without printing or saving credentials. After stopping active engine,
 scanner and macro services, it uses that environment for a read-only broker login,
 position and order-book preflight. Both local and broker state must be flat with
 no unresolved orders. Missing broker confirmation aborts installation.
 
 It backs up source, replaces only manifest files and restarts the previously
-active services. No configuration flags or credentials are edited. On immediate
-installation failure it restores source and restarts the original services; it
-never replaces or rolls back the database. The database additions are additive.
+active services. No configuration flags or credentials are edited. On failure before restart it restores source and restarts the original
+services. Once restart has been attempted, it retains installed source and recovers
+services because trading may have resumed. It never rolls back the database. The database additions are additive.
 
 A successful installer message establishes source installation and service
 activity, not successful live trading. Inspect the next session's

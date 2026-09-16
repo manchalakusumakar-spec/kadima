@@ -38,7 +38,7 @@ The consolidated manifest accepts the exact baseline and reviewed dashboard-head
 file hashes, absent newly added files, or files already equal to the new release.
 Unknown local modifications stop installation for review. It does not replace
 `kadima/config.py`, credentials, service definitions, dashboard files or databases.
-The existing maintenance window, flat local/broker preflight, source backups,
+Updates are allowed at any hour. Flat local/broker preflight, source backups,
 active-service restart and source rollback rules remain in force.
 
 Before release approval, verify the actual server's service manager and source
