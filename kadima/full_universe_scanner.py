@@ -19,6 +19,7 @@ from .option_chain import OptionChain
 from .scrip_master import ScripMaster
 from .session import SESSION
 from .utils import in_market_hours, now_ist
+from .universe_display import selected_contract, write_snapshot
 
 
 def stock_roots(master, on):
@@ -78,6 +79,8 @@ class FullUniverseScanner:
         self.histories = {n: gamma.GammaHistory() for n in self.indices}
         self.radar = Radar()
         self.last = {}
+        self.scores = {}
+        self.prices = {}
         self.day = now_ist().date()
         self._stop = threading.Event()
         self.report()
@@ -91,6 +94,14 @@ class FullUniverseScanner:
             option_chains_fresh=fresh, missing=self.missing,
             ok=not self.missing and bool(self.chains) and fresh == len(self.chains),
             coverage='all_resolved_active_stock_roots_nearest_expiry_atm_plus_minus_one', **extra))
+        try:
+            write_snapshot(dict(ts=now.isoformat(),tracked=sorted(self.scores.values(),key=lambda r:r['score'],reverse=True),
+                prices=self.prices,execution='central_executor_gated',coverage=dict(
+                    expected=len(self.indices)+len(self.missing),priced=len(self.prices),
+                    missing=sorted({r['name'] for r in self.missing}|(set(self.indices)-set(self.prices))),
+                    gamma_limit=None)))
+        except (OSError,ValueError,TypeError) as exc:
+            audit.log('universe_snapshot_write_failed',error=type(exc).__name__)
 
     def poll_group(self, names):
         keys = set()
@@ -104,12 +115,14 @@ class FullUniverseScanner:
         for name in names:
             chain = self.chains[name]
             producer = chain.index.opt_exchange + ':' + name
+            self.scores.pop(name,None)
             spot_row = rows.get((chain.index.exchange, chain.index.token))
             if not spot_row:
                 celestial.publish(producer, [])
                 stock_handoff.invalidate(name)
                 continue
             spot = float(spot_row['ltp'])
+            self.prices[name]=dict(ltp=spot,received_at=spot_row['_received_at'])
             previous = set(chain.quotes)
             chain.rebuild_ladder(spot)
             fetched = [rows[(chain.index.opt_exchange, t)] for t in chain.quotes
@@ -128,6 +141,9 @@ class FullUniverseScanner:
                 continue
             stamp = spot_row['_received_at']
             result = gamma.score(name, chain, self.histories[name], spot, days)
+            contract,status=selected_contract(chain,result.direction,spot,days,stamp)
+            self.scores[name]=dict(name=name,spot=spot,tier=result.tier,score=result.score,
+                direction=result.direction,last_updated=stamp,best_contract=contract,strike_status=status)
             self.last[name] = stamp
             vwap = float(spot_row.get('avgPrice') or 0)
             vwap = vwap if math.isfinite(vwap) and vwap > 0 else None
@@ -151,6 +167,7 @@ class FullUniverseScanner:
                 self.poll_group(group)
             except Exception as exc:
                 for name in group:
+                    self.scores.pop(name,None)
                     celestial.publish(self.indices[name].opt_exchange + ':' + name, [])
                     stock_handoff.invalidate(name)
                 audit.log('full_universe_batch_failed', error=type(exc).__name__, count=len(group))

@@ -101,8 +101,8 @@ const list=candidates(),body=el('candidates').tBodies[0];body.replaceChildren();
 el('gammaSource').textContent='Legacy Gamma watchlist · ranked from available index/stock scores · not full-universe contract ranking · scores are not probabilities · trading unavailable here';
 el('candidateCount').textContent=list.length+' / 20 candidates';
 for(const [i,r] of list.entries()){
-const tr=document.createElement('tr');const current=onlineLegacy(r.feed)&&fresh(r.last_updated);
-[i+1,'Contract unavailable',r.name,r.direction,'—','—','—',fmt(r.score,0),'—','—','Unavailable','—',r.tier,'—','—','Unverified',current?'WATCH ONLY':'LAST KNOWN',stamp(r.last_updated),'Read only'].forEach(v=>cell(tr,v));body.append(tr);
+const tr=document.createElement('tr');const c=validDisplayContract(r.best_contract)?r.best_contract:null;const current=onlineLegacy(r.feed)&&fresh(r.last_updated)&&(!c||age(c.updated_at)<=30000);
+[i+1,c?.symbol||'Contract unavailable',r.name,r.direction,c?fmt(c.strike):'—',c?fmt(c.ltp):'—','—',fmt(r.score,0),'—','—','Unavailable','—',r.tier,'—','—','Unverified',current?'WATCH ONLY':'LAST KNOWN',stamp(r.last_updated),'Read only'].forEach(v=>cell(tr,v));body.append(tr);
 }
 if(!list.length)emptyGlobal(body,19,'No qualifying directional Gamma scores in the available legacy feeds. Scanner coverage is not yet verified.');
 }
@@ -116,10 +116,24 @@ rows.map(r=>'<p>'+esc(r.category)+': '+fmt(r.net_cr)+' Cr<br>Reporting date: '+e
 ((m.economic_calendar||[]).length?'':'<p class="muted">Calendar unavailable · Source update time unavailable</p>');
 $('news').innerHTML='<li>'+freshness('macro',m.ts,{responseOnly:true})+'</li>'+
 ((m.news||[]).map(n=>{let u;try{u=new URL(n.url);if(!['http:','https:'].includes(u.protocol))u=null}catch{}return '<li>'+(u?'<a target="_blank" rel="noopener noreferrer" href="'+esc(u.href)+'">'+esc(n.title)+'</a>':esc(n.title))+'<br><small>'+esc(n.source)+' · Published: '+stamp(n.published_at)+'</small>'+freshness('macro',n.last_updated)+'</li>'}).join('')||'<li>No headlines supplied · Source update time unavailable</li>');}
+function validDisplayContract(c){
+const today=new Intl.DateTimeFormat('en-CA',{timeZone:'Asia/Kolkata',year:'numeric',month:'2-digit',day:'2-digit'}).format(new Date());
+return c&&num(c.strike)&&c.strike>0&&['CE','PE'].includes(c.type)&&typeof c.symbol==='string'&&c.symbol&&/^\d{4}-\d{2}-\d{2}$/.test(c.expiry||'')&&c.expiry>=today&&age(c.updated_at)>=0&&Number.isFinite(age(c.updated_at));
+}
+function bestUniverseStrike(name,row){
+let pick=row?.best_contract;
+if(!validDisplayContract(pick)){
+const c=online?(snapshot?.candidates||[]).find(r=>r.underlying===name&&age(r.last_updated)>=0&&age(r.last_updated)<=30000):null;
+pick=c?{strike:c.best_strike,type:c.direction,symbol:c.symbol,expiry:c.expiry,ltp:c.option_ltp,updated_at:c.last_updated}:null;
+}
+if(!validDisplayContract(pick))return 'Unavailable<br><small>'+esc((row?.strike_status||'not_scanned').replaceAll('_',' '))+'</small>';
+const current=onlineLegacy('universe')&&age(pick.updated_at)<=30000;
+return esc(fmt(pick.strike)+' '+pick.type)+'<br><small>'+esc(pick.symbol)+'<br>Expiry '+esc(pick.expiry)+' · Premium '+money(pick.ltp)+'<br>'+(!current?'LAST KNOWN · ':'')+'Updated '+stamp(pick.updated_at)+'</small>';
+}
 function renderUniverse(){const u=feeds.universe.data,tracked=u?.tracked||[],prices=u?.prices||{};const map=new Map(tracked.map(r=>[r.name,r]));const syms=[...new Set([...Object.keys(prices),...map.keys(),...(u?.coverage?.missing||[])])].sort();
 $('universeCount').innerHTML=Object.keys(prices).length+' priced / '+esc(u?.coverage?.expected??'unknown')+' expected · '+tracked.length+' scored'+freshness('universe',u?.ts,{responseOnly:true,responseLabel:'Snapshot generated'});
-$('universe').innerHTML=syms.length?table(['Stock','Reported price','Price time','Gamma score','Score time'],syms.map(n=>{const r=map.get(n),q=prices[n];return '<tr><td>'+esc(n)+'</td><td>'+fmt(q?.ltp)+'</td><td>'+freshness('universe',q?.received_at,{responseOnly:true,responseLabel:'Quote fetched by scanner'})+'</td><td>'+(num(r?.score)?fmt(r.score,0)+'/100 · '+esc(r.tier):'Unavailable')+'</td><td>'+freshness('universe',r?.last_updated)+'</td></tr>'})):empty('No universe snapshot yet · Source update time unavailable');}
-function renderCoverage(){const gaps=feeds.state.data?.unavailable||{};$('coverage').innerHTML='<p>Legacy market panels do not provide candidate strikes or verified per-position broker quote timestamps. Celestial contract ranking is shown above when available. MCX calendar/feed coverage remains unverified.</p>'+Object.entries(gaps).map(([k,v])=>'<p>'+esc(k.replaceAll('_',' '))+': '+esc(v)+'</p>').join('')}
+$('universe').innerHTML=syms.length?'<p class="note">Best strike is selected from the scanned option chain using direction, liquidity and spread checks. It is not an entry approval. Old observations are marked LAST KNOWN; no qualified contract is shown explicitly.</p>'+table(['Stock','Reported price','Best strike','Gamma score','Score time'],syms.map(n=>{const r=map.get(n),q=prices[n];return '<tr><td>'+esc(n)+'</td><td>'+fmt(q?.ltp)+'<br>'+freshness('universe',q?.received_at,{responseOnly:true,responseLabel:'Quote fetched by scanner'})+'</td><td>'+bestUniverseStrike(n,r)+'</td><td>'+(num(r?.score)?fmt(r.score,0)+'/100 · '+esc(r.tier):'Unavailable')+'</td><td>'+freshness('universe',r?.last_updated)+'</td></tr>'})):empty('No universe snapshot yet · Source update time unavailable');}
+function renderCoverage(){const gaps=feeds.state.data?.unavailable||{};$('coverage').innerHTML='<p>Stock strikes come from the scanner snapshot when a qualified contract is available. Per-position broker quote timestamps remain unverified. Celestial contract ranking is shown above when available. MCX calendar/feed coverage remains unverified.</p>'+Object.entries(gaps).map(([k,v])=>'<p>'+esc(k.replaceAll('_',' '))+': '+esc(v)+'</p>').join('')}
 
 let forecastRenderKey='';
 function renderForecast(){

@@ -312,6 +312,10 @@ class UniverseScanner:
                 "direction": result.direction,
                 "ts": now_ist().isoformat(),
             }
+            from .universe_display import selected_contract
+            contract,status=selected_contract(tracked.chain,result.direction,tracked.spot,
+                                              tracked.days_to_expiry,chain_at)
+            self._last_score[name].update(best_contract=contract,strike_status=status)
 
             if result.tier in ("ACTIVE", "CONFIRMED") and result.direction:
                 pick = strike_selector.best(tracked.chain, result.direction,
@@ -359,6 +363,8 @@ class UniverseScanner:
                 "score": latest["score"],
                 "direction": latest["direction"],
                 "last_updated": latest["ts"],
+                "best_contract": latest.get("best_contract"),
+                "strike_status": latest.get("strike_status","not_scanned"),
             })
         rows.sort(key=lambda r: r["score"], reverse=True)
         payload = {
@@ -429,4 +435,3 @@ def main() -> int:
 if __name__ == "__main__":
     import sys
     sys.exit(main())
-

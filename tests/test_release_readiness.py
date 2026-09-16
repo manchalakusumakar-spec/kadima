@@ -162,4 +162,5 @@ class ReleaseInstaller(unittest.TestCase):
                   'celestial_universe','news_catalysts','scrip_master','full_universe_scanner',
                   'news_collector','celestial_exit','external_reconciliation')}
         self.assertTrue(required.issubset(manifest))
-        self.assertEqual(len(manifest),33)
+        self.assertEqual(len(manifest),34)
+        self.assertIn('kadima/universe_display.py',manifest)

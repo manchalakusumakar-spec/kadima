@@ -31,6 +31,29 @@ remain unverified.
 
 ## What is implemented
 
+### F&O best-strike column follow-up
+
+The F&O Universe table replaces Price time with Best strike. Both scanner modes
+now export `best_contract` and `strike_status` with each scored stock, including
+the selected symbol, strike, CE/PE side, expiry, premium and observation time.
+The read-only legacy Gamma Top 20 also displays these exported contracts.
+Underlying quote timestamps remain under Reported price.
+
+This closes a data-export gap: the old scanner calculated selected contracts
+for alerts but omitted them from its dashboard snapshot. Selection for display
+uses the existing strike-ranking logic on copied quotes, with fresh chain,
+unexpired contract, direction and liquidity/spread checks. It changes no entry,
+exit or activation gates and adds no broker quote requests. No qualifying
+contract produces an explicit reason; older observations are labelled LAST
+KNOWN rather than presented as current. The full-universe scanner now writes
+the same universe snapshot format used by the authenticated dashboard route.
+
+This change requires the updated backend scanner modules and dashboard.
+The consolidated installer manifest now contains 34 modules and accepts the
+exact previously installed scanner hashes. Run its standard guarded maintenance
+installation before the dashboard updater. The display fills after successful
+market-session chain scans; it does not manufacture pre-market contracts.
+
 ### Dashboard restoration follow-up
 
 The first Gamma Desk page replaced panels that should have been retained.

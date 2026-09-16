@@ -90,7 +90,8 @@
   "kadima/stock_universe_scanner.py": [
     "18d40bd9ead639e852a56475c51b820c147898f0",
     "bfe2ff023c1f90117d5c11ae92deca7c7fe7a27b",
-    "5e3a17cbedf96c4848e8f543bf1da3e4cffe02ab"
+    "5e3a17cbedf96c4848e8f543bf1da3e4cffe02ab",
+    "daa1fa075c0d226f805f69ae217e23febb386ccb"
   ],
   "kadima/storage.py": [
     "35611465714705635a104ad3f312719a9bc843ea",
@@ -127,7 +128,8 @@
     "ec558e161067492b74a0417a248829327002335c"
   ],
   "kadima/full_universe_scanner.py": [
-    null
+    null,
+    "10179948a06bf56cd44e733dff80ca23ca8ab759"
   ],
   "kadima/news_collector.py": [
     null
@@ -136,6 +138,9 @@
     null
   ],
   "kadima/external_reconciliation.py": [
+    null
+  ],
+  "kadima/universe_display.py": [
     null
   ]
 }

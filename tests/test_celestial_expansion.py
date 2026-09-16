@@ -50,6 +50,7 @@ class Expansion(unittest.TestCase):
         for module in (celestial, full, news, exits):
             self.patches.append(patch.object(module, 'now_ist', return_value=NOW))
         self.patches.append(patch('kadima.audit.log'))
+        self.patches.append(patch.object(full,'write_snapshot'))
         self.patches.append(patch('kadima.scrip_master.datetime', FrozenDatetime))
         for p in self.patches:p.start()
 
@@ -91,6 +92,9 @@ class Expansion(unittest.TestCase):
         self.assertEqual(len(scanner.last),22)
         self.assertEqual(celestial.health('stock_universe')['option_chains_fresh'],22)
         self.assertTrue(celestial.health('stock_universe')['ok'])
+        published=full.write_snapshot.call_args.args[0]
+        self.assertEqual(len(published['tracked']),22)
+        self.assertTrue(all('best_contract' in row for row in published['tracked']))
 
     def test_missing_contract_cannot_mark_chain_fresh(self):
         scanner = full.FullUniverseScanner(ScripMaster(master_rows(1)))
