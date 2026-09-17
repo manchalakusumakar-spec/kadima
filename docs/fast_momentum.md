@@ -80,8 +80,8 @@ Use `--db` and `--audit-dir` when deployment uses non-default paths.
 
 Based on PR2's reviewed Shield-confirmation head. No merge of the separate
 anytime-deployment or MCX branches is implied. The guarded installer now includes
-37 modules and accepts exact prior reviewed hashes. Unknown deployed versions,
-exposure and maintenance rules still stop installation. Reconcile source hashes
+the reviewed modules and accepts exact prior reviewed hashes. Unknown deployed versions
+and unresolved exposure still stop installation. Reconcile source hashes
 before deployment; do not overwrite newer deployment branches with this snapshot.
 
 Before live activation: verify installed versions; verify quote/bar timestamps
@@ -99,6 +99,10 @@ Unknown versions still stop installation; no source check is bypassed.
 These readers do not start a collector or enable commodity orders. Existing
 snapshot freshness and authentication checks remain in place.
 
-The maintenance window remains 19:00–08:00 IST. Installation still requires
+Installation is allowed 24/7. Installation still requires
 broker and local flat-position/no-pending-order checks and preserves trading
 flags. Installing this release does not arm the experimental strategy.
+The installer checks exposure before and after stopping services. If new
+exposure appears in between, it aborts and restores service operation without
+replacing source. A restart or health-check failure retains the installed code
+because trading may already have resumed; it requires a recovery review.

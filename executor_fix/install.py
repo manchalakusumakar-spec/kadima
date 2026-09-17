@@ -15,8 +15,6 @@ import sqlite3
 import subprocess
 import sys
 import tempfile
-from datetime import datetime
-from zoneinfo import ZoneInfo
 
 REPO = Path('/home/ubuntu/kadima-py')
 PACKAGE = Path(__file__).resolve().parents[1]
@@ -179,9 +177,7 @@ def failure_summary(exc, operation):
 def main():
     if os.geteuid() != 0:
         raise SystemExit('Run with sudo -n python3 '+str(Path(__file__).resolve()))
-    hour = datetime.now(ZoneInfo('Asia/Kolkata')).hour
-    if 8 <= hour < 19:
-        raise SystemExit('Maintenance installer runs only from 19:00 to 08:00 IST. No files changed.')
+    # Updates are allowed at any hour; exposure and source checks still apply.
     manifest = json.loads((PACKAGE/'executor_fix/manifest.json').read_text())
     # Validate every source before stopping any service.
     for name, allowed in manifest.items():
@@ -201,8 +197,7 @@ def main():
         if b'=' in item:
             k,v=item.split(b'=',1)
             env[os.fsdecode(k)] = os.fsdecode(v)
-    # Check local exposure while the engine is still running. The maintenance
-    # window prevents normal new entries between this check and service stop.
+    # Check exposure before stopping; repeat after stopping to catch new entries.
     db = Path(env.get('KADIMA_DATA_DIR', '/var/lib/kadima'))/'kadima.db'
     if not db.is_file():
         raise SystemExit('Local position database is unavailable. No services stopped.')
@@ -272,8 +267,16 @@ def main():
         detail = failure_summary(exc, operation)
         (backup/'install-status.json').write_text(json.dumps({'failed_check':detail}))
         print('Failed check:', detail)
-        # Maintenance window + flat broker preflight ensure this rollback is
-        # before a market entry cycle. Never roll back or replace the database.
+        # Once restart is attempted, live entries may already have resumed.
+        # Retain installed code rather than reverting under a potential position.
+        if copied and operation in {'start_services', 'verify_services'}:
+            subprocess.run(['systemctl','start',*active],capture_output=True,timeout=60)
+            print('Installed source retained after restart failure; trading may have resumed.')
+            print('Check service health and broker/local positions before a recovery deployment.')
+            print('Backup:',backup)
+            raise SystemExit(1)
+        # Before restart, the engine is stopped and source rollback is safe.
+        # Never roll back or replace the database.
         if copied:
             run(['systemctl','stop',*active],timeout=60)
             for name,allowed in manifest.items():
