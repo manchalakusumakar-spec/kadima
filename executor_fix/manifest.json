@@ -13,7 +13,8 @@
     "90f012c995d90402e30892ddc6029da71f1f2893",
     "456ab949ac0bfa5303d89d58de0b0dac9a053adc",
     "ea865c37ab13222481f0a5ecc2628934f4b36b23",
-    "f03d528e507baff5854519731d5eb28e50a402eb"
+    "f03d528e507baff5854519731d5eb28e50a402eb",
+    "f830afebc49b764e48b91bd4c61f2260e769d25f"
   ],
   "kadima/capital_guard.py": [
     "fa2037c39883c412ae426e37e07121cd0e8f2c91",
@@ -26,7 +27,8 @@
   "kadima/control_api.py": [
     "dda766d3ed57fb7701fd4bdb367be82a0fb4106d",
     "01d5b906aa9664dc788d0fc8f4501cae9a00308e",
-    "fa26ec2728108b2607a3cbdfd797d040fe758bb7"
+    "fa26ec2728108b2607a3cbdfd797d040fe758bb7",
+    "6734f4e822b2c6cf14fae88539a4bfd87b7292fb"
   ],
   "kadima/engine.py": [
     "a1be6464db4990815bec5abf4e20c168cb5319aa",
@@ -34,7 +36,8 @@
     "64d76d3ebfcb6e198c3cc6d45daad676c8088d96",
     "fafac592b7c5011068d0b4d2c25f7f2baf42c66a",
     "b48943d7f3b3a827b8a9e3233509039e7b828b0a",
-    "9d44ec739a6c837910c8b465673a91432c8028d5"
+    "9d44ec739a6c837910c8b465673a91432c8028d5",
+    "a1875f1d73889c850403320cd30e583cbf5ca469"
   ],
   "kadima/entry_quality.py": [
     "397c88ecee825f878c1a53678087e49e2359f15a",
@@ -43,7 +46,8 @@
   "kadima/execution_ledger.py": [
     null,
     "69d58c3c12f4d41c4e18861bd457a7f610eeca2b",
-    "acfa0f18690d995489a0d203e5ea569374911b22"
+    "acfa0f18690d995489a0d203e5ea569374911b22",
+    "1fde45163927f6fceff4a6ae8573e4242ac4fb18"
   ],
   "kadima/exit_manager.py": [
     "d5b7d46ecde3a0c960555ce977cd87087482c17d",
@@ -67,7 +71,8 @@
   ],
   "kadima/option_chain.py": [
     "bba28daca258437742531a3dec594292d880e79c",
-    "835d95feee514bfdd6f06d2c0203b734e4692b00"
+    "835d95feee514bfdd6f06d2c0203b734e4692b00",
+    "b2b9c4fea31e4528743e615319797e99d5e13e2c"
   ],
   "kadima/rate_limiter.py": [
     "83dc77d40cfc1d15c7929a4d17e23b407db53b16",
@@ -164,6 +169,12 @@
     null
   ],
   "kadima/fast_momentum.py": [
+    null
+  ],
+  "kadima/cas_engine.py": [
+    null
+  ],
+  "kadima/cas_orders.py": [
     null
   ]
 }
