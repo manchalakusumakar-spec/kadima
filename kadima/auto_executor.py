@@ -22,6 +22,7 @@ from . import (alerts, audit, capital_guard, entry_quality, exit_manager,
 from . import angel_orders, forecast_trail, execution_ledger, trade_policy
 from . import celestial
 from . import fast_momentum
+from . import cas_engine, cas_orders
 from .config import (DAILY_LOSS_LIMIT_INR, IST, MAX_CONCURRENT_POSITIONS,
                      MAX_LOTS_PER_SIGNAL, ORDER_PLACEMENT_ENABLED)
 from .instrument_master import get_lot_size
@@ -243,6 +244,7 @@ class AutoExecutor:
         self._celestial_verified = set()
         self._celestial_quotes = {}
         self.fast_rows = {}
+        self.cas_rows = {}
         self.entry_diagnostics = deque(maxlen=100)
 
     @serialized
@@ -452,7 +454,7 @@ class AutoExecutor:
         if not 0 <= time.monotonic() - getattr(chain, '_last_poll', 0) <= 30:
             return
         for pos in list(self.state.positions.values()):
-            if pos.index != index_name or pos.status != 'open':
+            if pos.index != index_name or pos.status != 'open' or pos.kind == 'cas':
                 continue
             result = self._structure(chain, pos.direction, spot)
             quote = chain.quotes.get(pos.token)
@@ -469,6 +471,10 @@ class AutoExecutor:
                 pos.structural_stop = max(pos.structural_stop or 0, stop)
                 pos.effective_stop = max(pos.effective_stop or 0, pos.structural_stop)
                 storage.upsert_position(pos)
+
+    @serialized
+    def evaluate_cas(self, state, lane, row):
+        return cas_orders.dispatch(self, state, lane, row)
 
     # -------------------------------------------------------- entry
     @serialized
@@ -709,6 +715,8 @@ class AutoExecutor:
 
         by_exchange: dict[str, list[str]] = {}
         for p in open_positions:
+            if getattr(p, 'kind', None) == 'cas':
+                continue
             by_exchange.setdefault(p.exchange, []).append(p.token)
 
         ltp_by_contract: dict[tuple[str,str], float] = {}
@@ -728,6 +736,32 @@ class AutoExecutor:
 
         for pos in open_positions:
             ltp = ltp_by_contract.get((pos.exchange,pos.token))
+            cas_row = None
+            if getattr(pos, 'kind', None) == 'cas':
+                cas_row = next((r for r in self.cas_rows.get(pos.index, [])
+                                if r.get('token') == pos.token and r.get('direction') == pos.direction), None)
+                # CAS exits use a source-timestamped executable bid. LTP may lag.
+                q = cas_orders.fetch_quote(pos.exchange, pos.token, pos.symbol,
+                                           (cas_row or {}).get('strike', 0), pos.direction, for_exit=True)
+                ltp = q.bid if q else None
+                if q:
+                    cas_row = dict(cas_row or {}, option_vwap=q.option_vwap,
+                                   quote_at=cas_engine.source_time(q.quote_at).isoformat())
+                if ltp is None:
+                    audit.log('cas_exit_quote_unavailable', signal_id=pos.signal_id)
+                    urgent = ('daily_loss_limit_breached' if daily_loss_breached else
+                              'eod_force_close' if force_close else pos.exit_reason or
+                              cas_engine.exit_reason(pos, 0, None, now))
+                    if urgent:
+                        # Persist/cancel an outstanding BUY even with no quote.
+                        pos.exit_reason = urgent
+                        storage.upsert_position(pos)
+                        if pos.status == 'entry_pending':
+                            execution_ledger.request_entry_exit(pos, pos.exit_reason)
+                    alerts.enqueue(f'CAS exit quote unavailable: {pos.symbol}; owned quantity '
+                                   f'{pos.remaining_qty}, protection awaits a fresh bid.',
+                                   key=f'cas-exit-quote:{pos.signal_id}')
+                    continue
             if celestial.enabled() and ltp is not None:
                 self._celestial_quotes[pos.exchange+':'+pos.token] = dict(ltp=ltp,ts=now.isoformat())
             if ltp is None:
@@ -749,7 +783,7 @@ class AutoExecutor:
                        if pos.entry_price else 0.0)
             peak_gain = (pos.peak_price - pos.entry_price) if pos.peak_price else 0.0
 
-            if not pos.trail_active and gain_pct >= GIVEBACK_FLOOR_PCT:
+            if getattr(pos, 'kind', None) != 'cas' and not pos.trail_active and gain_pct >= GIVEBACK_FLOOR_PCT:
                 pos.trail_active = True
                 storage.upsert_position(pos)
                 audit.log("trail_activated", signal_id=pos.signal_id,
@@ -758,11 +792,17 @@ class AutoExecutor:
             # Flat-only installer prevents introducing unprotected legacy positions.
             # Keep legacy emergency protection for a pre-amendment restore only.
             structural = pos.structural_stop or pos.entry_price * (1 - FIXED_STOPLOSS_PCT / 100)
-            pos.effective_stop, active = trade_policy.ratchet(
-                pos.entry_price, pos.peak_price, pos.effective_stop, structural)
-            if celestial.enabled():
-                pos.effective_stop, active = celestial.trail_stop(pos.entry_price,pos.peak_price,
-                    pos.effective_stop,structural,celestial.retain_fraction(pos.signal_id))
+            if getattr(pos, 'kind', None) == 'cas':
+                structural = max(structural, pos.entry_price*(1-cas_engine.POLICY.stop_fraction))
+                active = pos.peak_price >= pos.entry_price*1.25
+                trail = pos.entry_price+(pos.peak_price-pos.entry_price)*.75 if active else structural
+                pos.effective_stop = max(pos.effective_stop or 0, structural, trail)
+            else:
+                pos.effective_stop, active = trade_policy.ratchet(
+                    pos.entry_price, pos.peak_price, pos.effective_stop, structural)
+                if celestial.enabled():
+                    pos.effective_stop, active = celestial.trail_stop(pos.entry_price,pos.peak_price,
+                        pos.effective_stop,structural,celestial.retain_fraction(pos.signal_id))
             pos.trail_active = pos.trail_active or active
             storage.upsert_position(pos)
             # A queued exit remains binding after cancellation, restart or rebound.
@@ -773,6 +813,8 @@ class AutoExecutor:
                 reason = 'eod_force_close'
             elif reason:
                 pass
+            elif getattr(pos, 'kind', None) == 'cas' and cas_engine.exit_reason(pos, ltp, cas_row, now):
+                reason = cas_engine.exit_reason(pos, ltp, cas_row, now)
             elif getattr(pos,'kind',None)=='fast_momentum' and fast_momentum.timeout_reason(pos,now):
                 reason = fast_momentum.timeout_reason(pos,now)
             elif ltp <= structural:
@@ -792,7 +834,7 @@ class AutoExecutor:
                               should_exit=decision.should_exit)
                     reason = decision.reason if decision.should_exit else None
 
-            if not reason and celestial.enabled():
+            if not reason and celestial.enabled() and getattr(pos, 'kind', None) != 'cas':
                 from .celestial_exit import evaluate
                 reason = evaluate(pos, ltp, now)
 

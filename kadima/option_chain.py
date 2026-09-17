@@ -49,6 +49,10 @@ class OptionQuote:
     vega: float | None = None
     bid: float | None = None
     ask: float | None = None
+    option_vwap: float | None = None
+    quote_at: str | None = None
+    bid_qty: int | None = None
+    ask_qty: int | None = None
 
     @property
     def spread_pct(self) -> float | None:
@@ -227,6 +231,12 @@ class OptionChain:
             buy, sell = depth.get("buy") or [], depth.get("sell") or []
             q.bid = _f(buy[0].get("price")) if buy else None
             q.ask = _f(sell[0].get("price")) if sell else None
+            # CAS requires the broker's average traded price and source time;
+            # missing fields block only CAS, never synthesize a VWAP from LTP.
+            q.option_vwap = _f(row.get('avgPrice'))
+            q.quote_at = row.get('exchFeedTime')
+            q.bid_qty = _i(buy[0].get('quantity')) if buy else None
+            q.ask_qty = _i(sell[0].get('quantity')) if sell else None
             if (q.ltp is None or not math.isfinite(q.ltp) or q.ltp <= 0
                     or q.oi is None or q.volume is None or q.oi < 0 or q.volume < 0):
                 self.velocity.mark_degraded()
@@ -247,7 +257,8 @@ class OptionChain:
         self._forecast_sample = dict(mono=self._last_poll, expiry=self._expiry,
             quotes=[dict(token=q.token,symbol=q.symbol,strike=q.strike,opt_type=q.opt_type,
                 ltp=q.ltp,oi=q.oi,oi_change=q.oi_change,volume=q.volume,iv=q.iv,
-                delta=q.delta,gamma=q.gamma,theta=q.theta,vega=q.vega,bid=q.bid,ask=q.ask)
+                delta=q.delta,gamma=q.gamma,theta=q.theta,vega=q.vega,bid=q.bid,ask=q.ask,
+                option_vwap=q.option_vwap,quote_at=q.quote_at,bid_qty=q.bid_qty,ask_qty=q.ask_qty)
                 for q in self.quotes.values()])
         return True
 
@@ -294,7 +305,6 @@ def _i(v):
         return int(float(v))
     except (TypeError, ValueError):
         return None
-
 
 
 

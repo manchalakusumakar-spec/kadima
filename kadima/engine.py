@@ -21,6 +21,7 @@ from types import SimpleNamespace
 from . import alerts, audit, indicators, killswitch, last_known, storage, strike_selector
 from . import auto_executor
 from .fast_momentum import Lane as FastLane
+from .cas_engine import Lane as CASLane
 from .shield_confirmation import (SHIELD_MIN_SCORE, BANK_NAMES, ShieldEvidence,
     alignment, fresh, confirmation_checks, is_shield_confirmed)
 from .stock_execution import StockExecutionWorker
@@ -97,6 +98,8 @@ class Engine:
         from .celestial_scanner import Radar
         self.radar = Radar()
         self.fast_lane = FastLane()
+        self.cas_lane = CASLane()
+        self._cas_reported = {}
         self._fast_reported = {}
         self.scan_indices = GAMMA_INDICES
         if celestial.enabled():
@@ -335,6 +338,25 @@ class Engine:
             self._evaluate()
 
     # ------------------------------------------------------------------ OI
+    def _scan_cas(self, st):
+        try:
+            executor = auto_executor.EXECUTOR
+            rows = self.cas_lane.scan(st, executor.state.positions)
+            executor.cas_rows[st.name] = rows
+            for row in rows:
+                key = (st.name, row['direction'])
+                signature = (row.get('episode'), row['stage'], tuple(row['blocked_reasons']))
+                if self._cas_reported.get(key) != signature:
+                    self._cas_reported[key] = signature
+                    audit.log('CAS_CANDIDATE', **row)
+                if row['eligible']:
+                    row['dispatch'] = executor.evaluate_cas(st, self.cas_lane, row)
+        except Exception as exc:
+            auto_executor.EXECUTOR.cas_rows[st.name] = [dict(underlying=st.name,
+                ts=now_ist().isoformat(), stage='CAS WATCH', eligible=False,
+                blocked_reasons=['cas_lane_error'])]
+            audit.log('CAS_LANE_ERROR', index=st.name, error_type=type(exc).__name__)
+
     def _scan_fast(self, st):
         """Optional lane failure must not suppress the established scanners."""
         try:
@@ -373,6 +395,7 @@ class Engine:
                             polled = st.chain.poll()
                             if polled:
                                 auto_executor.EXECUTOR.state.premium_tracker.record_chain(st.chain)
+                                self._scan_cas(st)
                                 # Separate price-led lane consumes the same successful poll.
                                 # Observation by default; never dispatch from the tick callback.
                                 self._scan_fast(st)

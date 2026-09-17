@@ -322,6 +322,11 @@ def dashboard_data(authorization: Optional[str] = Header(None)):
             "candidates": list(getattr(EXECUTOR,'fast_rows',{}).values())[:20],
             "note": "Experimental index lane; 5/10/15-minute scenarios, not probabilities. Existing auto/news/reconciliation gates still apply.",
         },
+        "cas": {
+            "mode": "live_requested" if os.environ.get('KADIMA_CAS_LIVE') == '1' else "observation",
+            "candidates": [r for rows in getattr(EXECUTOR, 'cas_rows', {}).values() for r in rows][:20],
+            "note": "Expiry premium awakening; stages are decisions, broker fills are reported separately. Shield rules unchanged.",
+        },
         "entry_diagnostics": list(getattr(EXECUTOR,'entry_diagnostics',[]))[-20:],
         "execution_progress": execution_progress(),
         "stock_execution": {"mode": "central_executor_gated", "shared_slot": True},
