@@ -90,3 +90,15 @@ inputs, then evaluate multiple unseen sessions with realistic costs/latency and
 against a baseline. Check order/fill/partial-fill recovery and dashboard wiring.
 Offline tests establish code behavior, **not strategy profitability or live
 readiness**. Current work cannot finish those steps without server evidence.
+# Compatibility with the installed FETCH API
+
+The release preserves the reviewed `/state` API additions for F&O scanner
+observations and read-only MCX snapshots. It includes `universe_api.py` and
+`commodity_watch.py`, with their observed AWS hashes in the installer manifest.
+Unknown versions still stop installation; no source check is bypassed.
+These readers do not start a collector or enable commodity orders. Existing
+snapshot freshness and authentication checks remain in place.
+
+The maintenance window remains 19:00–08:00 IST. Installation still requires
+broker and local flat-position/no-pending-order checks and preserves trading
+flags. Installing this release does not arm the experimental strategy.
