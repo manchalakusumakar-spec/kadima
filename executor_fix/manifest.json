@@ -12,7 +12,8 @@
     "a4869661f607c3a3825f480f925c28d4e0ef28fd",
     "90f012c995d90402e30892ddc6029da71f1f2893",
     "456ab949ac0bfa5303d89d58de0b0dac9a053adc",
-    "ea865c37ab13222481f0a5ecc2628934f4b36b23"
+    "ea865c37ab13222481f0a5ecc2628934f4b36b23",
+    "f03d528e507baff5854519731d5eb28e50a402eb"
   ],
   "kadima/capital_guard.py": [
     "fa2037c39883c412ae426e37e07121cd0e8f2c91",
@@ -32,7 +33,8 @@
     "0f5c0fd1c0725757c69d964116630c89ea9c89fe",
     "64d76d3ebfcb6e198c3cc6d45daad676c8088d96",
     "fafac592b7c5011068d0b4d2c25f7f2baf42c66a",
-    "b48943d7f3b3a827b8a9e3233509039e7b828b0a"
+    "b48943d7f3b3a827b8a9e3233509039e7b828b0a",
+    "9d44ec739a6c837910c8b465673a91432c8028d5"
   ],
   "kadima/entry_quality.py": [
     "397c88ecee825f878c1a53678087e49e2359f15a",
@@ -150,6 +152,9 @@
     "2e9fc0e4e0ad940f289bb113ac19f30c3d475009"
   ],
   "kadima/shield_confirmation.py": [
+    null
+  ],
+  "kadima/fast_momentum.py": [
     null
   ]
 }

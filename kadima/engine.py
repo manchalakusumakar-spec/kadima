@@ -20,6 +20,7 @@ from types import SimpleNamespace
 
 from . import alerts, audit, indicators, killswitch, last_known, storage, strike_selector
 from . import auto_executor
+from .fast_momentum import Lane as FastLane
 from .shield_confirmation import (SHIELD_MIN_SCORE, BANK_NAMES, ShieldEvidence,
     alignment, fresh, confirmation_checks, is_shield_confirmed)
 from .stock_execution import StockExecutionWorker
@@ -95,6 +96,8 @@ class Engine:
         from . import celestial
         from .celestial_scanner import Radar
         self.radar = Radar()
+        self.fast_lane = FastLane()
+        self._fast_reported = {}
         self.scan_indices = GAMMA_INDICES
         if celestial.enabled():
             from .celestial_universe import discover_indices
@@ -332,6 +335,30 @@ class Engine:
             self._evaluate()
 
     # ------------------------------------------------------------------ OI
+    def _scan_fast(self, st):
+        """Optional lane failure must not suppress the established scanners."""
+        try:
+            row = self.fast_lane.scan(st)
+            auto_executor.EXECUTOR.fast_rows[st.name] = row
+            signature = (row.get('episode'),row['stage'],tuple(row['blocked_reasons']))
+            if self._fast_reported.get(st.name) != signature:
+                self._fast_reported[st.name] = signature
+                audit.log('FAST_CANDIDATE', **row)
+            if row['eligible']:
+                from .fast_momentum import signal_id
+                sid = signal_id(row)
+                result = auto_executor.EXECUTOR.evaluate_and_enter(
+                    st.name,row['direction'],st.chain,st.spot,st.snap,row['days'],
+                    'fast_momentum',sid,'EXPERIMENTAL',row['score'],
+                    fast_context=lambda state=st: self.fast_lane.scan(state,record=False))
+                row.update(signal_id=sid,dispatch=result)
+                audit.log('FAST_DISPATCH_RESULT', signal_id=sid,index=st.name,**result)
+        except Exception as exc:  # isolation boundary; never retry an order here
+            auto_executor.EXECUTOR.fast_rows[st.name] = dict(underlying=st.name,
+                ts=now_ist().isoformat(),stage='BLOCKED',eligible=False,
+                blocked_reasons=['fast_lane_error'],scenarios=[])
+            audit.log('FAST_LANE_ERROR',index=st.name,error_type=type(exc).__name__)
+
     def _oi_loop(self) -> None:
         while not self._stop.is_set():
             if in_market_hours() and not killswitch.engaged():
@@ -346,6 +373,9 @@ class Engine:
                             polled = st.chain.poll()
                             if polled:
                                 auto_executor.EXECUTOR.state.premium_tracker.record_chain(st.chain)
+                                # Separate price-led lane consumes the same successful poll.
+                                # Observation by default; never dispatch from the tick callback.
+                                self._scan_fast(st)
                             if polled:
                                 auto_executor.EXECUTOR.update_structure(st.name, st.chain, st.spot)
                                 self._score_gamma(st)
@@ -617,6 +647,3 @@ class Engine:
                 audit.log("market_close_shutdown")
                 self.stop()
                 return
-
-
-
