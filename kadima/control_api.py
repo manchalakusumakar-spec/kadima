@@ -317,6 +317,13 @@ def dashboard_data(authorization: Optional[str] = Header(None)):
         "positions": position_views,
         "forecast_connection": getattr(EXECUTOR, "forecast_connection_status", {"status": "not_checked"}),
         "forecaster": read_forecast_report(),
+        "fast_momentum": {
+            "mode": "live_requested" if os.environ.get('KADIMA_FAST_MOMENTUM_LIVE')=='1' else "observation",
+            "candidates": list(getattr(EXECUTOR,'fast_rows',{}).values())[:20],
+            "note": "Experimental index lane; 5/10/15-minute scenarios, not probabilities. Existing auto/news/reconciliation gates still apply.",
+        },
+        "entry_diagnostics": list(getattr(EXECUTOR,'entry_diagnostics',[]))[-20:],
+        "execution_progress": execution_progress(),
         "stock_execution": {"mode": "central_executor_gated", "shared_slot": True},
         "session": {
             "realized_gain_today_inr": round(realized_today, 0),
@@ -329,6 +336,22 @@ def dashboard_data(authorization: Optional[str] = Header(None)):
             "position_slots_max": min(1, config.MAX_CONCURRENT_POSITIONS),
         },
     }
+
+
+def execution_progress():
+    """Ledger facts only; acknowledgement never becomes a fabricated fill."""
+    from . import execution_ledger
+    c = execution_ledger.connection()
+    rows = c.execute('SELECT signal_id,side,quantity,order_id,state,filled,created_at,dry_run '
+                     'FROM execution_orders ORDER BY created_at DESC LIMIT 20').fetchall()
+    result = []
+    for raw in rows:
+        row = dict(raw)
+        row['stage'] = ('DRY_RUN' if row['dry_run'] else 'FILLED' if row['filled']==row['quantity']
+                        else 'PARTIAL_FILL' if row['filled']>0 else 'TERMINAL_NO_FILL'
+                        if row['state']=='terminal' else 'ACKNOWLEDGED' if row['order_id'] else 'SUBMISSION_UNCONFIRMED')
+        result.append(row)
+    return result
 
 
 # ---------------------------------------------------------------------

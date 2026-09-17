@@ -21,6 +21,7 @@ from . import (alerts, audit, capital_guard, entry_quality, exit_manager,
               killswitch, risk_budget, storage, strike_selector)
 from . import angel_orders, forecast_trail, execution_ledger, trade_policy
 from . import celestial
+from . import fast_momentum
 from .config import (DAILY_LOSS_LIMIT_INR, IST, MAX_CONCURRENT_POSITIONS,
                      MAX_LOTS_PER_SIGNAL, ORDER_PLACEMENT_ENABLED)
 from .instrument_master import get_lot_size
@@ -241,6 +242,8 @@ class AutoExecutor:
         self._celestial_contexts = {}
         self._celestial_verified = set()
         self._celestial_quotes = {}
+        self.fast_rows = {}
+        self.entry_diagnostics = deque(maxlen=100)
 
     @serialized
     def prepare_celestial_context(self, name, chain, spot, snap, days):
@@ -472,14 +475,25 @@ class AutoExecutor:
     def evaluate_and_enter(self, index_name: str, direction: str, chain, spot: float,
                            snap, days_to_expiry: float, kind: str,
                            source_signal_id: int, tier: str, score: float,
-                           candidate_id=None, manual_request=False, shield_context=None):
+                           candidate_id=None, manual_request=False, shield_context=None,
+                           fast_context=None):
         """snap: indicators.Snapshot from the calling IndexState, used for
         real VWAP (not a stub) in the entry-quality check."""
         if not getattr(chain, '_entry_guard', lambda: True)():
             return self._reject('stock_signal_expired_or_replaced', index_name, direction)
         selected = None
         minimum = None
-        if celestial.enabled():
+        fast = None
+        if kind == 'fast_momentum':
+            if not ORDER_PLACEMENT_ENABLED:
+                return self._reject('broker_orders_disabled',index_name,direction)
+            fast = fast_context() if callable(fast_context) else None
+            if (not fast or not fast.get('eligible') or fast.get('strategy')!='fast_momentum'
+                    or fast.get('underlying')!=index_name or fast.get('direction')!=direction
+                    or not celestial.fresh(fast.get('ts'))
+                    or fast_momentum.live_blocks(index_name,direction,now_ist(),fast.get('score',0))):
+                return self._reject('fast_context_or_live_gate_blocked',index_name,direction)
+        if celestial.enabled() and fast is None:
             if candidate_id is None:
                 return self._reject('legacy_entry_disabled_in_celestial_mode',index_name,direction)
             selected = celestial.entry_candidate(index_name,direction,manual=manual_request,candidate_id=candidate_id)
@@ -512,16 +526,16 @@ class AutoExecutor:
 
         if not 0 <= time.monotonic() - getattr(chain, '_spot_received_at', 0) <= 30:
             return self._reject('underlying_quote_stale', index_name, direction)
-        if not 0 <= time.monotonic() - getattr(chain, '_alignment_at', 0) <= 240:
+        if fast is None and not 0 <= time.monotonic() - getattr(chain, '_alignment_at', 0) <= 240:
             return self._reject('alignment_snapshot_stale', index_name, direction)
         evidence = shield_context() if callable(shield_context) else None
         if kind in ('bull_shield', 'bear_shield') and (
                 evidence is None or evidence.index != index_name):
             return self._reject('shield_confirmation_evidence_missing', index_name, direction)
-        if not trade_policy.eligible(kind, tier, score, direction, snap, spot,minimum=minimum,
-                                     shield_evidence=evidence, now=now_ist()):
+        if fast is None and not trade_policy.eligible(kind, tier, score, direction, snap, spot,minimum=minimum,
+                                                     shield_evidence=evidence, now=now_ist()):
             return self._reject('eligibility_alignment_or_gamma_score', index_name, direction)
-        structure = self._structure(chain, direction, spot)
+        structure = (fast['spot_stop'],fast['days']) if fast else self._structure(chain, direction, spot)
         if structure is None:
             return self._reject('fresh_structure_or_valid_expiry_unavailable', index_name, direction)
         swing_level, days_to_expiry = structure
@@ -541,6 +555,9 @@ class AutoExecutor:
 
         ranked = [r for r in strike_selector.rank(chain, direction, spot, days_to_expiry)
                   if not r.rejected and str(r.quote.token) in valid_tokens]
+        if fast:
+            ranked = [r for r in ranked if r.quote.token==fast['token'] and r.quote.symbol==fast['symbol']
+                      and chain.index.opt_exchange==fast['exchange']]
         if selected is not None:
             ranked = [r for r in ranked if chain.index.opt_exchange+':'+r.quote.token == selected['id']]
         if not ranked:
@@ -557,7 +574,8 @@ class AutoExecutor:
             for r in ranked
         ]
 
-        allocation = capital_guard.get_capital_for_signal(kind, tier)
+        # Reuse the existing Shield allocation; do not introduce an unlimited budget.
+        allocation = capital_guard.get_capital_for_signal('bull_shield','CONFIRMED') if fast else capital_guard.get_capital_for_signal(kind, tier)
 
         verdict = risk_budget.select_within_budget(
             candidates, spot, allocated_capital=allocation, max_lots=MAX_LOTS_PER_SIGNAL)
@@ -568,9 +586,9 @@ class AutoExecutor:
                             if r.quote.token == verdict.candidate.token)
 
         proj_return = projected_return_pct(chosen_quote, spot, days_to_expiry)
-        if proj_return is None:
+        if fast is None and proj_return is None:
             return self._reject("projected_return_uncomputable", index_name, direction)
-        if proj_return < MIN_PROJECTED_RETURN_PCT:
+        if fast is None and proj_return < MIN_PROJECTED_RETURN_PCT:
             return self._reject(
                 f"projected_return_{proj_return:.1f}pct_under_{MIN_PROJECTED_RETURN_PCT:.0f}pct_minimum",
                 index_name, direction)
@@ -590,7 +608,7 @@ class AutoExecutor:
             stop_override=verdict.candidate.stop_price,
         )
         eq_verdict = entry_quality.evaluate_entry(ctx)
-        if not eq_verdict.allowed:
+        if fast is None and not eq_verdict.allowed:
             return self._reject(f"entry_quality_{eq_verdict.reason}", index_name, direction)
 
         allowed_lots, cap_reason = capital_guard.enforce(
@@ -609,6 +627,12 @@ class AutoExecutor:
             return self._reject("fresh_entry_quote_unavailable", index_name, direction)
 
         limit_price = round(pricing_ltp * (1 + LIMIT_ORDER_BUFFER_PCT / 100.0), 1)
+        if fast:
+            # Bounded entry price, no indefinite chasing after detection.
+            cap = math.floor(fast['entry']*1.005*20)/20
+            if pricing_ltp>cap:
+                return self._reject('fast_entry_price_ran_away',index_name,direction)
+            limit_price = min(limit_price,cap)
         stop = verdict.candidate.stop_price
         allowed_lots = trade_policy.lots_within_allocation(
             allocation, limit_price, stop, lot_size, allowed_lots)
@@ -617,7 +641,7 @@ class AutoExecutor:
         clock = time.monotonic()
         if (not 0 <= clock - chain._last_poll <= 30
                 or not 0 <= clock - chain._spot_received_at <= 30
-                or not 0 <= clock - chain._alignment_at <= 240):
+                or (fast is None and not 0 <= clock - chain._alignment_at <= 240)):
             return self._reject('entry_data_expired_before_submission', index_name, direction)
         quantity = allowed_lots * lot_size
 
@@ -625,6 +649,12 @@ class AutoExecutor:
             return self._reject('entry_gate_changed_before_submission', index_name, direction)
         if not getattr(chain, '_entry_guard', lambda: True)():
             return self._reject('stock_signal_changed_before_submission', index_name, direction)
+        if fast:
+            latest = fast_context()
+            if (not latest or not latest.get('eligible') or not celestial.fresh(latest.get('ts'))
+                    or any(latest.get(k)!=fast.get(k) for k in ('episode','token','symbol','exchange','direction','spot_stop'))
+                    or fast_momentum.live_blocks(index_name,direction,now_ist(),latest.get('score',0))):
+                return self._reject('fast_invalidated_before_submission',index_name,direction)
         if selected is not None:
             latest = celestial.entry_candidate(index_name,direction,manual=manual_request,candidate_id=selected['id'])
             if latest is None or latest['last_updated'] != selected['last_updated']:
@@ -650,11 +680,15 @@ class AutoExecutor:
         if pos.status == 'closed':
             self.state.positions.pop(str(source_signal_id), None)
         audit.log('entry_order_result', signal_id=source_signal_id, **result)
+        self.entry_diagnostics.append(dict(ts=now_ist().isoformat(),index=index_name,
+            direction=direction,signal_id=source_signal_id,stage='SUBMISSION_RESULT',**result))
         alerts.enqueue(f"ENTRY order {pos.symbol}: {result['reason']} | signal #{source_signal_id}",
                        key=f'entry:{source_signal_id}')
         return result
 
     def _reject(self, reason: str, index_name: str, direction: str) -> dict:
+        self.entry_diagnostics.append(dict(ts=now_ist().isoformat(),index=index_name,
+                                          direction=direction,stage='BLOCKED',reason=reason))
         audit.log("auto_executor_entry_rejected", reason=reason,
                   index=index_name, direction=direction)
         return {'ok':False,'reason':reason}
@@ -739,6 +773,8 @@ class AutoExecutor:
                 reason = 'eod_force_close'
             elif reason:
                 pass
+            elif getattr(pos,'kind',None)=='fast_momentum' and fast_momentum.timeout_reason(pos,now):
+                reason = fast_momentum.timeout_reason(pos,now)
             elif ltp <= structural:
                 reason = 'structural_stop_breached'
             elif (pos.trail_active or celestial.enabled()) and ltp <= pos.effective_stop:

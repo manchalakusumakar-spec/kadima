@@ -94,5 +94,18 @@ class HttpControls(unittest.TestCase):
         self.assertEqual(r.json()['positions'],[])
         self.assertIsNone(r.json()['system']['news'])
 
+    def test_execution_diagnostics_distinguish_acknowledgement_and_fill(self):
+        from kadima import execution_ledger
+        c=execution_ledger.connection()
+        for n,(qty,filled,oid,state,dry) in enumerate([(10,0,'O1','pending',0),(10,4,'O2','pending',0),
+                (10,10,'O3','terminal',0),(10,0,None,'unknown',0),(10,0,None,'terminal',0),(10,10,'D','terminal',1)]):
+            c.execute('INSERT INTO execution_orders (intent,signal_id,side,quantity,order_id,state,filled,created_at,dry_run) VALUES (?,?,?,?,?,?,?,?,?)',
+                      (str(n),n,'BUY',qty,oid,state,filled,str(n),dry))
+        c.commit()
+        rows={r['signal_id']:r for r in self.api.execution_progress()}
+        self.assertEqual([rows[n]['stage'] for n in range(6)],
+                         ['ACKNOWLEDGED','PARTIAL_FILL','FILLED','SUBMISSION_UNCONFIRMED','TERMINAL_NO_FILL','DRY_RUN'])
+        self.assertEqual(self.client.get('/dashboard_data').status_code,401)
+
 
 if __name__=='__main__':unittest.main()

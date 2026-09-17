@@ -16,6 +16,61 @@ installer=importlib.util.module_from_spec(spec)
 spec.loader.exec_module(installer)
 
 class InstallerDiagnostics(unittest.TestCase):
+    def test_post_stop_exposure_and_restart_failures_preserve_correct_source(self):
+        for failure in ('post_stop', 'import', 'start', 'health', None):
+            with self.subTest(failure=failure), tempfile.TemporaryDirectory() as tmp:
+                root=Path(tmp);repo=root/'repo';repo.mkdir()
+                package=root/'package';(package/'executor_fix').mkdir(parents=True)
+                (package/'kadima').mkdir();(repo/'kadima').mkdir()
+                target=repo/'kadima/example.py';target.write_text('VALUE=1\n')
+                (package/'kadima/example.py').write_text('VALUE=2\n')
+                (package/'executor_fix/manifest.json').write_text(json.dumps(
+                    {'kadima/example.py':[installer.blob(target.read_bytes())]}))
+                process=root/'proc/123';process.mkdir(parents=True)
+                (process/'cwd').symlink_to(repo,target_is_directory=True)
+                (process/'cmdline').write_bytes(b'/usr/bin/python3\0run.py\0')
+                (process/'environ').write_bytes(('KADIMA_DATA_DIR='+str(root)).encode())
+                with installer.sqlite3.connect(root/'kadima.db') as c:
+                    c.execute('CREATE TABLE positions(status TEXT)')
+                backup=root/'backup';backup.mkdir()
+                preflights=[]
+                def local_path(*args):
+                    p=Path(*args)
+                    return root/p.relative_to('/') if str(p).startswith('/proc') else p
+                def call(args,**kwargs):
+                    if args[:2]==['systemctl','show']:
+                        return types.SimpleNamespace(stdout='123')
+                    if args[0]=='/usr/bin/python3':
+                        if args[2]==installer.PREFLIGHT:
+                            preflights.append(1)
+                            if len(preflights)==2 and failure=='post_stop':
+                                raise RuntimeError('new exposure')
+                            return types.SimpleNamespace(stdout='KADIMA_PREFLIGHT_OK')
+                        if failure=='import':raise RuntimeError('import failure')
+                    if args[:2]==['systemctl','start'] and failure=='start':
+                        raise RuntimeError('restart failure')
+                    if args[:2]==['systemctl','is-active'] and failure=='health':
+                        raise RuntimeError('health failure')
+                    return types.SimpleNamespace(stdout='')
+                with contextlib.ExitStack() as stack:
+                    for key,value in [('REPO',repo),('PACKAGE',package)]:
+                        stack.enter_context(patch.object(installer,key,value))
+                    stack.enter_context(patch.object(installer,'Path',side_effect=local_path))
+                    stack.enter_context(patch.object(installer.os,'geteuid',return_value=0))
+                    stack.enter_context(patch.object(installer.os,'chown'))
+                    stack.enter_context(patch.object(installer.pwd,'getpwnam',return_value=types.SimpleNamespace(
+                        pw_name='ubuntu',pw_uid=process.stat().st_uid,pw_gid=process.stat().st_gid)))
+                    stack.enter_context(patch.object(installer.tempfile,'mkdtemp',return_value=str(backup)))
+                    stack.enter_context(patch.object(installer,'run',side_effect=call))
+                    direct=stack.enter_context(patch.object(installer.subprocess,'run',return_value=types.SimpleNamespace(returncode=0)))
+                    stack.enter_context(contextlib.redirect_stdout(io.StringIO()))
+                    if failure:
+                        with self.assertRaises(SystemExit):installer.main()
+                        self.assertEqual(direct.call_args.args[0][:2],['systemctl','start'])
+                    else:installer.main()
+                self.assertEqual(len(preflights),2)
+                self.assertEqual(target.read_text(),'VALUE=1\n' if failure in ('post_stop','import') else 'VALUE=2\n')
+
     def test_broker_block_leaves_services_and_source_untouched(self):
         with tempfile.TemporaryDirectory() as tmp:
             root=Path(tmp);repo=root/'repo';repo.mkdir()
@@ -44,8 +99,6 @@ class InstallerDiagnostics(unittest.TestCase):
                     stack.enter_context(patch.object(installer.os,'geteuid',return_value=0))
                     stack.enter_context(patch.object(installer.pwd,'getpwnam',return_value=types.SimpleNamespace(
                         pw_name='ubuntu',pw_uid=process.stat().st_uid,pw_gid=process.stat().st_gid)))
-                    clock=stack.enter_context(patch.object(installer,'datetime'))
-                    clock.now.return_value.hour=1
                     run=stack.enter_context(patch.object(installer,'run',side_effect=call))
                     direct=stack.enter_context(patch.object(installer.subprocess,'run'))
                     backup=stack.enter_context(patch.object(installer.tempfile,'mkdtemp'))
