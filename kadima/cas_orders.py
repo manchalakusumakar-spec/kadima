@@ -102,7 +102,10 @@ def dispatch(ex, st, lane, row):
     if not adding and price > cas.POLICY.max_premium: return reject('cas_not_cheap_at_execution')
     if adding and price > saved['anchor']*cas.POLICY.max_add_multiple:
         return reject('cas_add_price_extended')
-    allocation = saved['allocation'] if adding else ae.capital_guard.get_capital_for_signal('bull_shield', 'CONFIRMED')
+    allocation_source = saved['allocation'] if adding else ae.capital_guard.get_capital_for_signal('bull_shield', 'CONFIRMED')
+    # User-approved total buying capital, shared by entry and add. Reapply the
+    # ceiling to restored runs as well; never treat it as a permitted loss.
+    allocation = min(allocation_source, cas.POLICY.max_capital) if cas.positive(allocation_source) else 0
     max_lots = saved['max_lots'] if adding else max(0, min(2, ae.MAX_LOTS_PER_SIGNAL))
     stop = max(pos.effective_stop or 0, pos.structural_stop or 0) if adding else price*(1-cas.POLICY.stop_fraction)
     if not cas.positive(allocation, stop) or q.bid <= stop: return reject('cas_invalid_allocation_or_stop')
@@ -114,7 +117,7 @@ def dispatch(ex, st, lane, row):
     existing_risk = max(0, cost-owned*stop*(1-trade_policy.EXIT_BUFFER)) + cost*trade_policy.COST_RESERVE
     added_risk = trade_policy.risk_per_unit(price, stop)
     if (added_risk is None or existing_risk+lot*added_risk > allocation*trade_policy.RISK_FRACTION
-            or cost+price*lot*(1+trade_policy.COST_RESERVE) > allocation):
+            or (cost+price*lot)*(1+trade_policy.COST_RESERVE) > allocation):
         return reject('cas_total_episode_budget_exceeded')
     allowed, reason = ae.capital_guard.enforce(ex, SimpleNamespace(quote=SimpleNamespace(
         ltp=price*(1+trade_policy.COST_RESERVE), symbol=q.symbol, token=q.token)), row['direction'], 1)

@@ -324,3 +324,32 @@ class Orders(CAS):
             self.assertEqual(q.bid,13);self.assertIsNone(q.option_vwap)
             raw['exchFeedTime']=(NOW-timedelta(seconds=31)).isoformat()
             self.assertIsNone(co.fetch_quote('BFO','T',self.q.symbol,74400,'PE',for_exit=True))
+
+    def test_user_capital_cap_is_saved_and_lower_available_funds_preserved(self):
+        r=self.ready()
+        with patch.object(ae.capital_guard,'get_capital_for_signal',return_value=30000):
+            result=self.ex.evaluate_cas(self.st,self.lane,r)
+        self.assertTrue(result['ok'],result)
+        self.assertEqual(c.run(r['episode'])['allocation'],15000)
+        self.assertEqual(next(iter(self.positions.values())).allocated_capital,15000)
+
+    def test_initial_allocation_does_not_force_spending_15000(self):
+        r=self.ready()
+        with patch.object(ae.capital_guard,'get_capital_for_signal',return_value=10000):
+            result=self.ex.evaluate_cas(self.st,self.lane,r)
+        self.assertTrue(result['ok'],result)
+        self.assertEqual(c.run(r['episode'])['allocation'],10000)
+        self.assertEqual(self.place.call_args.kwargs['quantity'],20)
+
+    def test_restored_larger_allocation_cannot_add_beyond_15000_total(self):
+        import json
+        r=self.ready();p=self.position(r,qty=500);p.lot_size=500
+        saved=c.run(r['episode']);sid=saved.pop('signal_id');saved['allocation']=30000
+        db=c.connection()
+        with db:db.execute('UPDATE cas_runs SET payload=? WHERE signal_id=?',(json.dumps(saved),sid))
+        self.sample(NOW+timedelta(seconds=30),17,1300)
+        later=NOW+timedelta(seconds=60);r=self.sample(later,18,1400)
+        with patch.object(co,'now_ist',return_value=later),patch.object(ae,'get_lot_size',return_value=500):
+            result=self.ex.evaluate_cas(self.st,self.lane,r)
+        self.assertEqual(result['reason'],'cas_total_episode_budget_exceeded')
+        self.place.assert_not_called()

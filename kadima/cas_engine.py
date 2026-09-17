@@ -18,6 +18,7 @@ from .utils import now_ist
 
 @dataclass(frozen=True)
 class Policy:
+    max_capital: float = 15_000.0
     max_premium: float = 50.0
     min_premium: float = 1.0
     max_spread_pct: float = 1.5

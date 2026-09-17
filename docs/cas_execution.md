@@ -48,6 +48,7 @@ not estimated win probabilities or backtested optimal thresholds.
 | Spread/depth | Spread at most 1.5%; valid positive two-sided depth; displayed quantities cover the stage |
 | Freshness | Option exchange feed time and spot within 30 seconds; technical snapshot within 240 seconds |
 | Chase bounds | Entry ask no more than 1.35× recent low; submission price at most 1% above detected ask |
+| Total buying capital | Maximum ₹15,000 across entry and add, further limited by available funds; not a loss allowance |
 | Stage size | 1 lot first, up to 1 further lot; total capped by existing `MAX_LOTS_PER_SIGNAL` and episode budget |
 | Add | Two rising samples, bid at least 1.15× initial limit and above average cost, ask no more than 1.50× initial limit |
 | Initial stop | 5% below entry limit; after fills/adding, monitor also checks 5% below actual average |
@@ -60,9 +61,12 @@ CAS has explicit pre-close times independent of the legacy 15:40 configuration;
 they are strategy settings, not exchange calendar assertions. Actual expiry is
 resolved from contract data rather than hardcoding a weekday or lot size.
 
-The ₹25,000–₹30,000 Shield allocation source supplies an existing bounded account
-budget; CAS does not change Shield capital rules. CAS uses no more than available
-funds. Initial and added cost/risk together must fit the ORIGINAL CAS allocation
+The user confirmed ₹10,000–₹15,000 as total CAS buying capital. CAS caps its
+allocation at ₹15,000, including the combined entry/add cost and estimated cost
+reserve, while retaining lower limits from available funds and account controls.
+This is a maximum budget, not a minimum investment or permitted loss. The existing
+Shield allocation source is capped only inside CAS; Shield capital rules are unchanged.
+The ceiling also applies when an older CAS run with a larger allocation is restored. Initial and added cost/risk together must fit the ORIGINAL CAS allocation
 and existing 15% risk fraction, plus current account headroom and broker cash.
 Neither a fresh allocation nor a new position slot is created for an add.
 
