@@ -32,6 +32,7 @@ const assert=require('assert');
     if(url.hostname!=='kadima.test')return route.abort();
     if(url.pathname==='/dashboard.html')return route.fulfill({contentType:'text/html',body:fs.readFileSync(path.join(__dirname,'../dashboard_live/dashboard.html'),'utf8')});
     if(url.pathname==='/dashboard-api/session')return route.fulfill({json:{ok:true}});
+    if(url.pathname==='/dashboard-api/server_health')return route.fulfill({json:{ts:new Date().toISOString(),status:'warming_up',memory:{total_bytes:1073741824,available_bytes:536870912,used_bytes:536870912,used_percent:50,available_percent:50},cpu:{busy_percent:null,iowait_percent:null,steal_percent:null},disk:{total_bytes:1000,available_bytes:500,used_percent:50},swap:{enabled:false,total_bytes:0,used_bytes:0,used_percent:null},missing:[],alerts:[]}});
     if(url.pathname==='/dashboard-api/celestial')return route.fulfill({json:fixture});
     const feed=url.pathname.replace('/dashboard-api/','');
     if(legacyFeeds[feed]){
@@ -47,6 +48,8 @@ const assert=require('assert');
   });
   await page.goto('https://kadima.test/dashboard.html');
   await page.waitForSelector('#desk:not([hidden])');
+  await page.waitForFunction(()=>document.getElementById('serverRam').textContent==='50.0%');
+  await page.waitForFunction(()=>document.getElementById('legacy-commodities').textContent.includes('MCX monitor'));
   await page.waitForSelector('[data-buy]');
   assert.strictEqual(await page.locator('#candidates tbody tr').count(),1);
   assert.strictEqual(await page.locator('#candidates th').count(),24);
