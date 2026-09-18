@@ -69,6 +69,15 @@ def api_checks(status):
         checks[name+'_age_seconds']=round(age,1) if age is not None else None
         # Diagnostic age bounds, not replacements for executor entry gates.
         checks[name+'_fresh']=age is not None and 0 <= age <= (300 if name=='news' else 120)
+    news=system.get('news') if isinstance(system,dict) else None
+    news=news if isinstance(news,dict) else {}
+    covered=news.get('covered_symbols')
+    covered=covered if isinstance(covered,list) else []
+    checks['news_covered_indices']=[name for name in ('NIFTY','BANKNIFTY','MIDCPNIFTY','SENSEX') if name in covered]
+    errors=news.get('errors')
+    checks['news_error_categories']=[name for name in ('announcements','board_meetings','corporate_actions',
+        'financial_results','company_mapping') if isinstance(errors,dict) and name in errors]
+    checks['news_scope']=news.get('scope') if news.get('scope')=='NSE_stock_corporate_RSS_only' else None
     rows=status.get('positions')
     checks['api_open_positions']=len(rows) if isinstance(rows,list) else None
     return checks

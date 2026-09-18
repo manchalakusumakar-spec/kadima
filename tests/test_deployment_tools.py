@@ -19,6 +19,16 @@ def module(name,path):
 
 
 class DeploymentTools(unittest.TestCase):
+    def test_stock_news_success_is_not_invented_index_coverage(self):
+        report=module('deployment_inventory','tools/deployment_report.py')
+        result=report.api_checks({'config':{},'system':{'news':{'ok':True,
+            'covered_symbols':['SBIN','RELIANCE'],'scope':'NSE_stock_corporate_RSS_only',
+            'errors':{'announcements':'SECRET_SENTINEL'}}}})
+        self.assertTrue(result['news_ok'])
+        self.assertEqual(result['news_covered_indices'],[])
+        self.assertEqual(result['news_error_categories'],['announcements'])
+        self.assertNotIn('SECRET_SENTINEL',json.dumps(result))
+
     def test_standalone_report_survives_missing_manifest_and_checkout(self):
         report=module('deployment_inventory','tools/deployment_report.py')
         with tempfile.TemporaryDirectory() as tmp, patch.object(report,'run',return_value=''), \
