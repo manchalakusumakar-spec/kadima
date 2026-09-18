@@ -13,9 +13,22 @@ def replace_once(text, old, new):
         raise ValueError('Unsupported installed version: expected one anchor ' + old[:90])
     return text.replace(old, new, 1)
 
+def background_universe(text):
+    """Remove only the universe presentation; keep polling and ranking intact."""
+    if 'id="legacy-universe"' not in text:
+        if 'function renderUniverse(){' in text or 'renderUniverse();' in text:
+            raise ValueError('Incomplete universe panel removal')
+        return text
+    panel = '<section class="panel wide"><div class="split"><h2>F&O Universe</h2><span id="legacy-universeCount" class="muted"></span></div><div id="legacy-universe" class="wall"></div></section>'
+    text = replace_once(text, panel, '<!-- F&O universe scanning continues in the background. -->')
+    start = text.index('function renderUniverse(){')
+    end = text.index('function renderCommodities(){', start)
+    text = text[:start] + text[end:]
+    return replace_once(text, 'renderMacro();renderUniverse();renderCommodities();', 'renderMacro();renderCommodities();')
+
 def dashboard(text):
     if MARKER in text:
-        return text
+        return background_universe(text)
     text = replace_once(text, "'use strict';", "'use strict';\n" + MARKER + '\n' + (HERE/'live_view.js').read_text())
     text = replace_once(text, '<th>Control</th>', '<th>Score-based probability</th><th>Control</th>')
     start = text.index('function updateGammaPlans(){')
@@ -48,7 +61,7 @@ for(const [i,r] of snapshot.candidates.entries()){
     text = replace_once(text, "+'</p>'+table(['Target time IST'", "+'</p>'+liveView.forecast(a,feeds.state.data?.indices?.[a.name])+table(['Target time IST'")
     text = replace_once(text, "[f,onlineLegacy('dashboard'),expired]", "[f,onlineLegacy('dashboard'),expired,feeds.state.data?.indices,Math.floor(Date.now()/1000)]")
     text = replace_once(text, "if(r){\nhtml+=", "if(!r)html+='<p>No projected path available. '+(f.status==='provider_http_429'?'Forecast provider rate limit / quota: waiting for the next scheduled attempt.':'Waiting for a valid forecast.')+'</p>';\nif(r){\nhtml+=")
-    return text
+    return background_universe(text)
 
 ROUTE = '''
 # KADIMA LIVE NEWS V1

@@ -54,6 +54,19 @@ class FeedTests(unittest.TestCase):
         self.assertIn("liveView.probability(r.final_score",out)
         self.assertIn("liveView.probability(r.score,current)",out)
         self.assertIn("liveView.forecast(a,feeds.state.data",out)
+        self.assertNotIn('id="legacy-universe"',out)
+        self.assertNotIn('renderUniverse',out)
+        self.assertIn("universe:{path:'universe_snapshot',label:'Scanner',ms:5000}",out)
+        self.assertIn('feeds.universe.data?.tracked',out)
         with self.assertRaises(ValueError):upgrade.dashboard('<html>unknown</html>')
+
+    def test_remove_panel_from_already_upgraded_dashboard(self):
+        panel='<section class="panel wide"><div class="split"><h2>F&O Universe</h2><span id="legacy-universeCount" class="muted"></span></div><div id="legacy-universe" class="wall"></div></section>'
+        source=upgrade.MARKER+'\n'+panel+'\nfunction renderUniverse(){oldPresentation();}\nfunction renderCommodities(){}\nrenderMacro();renderUniverse();renderCommodities();'
+        out=upgrade.dashboard(source)
+        self.assertNotIn('legacy-universe',out)
+        self.assertNotIn('renderUniverse',out)
+        self.assertIn('renderMacro();renderCommodities();',out)
+        self.assertEqual(out,upgrade.dashboard(out))
 
 if __name__=='__main__':unittest.main()
