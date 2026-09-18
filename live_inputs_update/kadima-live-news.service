@@ -1,0 +1,25 @@
+[Unit]
+Description=KADIMA read-only public news feed
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/python3 /opt/kadima-live-inputs/news_worker.py
+User=ubuntu
+Group=ubuntu
+StateDirectory=kadima-live-inputs
+StateDirectoryMode=0755
+Restart=on-failure
+RestartSec=15
+NoNewPrivileges=yes
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=yes
+MemoryMax=96M
+CPUQuota=10%
+TasksMax=12
+UMask=0022
+
+[Install]
+WantedBy=multi-user.target
