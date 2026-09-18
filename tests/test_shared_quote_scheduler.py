@@ -1,5 +1,6 @@
 """Offline quote-budget contention tests. No SDK, credentials or orders."""
 import importlib.util
+from contextlib import closing
 import multiprocessing
 from pathlib import Path
 import sqlite3
@@ -37,14 +38,14 @@ class SharedQuoteSchedulerTests(unittest.TestCase):
         self.path = str(Path(self.folder.name) / 'budget.sqlite3')
         self.rate = load_rate()
         self.context = multiprocessing.get_context('spawn')
-        with sqlite3.connect(self.path) as conn:
+        with closing(sqlite3.connect(self.path)) as conn, conn:
             conn.execute('CREATE TABLE budget (id INTEGER PRIMARY KEY, next REAL)')
             conn.execute('CREATE TABLE grants (next REAL)')
             conn.execute('CREATE TRIGGER record_grant AFTER INSERT ON budget '
                          'BEGIN INSERT INTO grants VALUES (NEW.next); END')
 
     def queue_size(self):
-        with sqlite3.connect(self.path) as conn:
+        with closing(sqlite3.connect(self.path)) as conn, conn:
             try:
                 return conn.execute('SELECT COUNT(*) FROM quote_waiters').fetchone()[0]
             except sqlite3.OperationalError:
@@ -71,12 +72,12 @@ class SharedQuoteSchedulerTests(unittest.TestCase):
         proc.join(3)
 
     def block_budget(self, until):
-        with sqlite3.connect(self.path) as conn:
+        with closing(sqlite3.connect(self.path)) as conn, conn:
             conn.execute('INSERT OR REPLACE INTO budget VALUES (1,?)', (until,))
             conn.execute('DELETE FROM grants')
 
     def release_budget(self):
-        with sqlite3.connect(self.path) as conn:
+        with closing(sqlite3.connect(self.path)) as conn, conn:
             conn.execute('UPDATE budget SET next=0 WHERE id=1')
 
     def test_fifo_scanner_requeues_behind_waiting_oi(self):
@@ -106,7 +107,7 @@ class SharedQuoteSchedulerTests(unittest.TestCase):
             proc.join(2)
             self.assertEqual(proc.exitcode, 0)
         self.assertTrue(all(row[1] for row in observed))
-        with sqlite3.connect(self.path) as conn:
+        with closing(sqlite3.connect(self.path)) as conn, conn:
             grants = [row[0] for row in conn.execute('SELECT next FROM grants ORDER BY next')]
         self.assertEqual(len(grants), 24)
         self.assertTrue(all(b - a >= .07999 for a, b in zip(grants, grants[1:])))
@@ -132,7 +133,7 @@ class SharedQuoteSchedulerTests(unittest.TestCase):
         self.assertFalse(limiter.wait_and_allow(.15))
         self.assertLess(time.monotonic() - start, .5)
         self.assertEqual(self.queue_size(), 0)
-        with sqlite3.connect(self.path) as conn:
+        with closing(sqlite3.connect(self.path)) as conn, conn:
             self.assertEqual(conn.execute('SELECT COUNT(*) FROM grants').fetchone()[0], 0)
         self.release_budget()
         self.assertTrue(limiter.wait_and_allow(.2))
@@ -151,7 +152,7 @@ class SharedQuoteSchedulerTests(unittest.TestCase):
         self.block_budget(until)
         limiter = self.rate.SharedQuoteLimiter(self.path, interval=.08)
         self.assertFalse(limiter.wait_and_allow(.05))
-        with sqlite3.connect(self.path) as conn:
+        with closing(sqlite3.connect(self.path)) as conn, conn:
             self.assertEqual(conn.execute('SELECT next FROM budget WHERE id=1').fetchone()[0], until)
         self.assertTrue(limiter.wait_and_allow(1))
 
@@ -160,7 +161,7 @@ class SharedQuoteSchedulerTests(unittest.TestCase):
         limiter = self.rate.SharedQuoteLimiter(self.path, interval=.12)
         self.assertTrue(limiter.wait_and_allow(.5))
         self.assertTrue(limiter.wait_and_allow(.5))
-        with sqlite3.connect(self.path) as conn:
+        with closing(sqlite3.connect(self.path)) as conn, conn:
             grants = [row[0] for row in conn.execute('SELECT next FROM grants ORDER BY next')]
         self.assertGreaterEqual(grants[1] - grants[0], .11999)
 
