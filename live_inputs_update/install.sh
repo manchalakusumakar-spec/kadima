@@ -9,8 +9,8 @@ test -f /var/www/html/dashboard.html
 test -f /opt/kadima-dashboard/gateway.py
 id ubuntu >/dev/null
 # Complete compatibility checks before changing installed files or services.
-python3 "$kadima_update_dir/upgrade.py" --html /var/www/html/dashboard.html --gateway /opt/kadima-dashboard/gateway.py
-python3 -m unittest discover -s "$kadima_update_dir" -p 'test_*.py'
+PYTHONDONTWRITEBYTECODE=1 python3 "$kadima_update_dir/upgrade.py" --html /var/www/html/dashboard.html --gateway /opt/kadima-dashboard/gateway.py
+PYTHONDONTWRITEBYTECODE=1 python3 -m unittest discover -s "$kadima_update_dir" -p 'test_*.py'
 install -d -m 0755 /opt/kadima-live-inputs
 install -m 0644 "$kadima_update_dir/news_worker.py" /opt/kadima-live-inputs/news_worker.py
 install -m 0644 "$kadima_update_dir/kadima-live-news.service" /etc/systemd/system/kadima-live-news.service
