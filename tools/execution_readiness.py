@@ -5,6 +5,7 @@ No setting is written and no service is started, stopped or enabled.
 """
 import argparse
 import ast
+import http.client
 from collections import Counter
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
@@ -26,6 +27,68 @@ EVENTS = {'CONFIRMED_EVENT', 'gamma_signal_emitted', 'SHIELD_DISPATCH_BLOCKED',
           'startup_reconcile_broker_unreadable', 'reconcile_external_pending_orders',
           'reconcile_position_quantity_mismatch', 'oi_poll_failed', 'oi_window_degraded',
           'CONFIRMATION_GATE'}
+RECONCILE_EVENTS = {'startup_reconcile_complete', 'startup_reconcile_broker_unreadable',
+                    'startup_reconcile_order_book_unreadable', 'reconcile_external_pending_orders',
+                    'reconcile_position_quantity_mismatch'}
+EVENTS |= RECONCILE_EVENTS
+
+
+def api_token(pid):
+    """Keep the existing local credential in memory; never print or pass in argv."""
+    try:
+        for item in Path('/proc', str(pid), 'environ').read_bytes().split(b'\0'):
+            key, _, value = item.partition(b'=')
+            if key == b'KADIMA_API_TOKEN' and value:
+                return value.decode('utf-8')
+    except (OSError, UnicodeError):
+        pass
+    try:
+        value = json.loads(Path('/etc/kadima-dashboard/config.json').read_text()).get('api_token')
+        return value if isinstance(value, str) and value else None
+    except (OSError, ValueError, AttributeError):
+        return None
+
+
+def local_get(port, path, token=None):
+    """Fixed GET-only destinations; no proxies, redirects, SDK login or order calls."""
+    if (port, path) not in {(8080, '/health'), (8081, '/api/kadima/config')}:
+        return {'status': 'unsupported_endpoint'}, None
+    conn = http.client.HTTPConnection('127.0.0.1', port, timeout=4)
+    try:
+        headers = {'Authorization': 'Bearer ' + token} if token else {}
+        conn.request('GET', path, headers=headers)
+        response = conn.getresponse()
+        if response.status != 200:
+            return {'status': 'http_error', 'http_status': response.status}, None
+        raw = response.read(65537)
+        if len(raw) > 65536:
+            return {'status': 'oversized_response'}, None
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            return {'status': 'invalid_response'}, None
+        return {'status': 'ok'}, data
+    except (OSError, ValueError, http.client.HTTPException):
+        return {'status': 'unavailable'}, None
+    finally:
+        conn.close()
+
+
+def runtime_state(pid):
+    health_status, health = local_get(8080, '/health')
+    result = {'health': health_status, 'controls': {'status': 'credential_unavailable'}}
+    if health is not None:
+        result['health'].update({key: health[key] if type(health.get(key)) is bool else None
+                                for key in ('ok', 'market_open', 'engine_attached')})
+    token = api_token(pid)
+    if token:
+        status, config = local_get(8081, '/api/kadima/config', token)
+        result['controls'] = status
+        if config is not None:
+            result['controls'].update({key: config[key] if type(config.get(key)) is bool else None
+                for key in ('broker_orders_enabled', 'rollout_enabled', 'auto_trade_enabled', 'kill_latched')})
+            score = config.get('score_threshold')
+            result['controls']['score_threshold'] = score if type(score) is int and score in (65,70,75,80,85,90) else None
+    return result
 
 
 def age(value, now):
@@ -146,6 +209,7 @@ def lane_controls(service, database):
 
 def audit_state(path, since, now):
     counts, reasons, checks = Counter(), Counter(), Counter()
+    last_reconcile = None
     parsed = 0
     try:
         with path.open() as source:
@@ -161,6 +225,8 @@ def audit_state(path, since, now):
                 event = row.get('event')
                 if not isinstance(event, str) or event not in EVENTS: continue
                 counts[event] += 1
+                if event in RECONCILE_EVENTS and (last_reconcile is None or stamp >= last_reconcile[0]):
+                    last_reconcile = (stamp, event)
                 # Output only bounded code-like reason labels, never raw exceptions.
                 values = row.get('blocked_reasons', [])
                 values = list(values) if isinstance(values, list) else []
@@ -172,7 +238,10 @@ def audit_state(path, since, now):
                 if event == 'CONFIRMATION_GATE' and isinstance(row.get('checks'), dict):
                     for key in ('score','oi','extra_5m_hold','no_invalidation','vwap','ema','rsi','bank_confirmation','spot_fresh','technical_fresh'):
                         if row['checks'].get(key) is False: checks[key] += 1
+        latest = ({'event': last_reconcile[1], 'at': last_reconcile[0].isoformat(),
+                   'age_seconds': age(last_reconcile[0].isoformat(), now)} if last_reconcile else {})
         return dict(status='retained_records_only', since=since.isoformat(), records=parsed,
+                    latest_reconciliation=latest,
                     events=dict(counts), reasons=dict(reasons), failed_checks=dict(checks))
     except OSError:
         return dict(status='unavailable', since=since.isoformat())
@@ -184,12 +253,14 @@ def compact(report):
     lines = [
         'READ ONLY ' + report['at'],
         'ENGINE active=' + str(report['engine'].get('active')) + ' mode=' + lanes['mode'],
-        'ORDER switch on disk=' + str(report['order_switch_on_disk']) + ' (loaded value unverified)',
+        'ORDER switch on disk=' + str(report['order_switch_on_disk']) +
+            (' (compare RUNNING API controls)' if 'runtime' in report else ' (loaded value unverified)'),
         'KILL file=' + str(report['kill_file_present']),
         'SAVED controls=' + db['controls_status'] + ' ' + encoded(db['controls']),
         'OI sample ages (seconds)=' + encoded(db['oi_age_seconds']),
         'NEWS=' + encoded(db['news']),
         'RECONCILIATION recorded=' + encoded(db['reconciliation']),
+        'LATEST broker reconciliation audit=' + encoded(audit.get('latest_reconciliation', {})),
         'FAST blockers=' + encoded(lanes['fast_lane']),
         'AUDIT since=' + audit['since'] + ' status=' + audit['status'],
         'EVENTS=' + encoded(audit.get('events', {})),
@@ -197,6 +268,9 @@ def compact(report):
         'SHIELD failed checks=' + encoded(audit.get('failed_checks', {})),
         report['verdict'],
     ]
+    if 'runtime' in report:
+        lines[-1:-1] = ['RUNNING API health=' + encoded(report['runtime']['health']),
+                        'RUNNING API controls=' + encoded(report['runtime']['controls'])]
     return '\n'.join(lines)
 
 
@@ -204,6 +278,8 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--root', type=Path, default=Path('/home/ubuntu/kadima-py'))
     parser.add_argument('--json', action='store_true', help='Show the complete structured report')
+    parser.add_argument('--runtime', action='store_true',
+                        help='Also GET local health and loaded controls; no order or broker-login calls')
     args = parser.parse_args()
     now = datetime.now(IST)
     service = service_state('kadima.service', now)
@@ -225,6 +301,10 @@ def main():
         lanes=lane_controls(service, database), database=database,
         audit=audit_state(folder / 'audit' / (now.date().isoformat() + '.jsonl'), since, now),
         verdict='NOT_CERTIFIED: running order switch, complete entry conditions and broker books are not verified by this report.')
+    if args.runtime:
+        report['runtime'] = runtime_state(service.get('pid'))
+        report['verdict'] = ('NOT_CERTIFIED: API controls and the latest recorded broker check are diagnostic evidence; '
+                             'current broker connectivity, complete entry eligibility and live fills remain unverified.')
     if service_state('kadima.service', now).get('pid') != service.get('pid'):
         report['verdict'] = 'RUNTIME_CHANGED: engine restarted during this read; rerun.'
     print(json.dumps(report, indent=2) if args.json else compact(report))
