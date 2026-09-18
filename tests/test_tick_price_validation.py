@@ -4,7 +4,6 @@ from datetime import datetime, timezone
 import math
 from pathlib import Path
 import queue
-import time
 from types import SimpleNamespace
 import unittest
 from unittest.mock import Mock
@@ -16,7 +15,8 @@ class TickPriceValidationTests(unittest.TestCase):
         cls = next(n for n in tree.body if isinstance(n, ast.ClassDef) and n.name == 'TickFeed')
         handler = next(n for n in cls.body if isinstance(n, ast.FunctionDef) and n.name == '_handle_tick')
         self.audit = SimpleNamespace(log=Mock())
-        namespace = dict(math=math, queue=queue, time=time, datetime=datetime,
+        self.clock = SimpleNamespace(monotonic=Mock(return_value=200.0))
+        namespace = dict(math=math, queue=queue, time=self.clock, datetime=datetime,
                          IST=timezone.utc, audit=self.audit)
         exec(compile(ast.Module(body=[handler], type_ignores=[]), 'actual_tick_handler', 'exec'), namespace)
         self.handle = namespace['_handle_tick']
@@ -32,6 +32,7 @@ class TickPriceValidationTests(unittest.TestCase):
                 self.callback.assert_not_called()
                 self.assertTrue(self.feed._writer_q.empty())
                 self.assertEqual(self.feed._last_tick_at, 123.0)
+                self.clock.monotonic.assert_not_called()
                 self.assertEqual(self.audit.log.call_args.kwargs['reason'], 'invalid_price')
 
     def test_missing_token_is_rejected(self):
@@ -49,7 +50,7 @@ class TickPriceValidationTests(unittest.TestCase):
         self.assertEqual((tick['token'], tick['ltp'], tick['volume'], tick['bid'], tick['ask']),
                          ('99926000', 23456.78, 1000, 23456.0, 23457.0))
         self.assertEqual(self.feed._writer_q.get_nowait()[3], 23456.78)
-        self.assertGreater(self.feed._last_tick_at, 123.0)
+        self.assertEqual(self.feed._last_tick_at, 200.0)
         self.audit.log.assert_not_called()
 
     def test_rejected_tick_cannot_replace_last_valid_quote(self):
