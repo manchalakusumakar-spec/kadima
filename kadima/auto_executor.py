@@ -314,10 +314,10 @@ class AutoExecutor:
         response doesn't carry. Fails closed on an unreadable broker call."""
         self._last_reconcile = time.monotonic()
         self._reconcile_blocked = True
+        celestial.health('reconciliation',dict(ok=False,reason='checking_broker_books'))
         if celestial.enabled():
             self._positions_verified = False
             self._celestial_verified.clear()
-            celestial.health('reconciliation',dict(ok=False,reason='checking_broker_books'))
         if not self._restored:
             for row in storage.load_open_positions():
                 for key in ('entry_ts', 'exit_ts'):
@@ -326,13 +326,17 @@ class AutoExecutor:
                 self.state.positions[str(row['signal_id'])] = Position(**row)
             self._restored = True
         if not execution_ledger.refresh(self.state.positions):
+            celestial.health('reconciliation',dict(ok=False,reason='execution_ledger_unresolved'))
             return
         broker_positions = fetch_broker_positions()
         if broker_positions is None:
             audit.log('startup_reconcile_broker_unreadable')
+            celestial.health('reconciliation',dict(ok=False,reason='broker_positions_unreadable'))
             return
         book = angel_orders.fetch_order_book()
         if book is None:
+            audit.log('startup_reconcile_order_book_unreadable')
+            celestial.health('reconciliation',dict(ok=False,reason='broker_order_book_unreadable'))
             return
         pending_rows = execution_ledger.pending()
         own_ids = {r['order_id'] for r in pending_rows}
@@ -372,6 +376,7 @@ class AutoExecutor:
                o.order_id not in own_ids and o.raw.get('ordertag') not in own_tags for o in book):
             self._positions_verified = False
             audit.log('reconcile_external_pending_orders')
+            celestial.health('reconciliation',dict(ok=False,reason='external_pending_orders'))
             return
         live = {}
         for row in broker_positions:
@@ -394,9 +399,13 @@ class AutoExecutor:
             self._positions_verified = False
             audit.log('reconcile_position_quantity_mismatch',
                       broker_contracts=len(live), local_contracts=len(expected))
+            celestial.health('reconciliation',dict(ok=False,reason='position_quantity_mismatch',
+                broker_contracts=len(live),local_contracts=len(expected)))
             return
         self._reconcile_blocked = False
         self._positions_verified = True
+        celestial.health('reconciliation',dict(ok=True,reason='broker_books_match',
+            managed_positions=len(self.state.positions)))
         audit.log('startup_reconcile_complete', restored=len(self.state.positions))
 
     @serialized
@@ -820,6 +829,7 @@ class AutoExecutor:
         healthy = execution_ledger.refresh(self.state.positions)
         if not healthy:
             self._reconcile_blocked = True
+            celestial.health('reconciliation',dict(ok=False,reason='execution_ledger_unresolved'))
         for key, pos in list(self.state.positions.items()):
             if pos.status == 'closed':
                 self.state.positions.pop(key, None)

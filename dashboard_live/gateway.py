@@ -263,6 +263,23 @@ def upstream(port, path, method='GET', payload=None):
     except (OSError, ValueError) as exc:
         raise HTTPException(502, 'backend_unavailable') from exc
 
+
+# KADIMA LIVE NEWS V1
+@app.get('/live_news')
+def live_news(request: Request):
+    authenticated(request)
+    try:
+        with open('/var/lib/kadima-live-inputs/news.json') as handle:
+            raw = handle.read(2000001)
+        if len(raw) > 2000000:
+            raise ValueError('oversized_news')
+        data = json.loads(raw)
+        if not isinstance(data, dict):
+            raise ValueError('invalid_news')
+        return data
+    except (OSError, ValueError):
+        raise HTTPException(503, 'public_news_unavailable')
+
 @app.get('/{name}')
 def read_data(name: str, request: Request):
     authenticated(request)
@@ -299,3 +316,4 @@ async def celestial_write(path: str, request: Request):
     except (ValueError,UnicodeDecodeError):
         raise HTTPException(400,'invalid_request')
     return await run_in_threadpool(upstream,8081,'/api/'+path,'POST',payload)
+
