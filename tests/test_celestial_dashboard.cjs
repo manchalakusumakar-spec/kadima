@@ -20,6 +20,7 @@ const assert=require('assert');
     positions:[{signal_id:7,symbol:'FIXTURE26SEP100CE',source:'MANUAL_ADOPTED',status:'open',remaining_qty:10,
       entry_price:100,ltp:112,unrealized_pnl_inr:120,effective_stop:107.2,trail_active:true}]};
   const writes=[];
+  const publicNews={sources:[{name:'NSE fixture',status:'ok',checked_at:now,last_success:now}],articles:[{title:'Public RSS fixture',source:'NSE fixture',published_at:now,received_at:now,url:'https://example.test/rss'}]};
   let marketFails=false;
   const legacyFeeds={
     state:{market_open:true,indices:{NIFTY:{spot:25000,last_updated:now,shield:{score:75,tier:'ACTIVE',direction:'CE'},gamma:{score:80,tier:'ACTIVE',direction:'CE'},technicals:{vwap:24900,ema20:24980,ema50:24950,rsi:61},components:{vwap:25}}}},
@@ -33,6 +34,7 @@ const assert=require('assert');
     if(url.pathname==='/dashboard.html')return route.fulfill({contentType:'text/html',body:fs.readFileSync(path.join(__dirname,'../dashboard_live/dashboard.html'),'utf8')});
     if(url.pathname==='/dashboard-api/session')return route.fulfill({json:{ok:true}});
     if(url.pathname==='/dashboard-api/server_health')return route.fulfill({json:{ts:new Date().toISOString(),status:'warming_up',memory:{total_bytes:1073741824,available_bytes:536870912,used_bytes:536870912,used_percent:50,available_percent:50},cpu:{busy_percent:null,iowait_percent:null,steal_percent:null},disk:{total_bytes:1000,available_bytes:500,used_percent:50},swap:{enabled:false,total_bytes:0,used_bytes:0,used_percent:null},missing:[],alerts:[]}});
+    if(url.pathname==='/dashboard-api/live_news')return route.fulfill({json:publicNews});
     if(url.pathname==='/dashboard-api/celestial')return route.fulfill({json:fixture});
     const feed=url.pathname.replace('/dashboard-api/','');
     if(legacyFeeds[feed]){
@@ -52,7 +54,10 @@ const assert=require('assert');
   await page.waitForFunction(()=>document.getElementById('legacy-commodities').textContent.includes('MCX monitor'));
   await page.waitForSelector('[data-buy]');
   assert.strictEqual(await page.locator('#candidates tbody tr').count(),1);
-  assert.strictEqual(await page.locator('#candidates th').count(),24);
+  assert.strictEqual(await page.locator('#candidates th').count(),25);
+  assert.ok((await page.locator('#candidates tbody tr td').nth(23).innerText()).includes('90% · score 90/100'));
+  await page.waitForFunction(()=>document.getElementById('legacy-news').textContent.includes('Public RSS fixture'));
+  assert.ok((await page.locator('#legacy-news').innerText()).includes('CHECK CONNECTED'));
   assert.ok((await page.locator('#candidates tbody tr td').nth(8).innerText()).includes('137.50'));
   await page.fill('#planT1','15');await page.locator('#planT1').dispatchEvent('change');
   assert.ok((await page.locator('#candidates tbody tr td').nth(8).innerText()).includes('143.75'));
@@ -93,6 +98,7 @@ const assert=require('assert');
   await page.evaluate(()=>refresh());
   await page.waitForFunction(()=>document.querySelectorAll('#candidates tbody tr').length===20);
   assert.strictEqual(await page.locator('[data-buy]').count(),0);
+  assert.ok((await page.locator('#candidates tbody tr').first().locator('td').nth(23).innerText()).includes('90% · score 90/100'));
   await page.waitForFunction(()=>document.querySelector('#candidates tbody tr td:nth-child(5)')?.textContent.includes('100.00 CE'));
   assert.ok((await page.locator('#candidates tbody tr').first().locator('td').nth(4).innerText()).includes(expiry));
   assert.ok((await page.locator('#candidates tbody tr').first().locator('td').nth(10).innerText()).includes('pace only'));
