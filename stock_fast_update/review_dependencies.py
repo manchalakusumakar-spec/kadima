@@ -17,6 +17,7 @@ from pathlib import Path
 import re
 import stat
 import sys
+import warnings
 
 FILES = {
     'run.py': 'b27d03215ea7ba7e4fe6e73b1052da208beea8d2',
@@ -56,9 +57,12 @@ def syntax_tree(raw):
     if raw is None:
         return None
     try:
-        tree = ast.parse(raw)
-        # Compilation checks syntax only; it never executes the code object.
-        compile(tree, '<source-review>', 'exec')
+        # Warnings can quote unreviewed source lines; keep them private too.
+        with warnings.catch_warnings():
+            warnings.simplefilter('ignore')
+            tree = ast.parse(raw)
+            # Compilation checks syntax only; it never executes the code object.
+            compile(tree, '<source-review>', 'exec')
         return tree
     except (SyntaxError, ValueError, TypeError, UnicodeError, RecursionError):
         return None
