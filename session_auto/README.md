@@ -26,10 +26,16 @@ reduce scores or remove stops. Do not trade manually or run other maintenance
 concurrently. Broker preflights are consecutive observations, not an account lock.
 
 Installed scheduler files are root-owned under `/opt/kadima-session-auto`.
-The policy is `/etc/kadima/session-auto/policy.json`. A systemd timer checks on
-boot and 60 seconds after each preceding check finishes. No ChatGPT task, open
-browser, live chat or daily button press is needed. EC2 must remain powered on
-and the services and broker/data connections must be operational.
+The nonsecret policy is `/etc/kadima-session-auto/policy.json`, outside the
+potentially private `/etc/kadima` tree. The root-only systemd environment file
+stays at `/etc/kadima/session-auto.env`. No existing directory permissions are
+relaxed. Directory validation runs before the broker preflight, and the
+installed policy is read as the engine owner before services restart. See
+`docs/session_auto_private_directory_fix.md` for the blocked-attempt recovery.
+
+A systemd timer checks on boot and 60 seconds after each preceding check finishes.
+No ChatGPT task, open browser, live chat or daily button press is needed. EC2 must
+remain powered on and the services and broker/data connections must be operational.
 
 ## What happens on each ordinary market working day
 

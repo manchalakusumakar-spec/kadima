@@ -9,7 +9,8 @@ import time
 from zoneinfo import ZoneInfo
 
 IST = ZoneInfo('Asia/Kolkata')
-POLICY = Path('/etc/kadima/session-auto/policy.json')
+# Public calendar only; credentials remain under private /etc/kadima.
+POLICY = Path('/etc/kadima-session-auto/policy.json')
 LEASE = Path('/run/kadima-session-auto/lease.json')
 BOOT = Path('/proc/sys/kernel/random/boot_id')
 MAX_LEASE_SECONDS = 150

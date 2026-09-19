@@ -13,6 +13,7 @@ import json
 import os
 from pathlib import Path
 import pwd
+import stat
 import subprocess
 import sys
 import tempfile
@@ -20,7 +21,9 @@ import time
 
 ROOT=Path('/home/ubuntu/kadima-py')
 DEST=Path('/opt/kadima-session-auto')
-CONF=Path('/etc/kadima/session-auto')
+# Nonsecret calendar must be readable by the unprivileged engine.
+# Keep it outside the existing private /etc/kadima credential directory.
+CONF=Path('/etc/kadima-session-auto')
 ENV=Path('/etc/kadima/session-auto.env')
 SYSTEMD=Path('/etc/systemd/system')
 TIMER='kadima-session-auto.timer'
@@ -103,27 +106,65 @@ WantedBy=timers.target
 '''
 
 
-def ensure_root_directory(path,mode=0o755,owner=0):
-    # Explicit modes are required: the copy/paste bootstrap can inherit umask 077.
-    # chmod only newly-created directories, never relax an existing secret path.
-    if path.resolve()!=path or path.is_symlink():
+def ensure_root_directory(path,mode=0o755,owner=0,*,public=True,create=True):
+    """Validate by reader; never chmod an existing directory or its parents.
+
+    Public calendar/permit paths require traversal for the engine. Root-only
+    systemd configuration and private state may have private ancestors.
+    create=False performs the same existing-path checks without making folders.
+    """
+    path=Path(path)
+    if not path.is_absolute() or path.resolve()!=path or path.is_symlink():
         raise ValueError('unsafe_install_directory')
     missing=[]
     cursor=path
     while not cursor.exists():
         missing.append(cursor)
         cursor=cursor.parent
-    for directory in reversed(missing):
-        directory.mkdir(mode=mode if directory==path else 0o755)
-        directory.chmod(mode if directory==path else 0o755)
-    info=path.stat()
-    if info.st_uid!=owner or info.st_mode & 0o022:
-        raise ValueError('unsafe_install_directory_owner')
-    if info.st_mode & mode != mode:
-        raise ValueError('existing_directory_permissions_require_review')
+    if not stat.S_ISDIR(cursor.stat().st_mode):
+        raise ValueError('install_parent_not_directory')
     for parent in path.parents:
-        if not parent.stat().st_mode & 0o001:
+        if not parent.exists():
+            continue
+        info=parent.stat()
+        if not stat.S_ISDIR(info.st_mode):
+            raise ValueError('install_parent_not_directory')
+        if public and not info.st_mode & 0o001:
             raise ValueError('private_parent_directory_requires_review')
+    def validate_target():
+        info=path.stat()
+        if not stat.S_ISDIR(info.st_mode):
+            raise ValueError('install_target_not_directory')
+        if info.st_uid!=owner or info.st_mode & 0o022:
+            raise ValueError('unsafe_install_directory_owner')
+        required=mode if public else 0o700
+        if info.st_mode & required != required:
+            raise ValueError('existing_directory_permissions_require_review')
+    if path.exists():
+        validate_target()
+    if not create:
+        return
+    for directory in reversed(missing):
+        # Compensate for umask only on directories this call creates. Private
+        # root-only ancestors need not expose sibling credential filenames.
+        new_mode=mode if directory==path else (0o755 if public else 0o700)
+        directory.mkdir(mode=new_mode)
+        directory.chmod(new_mode)
+    validate_target()
+
+
+def prepare_directories(targets,*,create):
+    """Policy/permit are public data; environment, runner and state are root-only."""
+    for parent in sorted({p.parent for p in targets if not p.is_relative_to(ROOT)}):
+        ensure_root_directory(parent,public=parent==CONF,create=create)
+    ensure_root_directory(Path('/run/kadima-session-auto'),create=create)
+    ensure_root_directory(Path('/var/lib/kadima-session-auto'),0o700,public=False,create=create)
+
+
+def check_engine_policy(child):
+    """Real read as the engine owner before restart; not just a root import."""
+    child('from kadima import market_session_gate as gate; '
+          'gate.validate_policy(gate.read_json(gate.POLICY))')
 
 
 def main():
@@ -208,6 +249,8 @@ def main():
     print('CALENDAR: normal NSE/BSE equity-derivative sessions, through '+policy['valid_through']+'; special sessions excluded.')
     if not args.apply:
         print('PLAN ONLY: no broker login, stop, restart, writes or scheduled activation.'); return
+    # Directory failures are reported before another broker login or service stop.
+    prepare_directories(targets,create=False)
     child_env=dict(env,PYTHONDONTWRITEBYTECODE='1',ORDER_PLACEMENT_ENABLED='0',KADIMA_FAST_MOMENTUM_LIVE='0',KADIMA_CAS_LIVE='0')
     def child(code):
         return helper.command([python,'-B','-c',code],cwd=ROOT,env=child_env,
@@ -226,10 +269,7 @@ def main():
     paused(); helper.check_fingerprints(fingerprints)
     if helper.process(helper.ENGINE,ROOT,user.pw_uid)[0]!=pid or helper.process(helper.SCANNER,ROOT,user.pw_uid)[0]!=spid:
         raise ValueError('process_changed_during_setup')
-    for target in targets:
-        if not target.is_relative_to(ROOT): ensure_root_directory(target.parent)
-    ensure_root_directory(Path('/run/kadima-session-auto'))
-    ensure_root_directory(Path('/var/lib/kadima-session-auto'),0o700)
+    prepare_directories(targets,create=True)
     # Nothing may grant entry before all setup checks complete and the scheduler runs.
     lease=Path('/run/kadima-session-auto/lease.json')
     if lease.exists(): raise ValueError('existing_entry_permit_requires_review')
@@ -252,6 +292,7 @@ def main():
         for item in changes:
             item.unchanged(); written.append(item); helper.write_atomic(item,item.replacement)
         child('import kadima.auto_executor; import kadima.market_session_gate; import kadima.stock_fast_api')
+        check_engine_policy(child)
         helper.command(['systemctl','daemon-reload'])
         started=True
         helper.command(['systemctl','start',*reversed(units)],timeout=60)
