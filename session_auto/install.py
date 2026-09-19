@@ -103,13 +103,27 @@ WantedBy=timers.target
 '''
 
 
-def ensure_root_directory(path,mode=0o755):
+def ensure_root_directory(path,mode=0o755,owner=0):
+    # Explicit modes are required: the copy/paste bootstrap can inherit umask 077.
+    # chmod only newly-created directories, never relax an existing secret path.
     if path.resolve()!=path or path.is_symlink():
         raise ValueError('unsafe_install_directory')
-    path.mkdir(parents=True,exist_ok=True,mode=mode)
+    missing=[]
+    cursor=path
+    while not cursor.exists():
+        missing.append(cursor)
+        cursor=cursor.parent
+    for directory in reversed(missing):
+        directory.mkdir(mode=mode if directory==path else 0o755)
+        directory.chmod(mode if directory==path else 0o755)
     info=path.stat()
-    if info.st_uid!=0 or info.st_mode & 0o022:
+    if info.st_uid!=owner or info.st_mode & 0o022:
         raise ValueError('unsafe_install_directory_owner')
+    if info.st_mode & mode != mode:
+        raise ValueError('existing_directory_permissions_require_review')
+    for parent in path.parents:
+        if not parent.stat().st_mode & 0o001:
+            raise ValueError('private_parent_directory_requires_review')
 
 
 def main():
