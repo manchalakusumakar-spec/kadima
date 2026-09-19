@@ -153,6 +153,13 @@ def iteration(client, policy, state, now, save):
         except Blocked: pass
         return reason
     gd,sd,cfg,scfg = observed_flags(client)
+    # Responses are timestamped during the GETs, after the iteration began.
+    # Compare freshness against receipt time, not the earlier request time.
+    now = datetime.now(gate.IST)
+    reason = gate.calendar_reason(policy, now)
+    if reason:
+        revoke(reason)
+        return reason
     day = now.astimezone(gate.IST).date().isoformat()
     if state.get('day') != day:
         state.clear()
