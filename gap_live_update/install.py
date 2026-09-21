@@ -69,6 +69,9 @@ base.FILES={
         '8c01cc55e7348244212c6012ed5468bdb9853895',
         'a0f874a87ce63ca920e99b4724e36bae86e68ce1'),
     'kadima/stock_fast.py':'d4c537156dbb080a50b249d5164e9506f1e1b8dd',
+    # Preserve/upgrade the reviewed NSE RSS collector only from the exact
+    # currently installed source. Other macro/news services remain untouched.
+    'kadima/news_collector.py':'8a6a2375924b7551effb88e48204c7564ee4ae48',
     'kadima/auto_executor.py':DEPLOYED_SESSION_MULTI_EXECUTOR,
     # Gap files may be absent on the first live installation. An earlier
     # paper-only gap_and_go.py is also an accepted reviewed starting point.
