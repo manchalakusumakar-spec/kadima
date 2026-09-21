@@ -131,7 +131,7 @@ class ActivationTests(unittest.TestCase):
                 patch.object(a,'activate_services') as activate,patch.object(a,'check_runtime_flags'), \
                 patch.object(a,'preflight') as preflight, \
                 patch.object(a,'resume') as resume,contextlib.redirect_stdout(io.StringIO()) as out:
-            a.run_activation(True)
+            a.run_activation(True,True)
         resume.assert_called_once()
         activate.assert_not_called()
         preflight.assert_called_once()
