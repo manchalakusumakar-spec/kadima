@@ -96,6 +96,7 @@ class DispatchTests(unittest.TestCase):
              patch.object(live.handoff, "current", return_value=current), \
              patch.object(live.handoff, "still_current", return_value=True), \
              patch.object(live.fast_momentum, "live_blocks", return_value=[]), \
+             patch.object(live.audit, "log"), \
              patch.object(worker, "_chain", return_value=(chain, quote, 2.0)), \
              patch.object(worker, "_confirm",
                           return_value=({"premium_move_pct": 1.0,
