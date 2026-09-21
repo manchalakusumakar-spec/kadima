@@ -68,6 +68,7 @@ SCRIP_MASTER_URL = (
 CACHE_DIR = os.getenv("KADIMA_CACHE_DIR", os.path.expanduser("~/kadima-py/cache"))
 COMPACT_CACHE = os.path.join(CACHE_DIR, "lotsize_map.json")
 CACHE_MAX_AGE_HOURS = 12
+CACHE_SCHEMA = 2
 
 STREAM_PARSE = False  # set True to use ijson for constant-memory parsing
 
@@ -136,8 +137,10 @@ def _absorb_row(row: dict, lot_map: dict, sym_map: dict,
                 spot_map[name] = {"token": str(token), "exchange": "NSE"}
         return
 
-    # ---- derivatives (NFO/BFO) ----
-    if exch not in ("NFO", "BFO"):
+    # ---- derivatives (NFO/BFO/MCX) ----
+    # MCX lot sizes are needed by the live commodity lane even though MCX
+    # contracts are not part of the NSE/BSE stock-universe maps below.
+    if exch not in ("NFO", "BFO", "MCX"):
         return
 
     token = row.get("token")
@@ -158,6 +161,8 @@ def _absorb_row(row: dict, lot_map: dict, sym_map: dict,
     # F&O stock universe: OPTSTK only (excludes OPTIDX — the 4 indices
     # already have dedicated handling in engine.py / config.INDICES).
     itype = row.get("instrumenttype", "")
+    if exch == "MCX":
+        return
     if itype == "OPTSTK":
         name = row.get("name")
         if name:
@@ -178,7 +183,7 @@ def refresh_cache() -> bool:
             return False
         os.makedirs(CACHE_DIR, exist_ok=True)
         with open(COMPACT_CACHE, "w") as f:
-            json.dump({"lot": lot_map, "sym": sym_map,
+            json.dump({"schema": CACHE_SCHEMA, "lot": lot_map, "sym": sym_map,
                        "universe": universe_map, "spot": spot_map}, f)
         return True
     except Exception:
@@ -196,6 +201,13 @@ def _ensure_loaded() -> bool:
     global _LOT_MAP, _SYMBOL_MAP, _UNIVERSE_MAP, _SPOT_MAP
 
     stale = _cache_age_hours(COMPACT_CACHE) > CACHE_MAX_AGE_HOURS
+    if not stale and os.path.exists(COMPACT_CACHE):
+        try:
+            with open(COMPACT_CACHE) as f:
+                cached = json.load(f)
+            stale = cached.get("schema") != CACHE_SCHEMA
+        except Exception:
+            stale = True
 
     if stale:
         ok = refresh_cache()
@@ -213,6 +225,8 @@ def _ensure_loaded() -> bool:
         try:
             with open(COMPACT_CACHE) as f:
                 blob = json.load(f)
+            if blob.get("schema") != CACHE_SCHEMA:
+                return False
             _LOT_MAP = blob.get("lot", {})
             _SYMBOL_MAP = blob.get("sym", {})
             _UNIVERSE_MAP = blob.get("universe", {})

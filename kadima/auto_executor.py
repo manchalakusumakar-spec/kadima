@@ -772,7 +772,7 @@ class AutoExecutor:
 
         now = now_ist()
         eod_hh, eod_mm = EOD_FORCE_CLOSE_HHMM
-        force_close = now.hour > eod_hh or (now.hour == eod_hh and now.minute >= eod_mm)
+        equity_force_close = now.hour > eod_hh or (now.hour == eod_hh and now.minute >= eod_mm)
         # Computed once per cycle, not per position -- same realized_pnl_today()
         # query the entry gate uses. Checked with top priority below: if the
         # day's loss limit is breached, that overrides even an active trail,
@@ -782,6 +782,8 @@ class AutoExecutor:
         daily_loss_breached = exit_manager.realized_pnl_today() <= -DAILY_LOSS_LIMIT_INR
 
         for pos in open_positions:
+            is_mcx = getattr(pos,'kind',None) == 'mcx_momentum'
+            force_close = ((now.hour, now.minute) >= (23,25)) if is_mcx else equity_force_close
             ltp = ltp_by_contract.get((pos.exchange,pos.token))
             if celestial.enabled() and ltp is not None:
                 self._celestial_quotes[pos.exchange+':'+pos.token] = dict(ltp=ltp,ts=now.isoformat())
@@ -825,7 +827,7 @@ class AutoExecutor:
             if daily_loss_breached:
                 reason = 'daily_loss_limit_breached'
             elif force_close:
-                reason = 'eod_force_close'
+                reason = 'mcx_session_exit' if is_mcx else 'eod_force_close'
             elif reason:
                 pass
             elif getattr(pos,'kind',None)=='fast_momentum' and fast_momentum.timeout_reason(pos,now):
@@ -847,7 +849,7 @@ class AutoExecutor:
                               should_exit=decision.should_exit)
                     reason = decision.reason if decision.should_exit else None
 
-            if not reason and celestial.enabled():
+            if not reason and celestial.enabled() and not is_mcx:
                 from .celestial_exit import evaluate
                 reason = evaluate(pos, ltp, now)
 

@@ -149,7 +149,7 @@ class InstallerCompositionTests(unittest.TestCase):
     def test_activation_manifest_pins_composed_executor_and_dependencies(self):
         manifest=json.loads(Path('tools/activation_source.json').read_text())
         self.assertEqual(manifest['kadima/auto_executor.py'],
-                         'a163c2077ccd304dcd5c274333e4f8a32648b34e')
+                         '7cfe6cf21a520ba967d6a672b2f54a99bbe81321')
         self.assertEqual(manifest['kadima/market_session_gate.py'],
                          '5633eba4177f6ade457d6bdd32ec4e154f27e68a')
         self.assertEqual(manifest['kadima/portfolio_capacity.py'],

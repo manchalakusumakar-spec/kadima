@@ -135,20 +135,45 @@ def preflight(installer,context):
         raise Blocked('flat_account_preflight_unconfirmed')
 
 
-def planned_files(fast,gap):
-    known={'KADIMA_CELESTIAL_ENABLED=1','KADIMA_FAST_MOMENTUM_LIVE=1','KADIMA_GAP_LIVE=1'}
+def planned_files(fast,gap,mcx=False,mcx_capital=None):
     existing=set()
+    existing_cap=None
     if ENVFILE.exists():
         if ENVFILE.is_symlink():
             raise Blocked('existing_activation_file_differs:'+ENVFILE.name)
-        existing={line.strip() for line in ENVFILE.read_text().splitlines() if line.strip()}
-        if not existing.issubset(known) or 'KADIMA_CELESTIAL_ENABLED=1' not in existing:
+        for raw in ENVFILE.read_text().splitlines():
+            line=raw.strip()
+            if not line:continue
+            if line.startswith('KADIMA_MCX_CAPITAL_INR='):
+                try:
+                    existing_cap=float(line.split('=',1)[1])
+                except ValueError:
+                    raise Blocked('existing_activation_file_differs:'+ENVFILE.name) from None
+                if not existing_cap>0:raise Blocked('existing_activation_file_differs:'+ENVFILE.name)
+                continue
+            if line not in {'KADIMA_CELESTIAL_ENABLED=1','KADIMA_FAST_MOMENTUM_LIVE=1',
+                            'KADIMA_GAP_LIVE=1','KADIMA_MCX_LIVE=1'}:
+                raise Blocked('existing_activation_file_differs:'+ENVFILE.name)
+            existing.add(line)
+        if 'KADIMA_CELESTIAL_ENABLED=1' not in existing:
             raise Blocked('existing_activation_file_differs:'+ENVFILE.name)
+    if mcx:
+        try:
+            mcx_capital=float(mcx_capital)
+        except (TypeError,ValueError):
+            raise Blocked('mcx_capital_required') from None
+        if not 0 < mcx_capital <= 100000:
+            raise Blocked('mcx_capital_out_of_bounds')
+    elif existing_cap is not None:
+        mcx_capital=existing_cap
     lines=['KADIMA_CELESTIAL_ENABLED=1']
     if fast or 'KADIMA_FAST_MOMENTUM_LIVE=1' in existing:
         lines.append('KADIMA_FAST_MOMENTUM_LIVE=1')
     if gap or 'KADIMA_GAP_LIVE=1' in existing:
         lines.append('KADIMA_GAP_LIVE=1')
+    if mcx or 'KADIMA_MCX_LIVE=1' in existing:
+        lines.append('KADIMA_MCX_LIVE=1')
+        lines.append('KADIMA_MCX_CAPITAL_INR='+str(int(mcx_capital) if float(mcx_capital).is_integer() else mcx_capital))
     files={ENVFILE:'\n'.join(lines)+'\n'}
     files.update({SYSTEMD/(u+'.d')/DROPIN:'[Service]\nEnvironmentFile='+str(ENVFILE)+'\n' for u in UNITS})
     for path,content in files.items():
@@ -203,7 +228,7 @@ def activate_services(installer,context,files):
         raise
 
 
-def check_runtime_flags(fast,gap):
+def check_runtime_flags(fast,gap,mcx=False,mcx_capital=None):
     for unit in UNITS:
         pid=command(['systemctl','show',unit,'-p','MainPID','--value']).stdout.strip()
         if not pid.isdigit() or int(pid)<=0:raise Blocked('restarted_service_unavailable')
@@ -213,6 +238,15 @@ def check_runtime_flags(fast,gap):
             raise Blocked('fast_environment_overridden')
         if gap and unit==UNITS[0] and env.get(b'KADIMA_GAP_LIVE')!=b'1':
             raise Blocked('gap_environment_overridden')
+        if mcx and unit==UNITS[0]:
+            if env.get(b'KADIMA_MCX_LIVE')!=b'1':
+                raise Blocked('mcx_environment_overridden')
+            try:
+                observed=float(env.get(b'KADIMA_MCX_CAPITAL_INR',b'0'))
+            except ValueError:
+                observed=0
+            if observed != float(mcx_capital):
+                raise Blocked('mcx_capital_environment_overridden')
 
 
 def resume(token,reporter):
@@ -232,7 +266,7 @@ def resume(token,reporter):
         raise Blocked('resume_not_confirmed')
 
 
-def run_activation(fast,gap):
+def run_activation(fast,gap,mcx=False,mcx_capital=None):
     installer=load_module('activation_installer','executor_fix/install.py')
     reporter=load_module('activation_reporter','tools/deployment_report.py')
     source_check(installer)
@@ -246,16 +280,16 @@ def run_activation(fast,gap):
     already_loaded=False
     if cfg.get('rollout_enabled') is True:
         try:
-            check_runtime_flags(fast,gap)
+            check_runtime_flags(fast,gap,mcx,mcx_capital)
             already_loaded=True
         except Blocked:pass
     if already_loaded:
         # Retrying a news warm-up failure must not restart the collector again.
         preflight(installer,context)
     else:
-        files=planned_files(fast,gap)
+        files=planned_files(fast,gap,mcx,mcx_capital)
         activate_services(installer,context,files)
-        check_runtime_flags(fast,gap)
+        check_runtime_flags(fast,gap,mcx,mcx_capital)
     # Startup/news collection may take several requests. Never invent success.
     deadline=time.monotonic()+60
     while True:
@@ -287,13 +321,15 @@ def main():
     parser.add_argument('--apply',action='store_true')
     parser.add_argument('--enable-fast',action='store_true')
     parser.add_argument('--enable-gap',action='store_true')
+    parser.add_argument('--enable-mcx',action='store_true')
+    parser.add_argument('--mcx-capital',type=float)
     args=parser.parse_args()
     if not args.apply:raise SystemExit('Use --apply to change service rollout flags and request guarded auto resume.')
     if os.geteuid()!=0:raise SystemExit('Run with sudo -n python3.')
     with open('/run/lock/kadima-activation.lock','w') as lock:
         try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:raise SystemExit('Another activation is running.')
-        try:run_activation(args.enable_fast,args.enable_gap)
+        try:run_activation(args.enable_fast,args.enable_gap,args.enable_mcx,args.mcx_capital)
         except Exception as exc:
             detail=str(exc) if isinstance(exc,Blocked) else type(exc).__name__
             print(json.dumps({'activation':'BLOCKED_OR_UNCONFIRMED','reason':detail,

@@ -7,7 +7,10 @@ def active_contracts(rows, on):
     result = {}
     for row in rows:
         try:
-            if row.get('exch_seg') not in ('NFO','BFO') or row.get('instrumenttype') not in ('OPTIDX','OPTSTK'):
+            segment = row.get('exch_seg')
+            instrument = row.get('instrumenttype')
+            if not ((segment in ('NFO','BFO') and instrument in ('OPTIDX','OPTSTK'))
+                    or (segment == 'MCX' and instrument == 'OPTFUT')):
                 continue
             expiry = datetime.strptime(row['expiry'],'%d%b%Y').date()
             lot = int(row['lotsize'])
