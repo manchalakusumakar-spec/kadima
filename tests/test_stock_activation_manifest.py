@@ -45,7 +45,8 @@ class StockActivationManifestTests(unittest.TestCase):
 
     def test_stock_entrypoint_and_preserved_dependencies_are_pinned(self):
         required = {'run.py', 'kadima/full_universe_scanner.py', 'kadima/stock_fast.py',
-                    'kadima/stock_fast_api.py', 'kadima/feed.py', 'kadima/rate_limiter.py'}
+                    'kadima/stock_fast_api.py', 'kadima/feed.py', 'kadima/rate_limiter.py',
+                    'kadima/gap_and_go.py', 'kadima/gap_baseline.py', 'kadima/gap_live.py'}
         self.assertTrue(required.issubset(self.manifest))
         self.assertEqual(self.manifest['kadima/full_universe_scanner.py'],
                          '530c41a3fe4fe1e706dcfde3437f4c16e1a19b69')
