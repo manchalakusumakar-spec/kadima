@@ -1,5 +1,10 @@
 from datetime import datetime, timedelta
+import ast
+import hashlib
+import importlib.util
+import json
 import os
+from pathlib import Path
 import types
 import unittest
 from unittest.mock import Mock, patch
@@ -107,6 +112,52 @@ class MCXLiveTests(unittest.TestCase):
         # A fresh quote without a five-minute window never becomes a trade.
         with patch.object(mcx_live,'_fetch',return_value={'status':True,'data':{'fetched':[]}}):
             self.assertIsNone(worker._candidate(contracts,future,NOW))
+
+
+
+
+class MCXInstallerTests(unittest.TestCase):
+    @staticmethod
+    def git_blob(raw):
+        return hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()
+
+    def test_mcx_worker_has_no_direct_order_transport(self):
+        tree=ast.parse(Path('kadima/mcx_live.py').read_text())
+        imports=set()
+        calls=set()
+        for node in ast.walk(tree):
+            if isinstance(node,ast.ImportFrom):
+                imports.add((node.module or '').split('.')[-1])
+            elif isinstance(node,ast.Import):
+                imports.update(a.name.split('.')[-1] for a in node.names)
+            elif isinstance(node,ast.Call):
+                fn=node.func
+                name=fn.attr if isinstance(fn,ast.Attribute) else fn.id if isinstance(fn,ast.Name) else None
+                if name=='place_limit_order':
+                    calls.add(name)
+        self.assertNotIn('angel_orders',imports)
+        self.assertFalse(calls)
+
+    def test_installer_composes_on_current_gap_executor(self):
+        spec=importlib.util.spec_from_file_location('mcx_installer',Path('mcx_live_update/install.py'))
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        self.assertEqual(module.DEPLOYED_GAP_EXECUTOR,
+                         'a163c2077ccd304dcd5c274333e4f8a32648b34e')
+        self.assertEqual(module.COMPOSED_EXECUTOR,
+                         '7cfe6cf21a520ba967d6a672b2f54a99bbe81321')
+        self.assertEqual(module.base.FILES['kadima/auto_executor.py'],
+                         module.DEPLOYED_GAP_EXECUTOR)
+        raw=module.base.read_file(module.ROOT/'kadima/auto_executor.py')
+        self.assertEqual(module.base.digest(raw),module.COMPOSED_EXECUTOR)
+
+    def test_activation_manifest_pins_mcx_runtime(self):
+        manifest=json.loads(Path('tools/activation_source.json').read_text())
+        self.assertEqual(manifest['kadima/auto_executor.py'],
+                         '7cfe6cf21a520ba967d6a672b2f54a99bbe81321')
+        self.assertEqual(manifest['kadima/mcx_live.py'],
+                         '1f1eede315ffecbf9469c6fcfc6746371b0f2f7e')
+        self.assertEqual(manifest['kadima/instrument_master.py'],
+                         'a04a6c3636d49081fb49d48ac745aea0adc73f1f')
 
 
 if __name__=='__main__':
