@@ -85,12 +85,49 @@ def process_context(installer):
     return python,env,owner
 
 
+def carryforward_preflight_code(code):
+    """Permit only verified long CARRYFORWARD options; all other exposure blocks."""
+    contract_anchor="    SESSION.ensure()\n    for name in ('position','orderBook'):\n"
+    position_anchor="""                if quantity != 0:
+                    reason = 'broker_positions_not_flat'
+                    raise RuntimeError()
+"""
+    if code.count(contract_anchor)!=1 or code.count(position_anchor)!=1:
+        raise Blocked('broker_preflight_shape_changed')
+    contract_block="""    SESSION.ensure()
+    from kadima.scrip_master import ScripMaster
+    from kadima.celestial_universe import active_contracts
+    from kadima.utils import now_ist
+    contracts = active_contracts(ScripMaster.load().rows, now_ist().date())
+    for name in ('position','orderBook'):
+"""
+    position_block="""                if quantity != 0:
+                    product = str(row.get('producttype') or '')
+                    exchange = str(row.get('exchange') or '')
+                    token = str(row.get('symboltoken') or '')
+                    symbol = str(row.get('tradingsymbol') or '')
+                    contract = contracts.get((exchange, token))
+                    carry_ok = (
+                        product == 'CARRYFORWARD' and quantity > 0
+                        and quantity == int(quantity) and contract is not None
+                        and int(quantity) % int(contract['lot_size']) == 0
+                        and symbol == str(contract['symbol']))
+                    if not carry_ok:
+                        reason = 'broker_positions_not_flat'
+                        raise RuntimeError()
+"""
+    result=code.replace(contract_anchor,contract_block,1).replace(position_anchor,position_block,1)
+    compile(result,'activation_carryforward_preflight','exec')
+    return result
+
+
 def preflight(installer,context):
     python,env,owner=context
-    # The reviewed preflight reads broker positions/orders and local state.
-    # SDK stdout/stderr remain captured; only its success marker is accepted.
+    # Read-only broker preflight permits verified long carry-forward exposure,
+    # but still refuses intraday positions, shorts, invalid contracts/lots and
+    # pending/unknown broker orders.
     try:
-        result=command([python,'-c',installer.PREFLIGHT],cwd=REPO,env=env,
+        result=command([python,'-c',carryforward_preflight_code(installer.PREFLIGHT)],cwd=REPO,env=env,
             user=owner.pw_uid,group=owner.pw_gid,extra_groups=[])
     except Exception as exc:
         raise Blocked(installer.failure_summary(exc,'flat_account_preflight')) from None
