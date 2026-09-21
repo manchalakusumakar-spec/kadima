@@ -175,13 +175,18 @@ class Expansion(unittest.TestCase):
             news.parse_feed(b'<rss><channel><title>NSE</title></channel></rss>',
                 category='announcements',mapping={},symbols=set(),now=NOW)
 
-    def test_trusted_nse_http_links_are_canonicalised_but_offsite_still_rejected(self):
+    def test_trusted_nse_links_are_canonicalised_but_offsite_still_rejected(self):
         mapping={'EXAMPLE LIMITED':'EXAMPLE'}
-        events,_=news.parse_feed(
-            rss(item(url='http://nsearchives.nseindia.com/corporate/a.pdf')),
-            category='announcements',mapping=mapping,symbols={'EXAMPLE'},now=NOW)
-        self.assertEqual(events[0]['url'],
-                         'https://nsearchives.nseindia.com/corporate/a.pdf')
+        for source in (
+                'http://nsearchives.nseindia.com/corporate/a.pdf',
+                '//nsearchives.nseindia.com/corporate/a.pdf',
+                '/corporate/a.pdf'):
+            with self.subTest(source=source):
+                events,_=news.parse_feed(
+                    rss(item(url=source)),
+                    category='announcements',mapping=mapping,symbols={'EXAMPLE'},now=NOW)
+                self.assertEqual(events[0]['url'],
+                                 'https://nsearchives.nseindia.com/corporate/a.pdf')
         with self.assertRaises(ValueError):
             news.parse_feed(rss(item(url='http://example.test/a.pdf')),
                 category='announcements',mapping=mapping,symbols={'EXAMPLE'},now=NOW)
