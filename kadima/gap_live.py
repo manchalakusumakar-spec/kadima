@@ -23,6 +23,7 @@ from .stock_fast import observations, still_current
 from .utils import now_ist
 
 MAX_PREPARED_PER_CYCLE = 3
+MACRO_SNAPSHOT_PATH = os.path.expanduser("~/kadima-py/state/macro_snapshot.json")
 
 
 def _finite(value, minimum=None):
@@ -32,10 +33,9 @@ def _finite(value, minimum=None):
 
 def _macro_clear(now):
     try:
-        from .macro_watch import SNAPSHOT_PATH
-        if not os.path.exists(SNAPSHOT_PATH):
+        if not os.path.exists(MACRO_SNAPSHOT_PATH):
             return False
-        with open(SNAPSHOT_PATH) as stream:
+        with open(MACRO_SNAPSHOT_PATH) as stream:
             payload = json.load(stream)
         stamp = datetime.fromisoformat(payload["ts"])
         if stamp.tzinfo is None or not 0 <= (now-stamp).total_seconds() <= 900:
