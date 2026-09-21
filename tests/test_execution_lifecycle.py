@@ -257,6 +257,46 @@ class Lifecycle(unittest.TestCase):
         pos=next(iter(self.ex.state.positions.values()))
         self.assertEqual((pos.status,pos.remaining_qty,pos.entry_price),('entry_pending',0,0))
 
+    def test_gap_live_uses_shared_executor_one_lot_and_revalidation(self):
+        self.ex.state.positions.clear()
+        q=types.SimpleNamespace(symbol='STOCKCE',token='T',strike=100,opt_type='CE',
+            ltp=100,bid=99.5,ask=100.5,delta=.5,iv=40,volume=5000,oi=10000,spread_pct=1)
+        chain=types.SimpleNamespace(quotes={'T':q},
+            index=types.SimpleNamespace(opt_exchange='NFO'),_last_poll=time.monotonic())
+        chain._spot_received_at=time.monotonic()
+        chain.atm=100
+        chain.scrips=types.SimpleNamespace(strikes_around=lambda *a:[{'token':'T'}])
+        chain._entry_guard=lambda:True
+        config.STRIKES_EACH_SIDE=1
+        pkg.strike_selector.rank=lambda *args:[types.SimpleNamespace(rejected=False,quote=q)]
+        pkg.risk_budget.select_within_budget=lambda *args,**kw:types.SimpleNamespace(candidate=q,lots=1)
+        context=dict(eligible=True,strategy='gap_and_go',underlying='STOCK',direction='CE',
+            ts=NOW.isoformat(),episode='gap:STOCK:1',token='T',contract_symbol='STOCKCE',
+            exchange='NFO',spot_stop=98,days=3,entry=100.5,score=80)
+        with patch.object(executor.gap_and_go,'live_blocks',return_value=[]), \
+             patch.object(executor.celestial,'fresh',return_value=True), \
+             patch.object(executor.trade_policy,'premium_stop',return_value=90), \
+             patch.object(executor.trade_policy,'lots_within_allocation',return_value=1):
+            result=self.ex.evaluate_and_enter('STOCK','CE',chain,100,
+                types.SimpleNamespace(vwap=99),3,'gap_and_go',77,'CONFIRMED',80,
+                gap_context=lambda:dict(context))
+        self.assertTrue(result['ok'])
+        self.assertEqual(self.place.call_count,1)
+        pos=self.ex.state.positions['77']
+        self.assertEqual((pos.kind,pos.lots,pos.status),('gap_and_go',1,'entry_pending'))
+
+    def test_gap_live_rejects_second_position_same_underlying(self):
+        self.ex.state.positions={'1':executor.Position(
+            1,'gap_and_go','STOCK','CE','OLDCE','OLD','NFO',10,NOW,1,10,10)}
+        chain=types.SimpleNamespace(_entry_guard=lambda:True)
+        context=dict(eligible=True,strategy='gap_and_go',underlying='STOCK',direction='CE',
+            ts=NOW.isoformat())
+        with patch.object(executor.gap_and_go,'live_blocks',return_value=[]), \
+             patch.object(executor.celestial,'fresh',return_value=True):
+            result=self.ex.evaluate_and_enter('STOCK','CE',chain,100,None,3,
+                'gap_and_go',78,'CONFIRMED',80,gap_context=lambda:context)
+        self.assertEqual(result['reason'],'same_underlying_position_exists')
+
     def test_realized_pnl_includes_partial_and_excludes_paper(self):
         import ast
         tree=ast.parse((ROOT/'kadima/exit_manager.py').read_text())
