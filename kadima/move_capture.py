@@ -207,6 +207,19 @@ class SymbolTracker:
         gap = (latest.price / self.previous_close - 1
                if self.previous_close and self.previous_close > 0 else None)
 
+        impulse_old = self._at_or_before(latest.ts - timedelta(minutes=best[2]))
+        impulse_anchor = impulse_old.price if impulse_old is not None else None
+        spot_stop = None
+        if impulse_anchor is not None:
+            # First live-ready structural hypothesis: invalidate after a 50%
+            # retracement of the strongest normalized impulse. This is a spot
+            # level, later converted to an option premium stop by trade_policy.
+            spot_stop = latest.price + 0.5 * (impulse_anchor - latest.price)
+            if direction == "CE" and not spot_stop < latest.price:
+                spot_stop = None
+            if direction == "PE" and not spot_stop > latest.price:
+                spot_stop = None
+
         move_component = 40 * min(best[0] / 3.0, 1.0)
         accel_z = abs(acceleration) / sigma if acceleration is not None else 0.0
         accel_component = 25 * min(accel_z / 2.0, 1.0)
@@ -238,7 +251,10 @@ class SymbolTracker:
             day_high=self.high,
             day_low=self.low,
             location=round(location, 4),
-            trigger_model="shadow_v1_intraday_self_normalized",
+            impulse_minutes=best[2],
+            impulse_anchor=None if impulse_anchor is None else round(impulse_anchor, 4),
+            spot_stop=None if spot_stop is None else round(spot_stop, 4),
+            trigger_model="live_ready_v1_intraday_self_normalized",
         )
 
 
@@ -259,6 +275,7 @@ class MoveCaptureDetector:
         self.trackers: dict[str, SymbolTracker] = {}
         self.hot: dict[str, dict] = {}
         self.last_event: dict[str, datetime] = {}
+        self.episodes: dict[str, str] = {}
         self.tick_count = 0
 
     def ingest(self, identity: SpotIdentity, ts: datetime, price: float,
@@ -278,17 +295,26 @@ class MoveCaptureDetector:
             underlying=identity.name, exchange=identity.exchange,
             token=identity.token, asset_scope=identity.kind,
             strategy="move_capture", **features)
-        was_hot = identity.name in self.hot
-        if features["ready"] and features["score"] >= self.trigger_score:
-            self.hot[identity.name] = candidate
-        elif was_hot and features["score"] >= self.release_score:
+        previous_row = self.hot.get(identity.name)
+        was_hot = previous_row is not None
+        direction_changed = bool(previous_row and previous_row.get("direction") != candidate["direction"])
+        qualifies = features["ready"] and features["score"] >= self.trigger_score
+        retained = was_hot and not direction_changed and features["score"] >= self.release_score
+
+        if qualifies or retained:
+            if not was_hot or direction_changed or identity.name not in self.episodes:
+                self.episodes[identity.name] = (
+                    "move:" + identity.name + ":" + candidate["direction"] + ":" + ts.isoformat()
+                )
+            candidate["episode"] = self.episodes[identity.name]
             self.hot[identity.name] = candidate
         else:
             self.hot.pop(identity.name, None)
+            self.episodes.pop(identity.name, None)
 
         self._trim(ts)
         promoted = False
-        if not was_hot and identity.name in self.hot:
+        if (not was_hot or direction_changed) and identity.name in self.hot:
             previous = self.last_event.get(identity.name)
             if previous is None or (ts - previous).total_seconds() >= self.cooldown_seconds:
                 promoted = True
@@ -304,17 +330,19 @@ class MoveCaptureDetector:
                 stale = True
             if stale:
                 self.hot.pop(name, None)
+                self.episodes.pop(name, None)
         if len(self.hot) > self.max_hot:
             keep = {r["underlying"] for r in sorted(
                 self.hot.values(), key=lambda x: (-x["score"], x["underlying"]))[:self.max_hot]}
             self.hot = {k: v for k, v in self.hot.items() if k in keep}
+            self.episodes = {k: v for k, v in self.episodes.items() if k in keep}
 
     def snapshot(self, now: datetime):
         self._trim(now)
         rows = sorted(self.hot.values(), key=lambda x: (-x["score"], x["underlying"]))
         return dict(
             ts=now.isoformat(),
-            mode="SHADOW_OBSERVE_ONLY",
+            mode="DETECTOR_ONLY",
             execution_enabled=False,
             symbols_seen=len(self.trackers),
             ticks_processed=self.tick_count,
