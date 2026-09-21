@@ -84,6 +84,10 @@ class InstallerCompositionTests(unittest.TestCase):
                          '6161c04be1266e5e9b010f67a9466c22c0fc8ef0')
         self.assertEqual(module.base.FILES['kadima/auto_executor.py'],
                          module.DEPLOYED_SESSION_MULTI_EXECUTOR)
+        self.assertEqual(module.base.FILES['kadima/gap_and_go.py'],
+                         (None,'b26599c469ec9e0af4dcd9503aa6965365bb4647'))
+        self.assertIsNone(module.base.FILES['kadima/gap_baseline.py'])
+        self.assertIsNone(module.base.FILES['kadima/gap_live.py'])
         self.assertEqual(
             module.base.digest(module.base.read_file(
                 module.ROOT/'kadima/auto_executor.py')),
