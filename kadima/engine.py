@@ -644,6 +644,14 @@ class Engine:
             time.sleep(20)
             n = now_ist()
             if n.hour > close_hour or (n.hour == close_hour and n.minute >= close_min):
+                try:
+                    from . import mcx_live, commodity_watch
+                    keep_for_mcx = (mcx_live.live_requested()
+                                    and commodity_watch.monitoring_window(n))
+                except Exception:
+                    keep_for_mcx = False
+                if keep_for_mcx:
+                    continue
                 audit.log("market_close_shutdown")
                 self.stop()
                 return
