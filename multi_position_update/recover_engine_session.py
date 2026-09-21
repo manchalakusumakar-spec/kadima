@@ -29,7 +29,7 @@ PINNED = {
     'executor_fix/install.py': 'e3f8970bcaeedfc14fd8f4ee295df53f23ec7e61',
     'session_auto/install.py': '7ce7ad70f4d456bed149c5dc246aec48f9790fca',
     'multi_position_update/install.py': '640b181e8d680a48a2052607207d63493b62d7d3',
-    'multi_position_update/patch.py': 'be9bb6cebf27485cfdc9da970ab1a687137bbd1f',
+    'multi_position_update/patch.py': '01146bc5ca08310ab9231282d3b368c4136335cf',
     'multi_position_update/reset_kill.py': '2769fbfe49cd8cc7a10634203bf225317cec1195',
     'session_auto/gate.py': '5633eba4177f6ade457d6bdd32ec4e154f27e68a',
 }
