@@ -173,7 +173,7 @@ class Worker:
             return []
         return commodity_watch.quote_rows(futures, _fetch([r["token"] for r in futures]), now)
 
-    def _candidate(self, contracts, future, now):
+    def _candidate(self, contracts, future, option_rows, option_metrics, now):
         if not future.get("fresh"):
             return None
         if not all(isinstance(future.get(k), (int,float)) and math.isfinite(future[k])
@@ -197,15 +197,15 @@ class Worker:
         contract = _option_for(contracts, future, direction)
         if contract is None:
             return None
-        row = commodity_watch.quote_rows([contract], _fetch([contract["token"]]), now)[0]
-        if not row.get("fresh") or not all(isinstance(row.get(k),(int,float)) and math.isfinite(row[k])
-                                           for k in ("ltp","volume","oi")):
+        row = option_rows.get(contract["token"])
+        om = option_metrics.get(contract["token"])
+        if not row or not row.get("fresh") or not all(
+                isinstance(row.get(k),(int,float)) and math.isfinite(row[k])
+                for k in ("ltp","volume","oi")):
             return None
         spread = row.get("spread_pct")
         if not isinstance(spread,(int,float)) or not math.isfinite(spread) or spread > MAX_OPTION_SPREAD_PCT:
             return None
-        owindow = self.option_windows.setdefault(row["token"], PremiumWindow())
-        om = owindow.add(now, row["ltp"], row["volume"], row["oi"])
         if (not om or om["premium_move_pct"] < MIN_OPTION_MOVE_PCT
                 or not om["volume_spike"] or om["oi_change"] <= 0):
             return None
@@ -296,10 +296,33 @@ class Worker:
             return
         contracts = self._contracts(now)
         futures = self._future_rows(contracts,now)
+        option_contracts = {}
+        for future in futures:
+            if not future.get("fresh"):
+                continue
+            for direction in ("CE","PE"):
+                contract = _option_for(contracts,future,direction)
+                if contract is not None:
+                    option_contracts[contract["token"]] = contract
+        option_rows = {}
+        option_metrics = {}
+        if option_contracts:
+            quoted = commodity_watch.quote_rows(
+                list(option_contracts.values()), _fetch(list(option_contracts)), now)
+            for row in quoted:
+                option_rows[row["token"]] = row
+                window = self.option_windows.setdefault(row["token"], PremiumWindow())
+                valid = (row.get("fresh") and all(
+                    isinstance(row.get(k),(int,float)) and math.isfinite(row[k])
+                    for k in ("ltp","volume","oi")))
+                option_metrics[row["token"]] = (
+                    window.add(now,row["ltp"],row["volume"],row["oi"]) if valid else None)
+                if not valid:
+                    window.samples.clear()
         candidates = []
         for future in futures:
             try:
-                row = self._candidate(contracts,future,now)
+                row = self._candidate(contracts,future,option_rows,option_metrics,now)
                 if row:
                     candidates.append(row)
             except Exception as exc:
