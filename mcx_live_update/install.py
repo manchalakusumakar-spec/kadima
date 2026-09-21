@@ -97,10 +97,41 @@ base.broker_preflight_code=_carryforward_preflight_code
 
 # Exact current reviewed source -> MCX release. Unknown target bytes refuse.
 base.FILES={
-    'run.py':'86f8232e1efee90e5eed20cd507f360f3ab969bf',
-    'kadima/engine.py':'a1875f1d73889c850403320cd30e583cbf5ca469',
+    # Complete reviewed Gap-era runtime lineage -> MCX runtime.
+    # Unknown/local modifications still fail closed; only these reviewed
+    # predecessors (or the exact incoming MCX source) are accepted.
+    'kadima/angel_orders.py':'6e379765f37044c255e5ca61b2a3b05abeec77dd',
+    'kadima/auto_executor.py':(
+        '362923e19b763975d1a6cf8c18a23459585e0259',
+        '502744a63d0b5a5d5aa9c74c39e7bd7cf5334c88',
+        '6161c04be1266e5e9b010f67a9466c22c0fc8ef0',
+        DEPLOYED_GAP_EXECUTOR),
+    'kadima/celestial.py':'dfac18b9d76f11428357cc7d6b4d8f88d15278fa',
+    'kadima/celestial_adoption.py':(
+        '2273bb837257a09ba9d9e5a7bae52560f595e3bf',
+        '68e66fca7baca0b42cc29b80cd41cff301ae4f57'),
     'kadima/control_api.py':'6734f4e822b2c6cf14fae88539a4bfd87b7292fb',
-    'kadima/auto_executor.py':DEPLOYED_GAP_EXECUTOR,
+    'kadima/engine.py':'a1875f1d73889c850403320cd30e583cbf5ca469',
+    'kadima/execution_ledger.py':'1fde45163927f6fceff4a6ae8573e4242ac4fb18',
+    'kadima/external_reconciliation.py':'c1eb8c7bb0e0b7f6842ff2aacbc7401f60f21ec9',
+    'kadima/fast_momentum.py':'7eb165d7ae89be70133b0a8a4d4efeed964a7d70',
+    'kadima/full_universe_scanner.py':'530c41a3fe4fe1e706dcfde3437f4c16e1a19b69',
+    'kadima/news_catalysts.py':'2cdbcdd91616c75b8c57a9dc6192b6b6aa2c09e9',
+    'kadima/news_collector.py':(
+        '8a6a2375924b7551effb88e48204c7564ee4ae48',
+        '98c0e36ef614da41096df686fa49d6333d62114b'),
+    'kadima/shield_confirmation.py':'88f8485c1f8845147db8074fb82b1dcda0bc90ef',
+    'kadima/stock_universe_scanner.py':'1117df7df0825e918a5ae119e9abb00d0627df62',
+    'run.py':'86f8232e1efee90e5eed20cd507f360f3ab969bf',
+    'kadima/stock_fast.py':'e84932b645d584787df21e1bb94ce927d80b6cc3',
+    'kadima/stock_fast_api.py':'0d9b50418d6cc12752ebf96114e98504eaca455d',
+    'kadima/feed.py':'8a9f8ea0aa5a708739c9297583badabc85fc2c2a',
+    'kadima/rate_limiter.py':'9886d951be6997e0ddf8fdda640529f5f751a25c',
+    'kadima/gap_and_go.py':'b49527a16984c306293b5b9874fb17ed88c6ee31',
+    'kadima/gap_baseline.py':'97e2851b4c599ca7b04fedba2bacc39169074455',
+    'kadima/gap_live.py':'9f282800528fd942ff5da8014da93c2ac3602b34',
+    'kadima/portfolio_capacity.py':'c5d92290e608d22241afbad88cf5eb6dcd4bf22b',
+    'kadima/market_session_gate.py':'5633eba4177f6ade457d6bdd32ec4e154f27e68a',
     'kadima/commodity_watch.py':'7103168af0cbe9aec4f622dd41627da7854697a9',
     'kadima/instrument_master.py':'7d1338047157f1ec91cf19f3ec6099ca5b658c2e',
     'kadima/celestial_universe.py':'26f2433d9d3ca09389c5f9485105a4008f99b9de',
