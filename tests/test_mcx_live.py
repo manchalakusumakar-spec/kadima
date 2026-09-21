@@ -164,8 +164,10 @@ class MCXInstallerTests(unittest.TestCase):
                          'a163c2077ccd304dcd5c274333e4f8a32648b34e')
         self.assertEqual(module.COMPOSED_EXECUTOR,
                          '7cfe6cf21a520ba967d6a672b2f54a99bbe81321')
-        self.assertEqual(module.base.FILES['kadima/auto_executor.py'],
-                         module.DEPLOYED_GAP_EXECUTOR)
+        self.assertIn(module.DEPLOYED_GAP_EXECUTOR,
+                      module.base.FILES['kadima/auto_executor.py'])
+        manifest=json.loads(Path('tools/activation_source.json').read_text())
+        self.assertEqual(set(module.base.FILES),set(manifest))
         raw=module.base.read_file(module.ROOT/'kadima/auto_executor.py')
         self.assertEqual(module.base.digest(raw),module.COMPOSED_EXECUTOR)
 
