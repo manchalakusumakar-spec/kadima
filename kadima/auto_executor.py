@@ -642,6 +642,8 @@ class AutoExecutor:
 
         allowed_lots, cap_reason = capital_guard.enforce(
             self, SimpleNamespace(quote=chosen_quote), direction, verdict.lots)
+        if gap:
+            allowed_lots = min(1, allowed_lots)
         if allowed_lots == 0:
             return self._reject(f"capital_guard_{cap_reason}", index_name, direction)
 
