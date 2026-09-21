@@ -289,7 +289,7 @@ def run_activation(fast,gap,mcx=False,mcx_capital=None):
     else:
         files=planned_files(fast,gap,mcx,mcx_capital)
         activate_services(installer,context,files)
-        check_runtime_flags(fast,gap)
+        check_runtime_flags(fast,gap,mcx,mcx_capital)
     # Startup/news collection may take several requests. Never invent success.
     deadline=time.monotonic()+60
     while True:
