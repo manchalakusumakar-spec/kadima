@@ -86,6 +86,7 @@ class FullUniverseScanner:
         self.last = {}
         self.scores = {}
         self.prices = {}
+        self.gap_paper = {}
         self.day = now_ist().date()
         self._stop = threading.Event()
         self.report()
@@ -105,6 +106,18 @@ class FullUniverseScanner:
             option_chains_fresh=fresh, missing=self.missing,
             ok=not self.missing and bool(self.chains) and fresh == len(self.chains),
             coverage='all_resolved_active_nfo_stock_roots_nearest_expiry_atm_plus_minus_one', **extra))
+        try:
+            from . import gap_and_go
+            if gap_and_go.paper_prefilter_enabled():
+                rows = list(self.gap_paper.values())
+                celestial.health('gap_and_go_paper', dict(
+                    ok=True, mode='PAPER_PREFILTER', live_execution=False,
+                    observed=len(rows),
+                    gap_detected=sum(r.get('stage') == 'GAP_DETECTED' for r in rows),
+                    scan_window='09:15-10:30_IST',
+                    source='existing_full_universe_FULL_quotes'))
+        except Exception as exc:
+            audit.log('GAP_PAPER_HEALTH_ERROR', error_type=type(exc).__name__)
         try:
             write_snapshot(dict(ts=now.isoformat(),tracked=sorted(self.scores.values(),key=lambda r:r['score'],reverse=True),
                 prices=self.prices,execution='central_executor_gated',coverage=dict(
@@ -132,9 +145,21 @@ class FullUniverseScanner:
                 celestial.publish(producer, [])
                 stock_handoff.invalidate(name)
                 self._fast_invalidate(name)
+                self.gap_paper.pop(name, None)
                 continue
             spot = float(spot_row['ltp'])
             self.prices[name]=dict(ltp=spot,received_at=spot_row['_received_at'])
+            # Default-OFF and paper-only. The prefilter never calls an executor;
+            # it only publishes a cheap opening-gap observation from this same
+            # FULL quote, avoiding a second universe-wide broker request.
+            try:
+                from . import gap_and_go
+                if gap_and_go.paper_prefilter_enabled():
+                    self.gap_paper[name] = gap_and_go.observe_full_quote(
+                        name, spot_row, now_ist())
+            except Exception as exc:
+                audit.log('GAP_PAPER_PREFILTER_ERROR', index=name,
+                          error_type=type(exc).__name__)
             previous = set(chain.quotes)
             chain.rebuild_ladder(spot)
             fetched = [rows[(chain.index.opt_exchange, t)] for t in chain.quotes
