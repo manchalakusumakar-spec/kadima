@@ -32,6 +32,7 @@ MAX_FUTURE_SPREAD_PCT = 0.75
 MAX_OPTION_SPREAD_PCT = 1.5
 SESSION_EXIT = time(23, 25)
 POLL_SECONDS = 10
+MACRO_SNAPSHOT_PATH = os.path.expanduser("~/kadima-py/state/macro_snapshot.json")
 
 
 def live_requested():
@@ -100,6 +101,23 @@ def _score(future_metrics, option_metrics):
                      + min(10.0, option_metrics["premium_move_pct"] / 2)), 2)
 
 
+def macro_clear(now=None):
+    now = now or now_ist()
+    try:
+        with open(MACRO_SNAPSHOT_PATH) as stream:
+            payload=json.load(stream)
+        stamp=datetime.fromisoformat(payload["ts"])
+        if stamp.tzinfo is None or not 0 <= (now-stamp).total_seconds() <= 900:
+            return False
+        today=now.date().isoformat()
+        for event in payload.get("economic_calendar") or []:
+            if event.get("date") <= today <= event.get("end_date"):
+                return False
+        return True
+    except (OSError,ValueError,TypeError,KeyError,json.JSONDecodeError):
+        return False
+
+
 def global_blocks(executor, now=None):
     now = now or now_ist()
     reasons = []
@@ -109,6 +127,8 @@ def global_blocks(executor, now=None):
         reasons.append("outside_mcx_window")
     if capital_limit() is None:
         reasons.append("mcx_capital_unset")
+    if not macro_clear(now):
+        reasons.append("macro_event_suppression_active_or_unknown")
     if not celestial.enabled():
         reasons.append("rollout_disabled")
     else:
