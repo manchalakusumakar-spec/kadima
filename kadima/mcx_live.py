@@ -107,7 +107,10 @@ def macro_clear(now=None):
         with open(MACRO_SNAPSHOT_PATH) as stream:
             payload=json.load(stream)
         stamp=datetime.fromisoformat(payload["ts"])
-        if stamp.tzinfo is None or not 0 <= (now-stamp).total_seconds() <= 900:
+        # macro_watch refreshes its non-market snapshot on 30-minute
+        # FII/news cadences, so permit one full cadence plus headroom while
+        # still failing closed if the producer has stopped.
+        if stamp.tzinfo is None or not 0 <= (now-stamp).total_seconds() <= 2400:
             return False
         today=now.date().isoformat()
         for event in payload.get("economic_calendar") or []:
