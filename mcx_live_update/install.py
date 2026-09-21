@@ -99,6 +99,7 @@ base.broker_preflight_code=_carryforward_preflight_code
 base.FILES={
     'run.py':'86f8232e1efee90e5eed20cd507f360f3ab969bf',
     'kadima/engine.py':'a1875f1d73889c850403320cd30e583cbf5ca469',
+    'kadima/control_api.py':'6734f4e822b2c6cf14fae88539a4bfd87b7292fb',
     'kadima/auto_executor.py':DEPLOYED_GAP_EXECUTOR,
     'kadima/commodity_watch.py':'7103168af0cbe9aec4f622dd41627da7854697a9',
     'kadima/instrument_master.py':'7d1338047157f1ec91cf19f3ec6099ca5b658c2e',
