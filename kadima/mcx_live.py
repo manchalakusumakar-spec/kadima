@@ -125,7 +125,7 @@ def global_blocks(executor, now=None):
     now = now or now_ist()
     reasons = []
     if not live_requested():
-        reasons.append("mcx_live_disabled")
+        return ["mcx_live_disabled"]
     if not session_open(now):
         reasons.append("outside_mcx_window")
     if capital_limit() is None:
