@@ -24,7 +24,9 @@ running for this producer to exist.
 
 Coverage is resolved active **NFO stock-option roots**, nearest expiry, ATM plus one
 strike either side (six option tokens per root). It is not every expiry or
-strike. Up to 512 roots are supported; excess roots fail explicitly rather than
+strike.
+BFO stock-option listings are outside this NSE/NFO stock strategy and are not
+counted as missing NFO coverage. Up to 512 roots are supported; excess roots fail explicitly rather than
 being silently omitted. There are no new WebSocket subscriptions and no synthetic
 OHLC candles made from intermittent quotes.
 
