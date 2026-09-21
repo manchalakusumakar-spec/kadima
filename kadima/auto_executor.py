@@ -242,6 +242,10 @@ class AutoExecutor:
         self._celestial_contexts = {}
         self._celestial_verified = set()
         self._celestial_quotes = {}
+        # Verified broker-side manual carry-forward positions are observed but
+        # never adopted into executor state. Their underlyings are entry-blocked
+        # until a later successful reconciliation no longer sees them.
+        self._manual_carryforward_underlyings = set()
         self.fast_rows = {}
         self.entry_diagnostics = deque(maxlen=100)
 
@@ -317,6 +321,7 @@ class AutoExecutor:
         if celestial.enabled():
             self._positions_verified = False
             self._celestial_verified.clear()
+            self._manual_carryforward_underlyings.clear()
             celestial.health('reconciliation',dict(ok=False,reason='checking_broker_books'))
         if not self._restored:
             for row in storage.load_open_positions():
@@ -350,6 +355,11 @@ class AutoExecutor:
                 celestial.health('reconciliation',dict(ok=False,positions=observations))
                 return
             celestial_adoption.adopt(self,proposals)
+            self._manual_carryforward_underlyings = {
+                r.get('underlying') for r in observations
+                if r.get('source') == 'MANUAL_CARRYFORWARD'
+                and r.get('managed') is True and r.get('underlying')
+            }
             # Capture the existing external book as the adoption baseline.
             reconcile_external(self, broker_positions, book)
             if unresolved_external:
@@ -529,6 +539,8 @@ class AutoExecutor:
             return self._reject("daily_loss_limit_breached", index_name, direction)
         if execution_ledger.seen(source_signal_id):
             return self._reject("signal_already_submitted", index_name, direction)
+        if index_name in self._manual_carryforward_underlyings:
+            return self._reject("manual_carryforward_same_underlying", index_name, direction)
         with self._lock:
             open_count = len(self.state.positions)
             same_underlying = any(
