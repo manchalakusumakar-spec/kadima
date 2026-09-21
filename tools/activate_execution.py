@@ -137,7 +137,13 @@ def activate_services(installer,context,files):
             if path.exists():
                 if path.read_text()==content:continue
                 if path != ENVFILE:raise Blocked('existing_activation_file_differs:'+path.name)
-                replaced[path]=path.read_text()
+                current=path.read_text()
+                current_lines={line.strip() for line in current.splitlines() if line.strip()}
+                desired_lines={line.strip() for line in content.splitlines() if line.strip()}
+                if (not current_lines or 'KADIMA_CELESTIAL_ENABLED=1' not in current_lines
+                        or not current_lines.issubset(desired_lines)):
+                    raise Blocked('activation_environment_changed_during_preparation')
+                replaced[path]=current
             else:
                 created.append(path)
             temporary=path.with_name('.'+path.name+'.gap-live.tmp')
