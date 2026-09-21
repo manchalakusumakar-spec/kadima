@@ -11,6 +11,7 @@ from dataclasses import dataclass
 from datetime import datetime, time
 from enum import Enum
 import math
+import os
 
 
 class Stage(str, Enum):
@@ -69,6 +70,47 @@ def _closed_bar(row):
 def _window(now):
     local = now.timetz().replace(tzinfo=None)
     return now.weekday() < 5 and SCAN_START <= local <= SCAN_END
+
+
+def paper_prefilter_enabled():
+    """Explicit opt-in for read-only/paper prefilter publication."""
+    return os.environ.get("KADIMA_GAP_PAPER", "0") == "1"
+
+
+def observe_full_quote(symbol, quote, now, rules=None):
+    """Build a fail-closed gap prefilter row from one broker FULL quote.
+
+    This never reaches CONFIRMED or ENTRY. It exists only to cheaply identify
+    opening gap candidates before any historical preparation.
+    """
+    rules = rules or Rules()
+    row = _result(symbol, now)
+    row["mode"] = "PAPER_PREFILTER"
+    if not _window(now):
+        return _block(row, "outside_gap_scan_window")
+    if not isinstance(quote, dict):
+        return _block(row, "full_quote_unavailable")
+    try:
+        opening = float(quote.get("open"))
+        previous = float(quote.get("close"))
+        ltp = float(quote.get("ltp"))
+        raw_vwap = quote.get("avgPrice")
+        vwap = float(raw_vwap) if raw_vwap is not None else None
+        raw_volume = quote.get("tradeVolume")
+        volume = float(raw_volume) if raw_volume is not None else None
+    except (TypeError, ValueError, OverflowError):
+        return _block(row, "full_quote_fields_invalid")
+    if not all(_positive(v) for v in (opening, previous, ltp)):
+        return _block(row, "open_previous_close_or_ltp_missing")
+    gap_pct = (opening / previous - 1.0) * 100.0
+    row["metrics"].update(open=opening, previous_close=previous, ltp=ltp,
+                          gap_pct=round(gap_pct, 3),
+                          session_vwap=vwap if _positive(vwap) else None,
+                          cumulative_volume=volume if _finite(volume) and volume >= 0 else None)
+    if gap_pct < rules.min_gap_pct:
+        return _block(row, "gap_up_below_paper_threshold")
+    row["stage"] = Stage.GAP_DETECTED.value
+    return row
 
 
 def _result(symbol, now):
