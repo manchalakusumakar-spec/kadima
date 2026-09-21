@@ -48,7 +48,7 @@ class StockActivationManifestTests(unittest.TestCase):
                     'kadima/stock_fast_api.py', 'kadima/feed.py', 'kadima/rate_limiter.py'}
         self.assertTrue(required.issubset(self.manifest))
         self.assertEqual(self.manifest['kadima/full_universe_scanner.py'],
-                         '31b7e19c9a6283831ab8c2dd1057d2e37fb3d100')
+                         '8c01cc55e7348244212c6012ed5468bdb9853895')
         self.assertNotIn('kadima/config.py', self.manifest)  # Deployment configuration is not replaced.
 
     def test_complete_reviewed_source_is_accepted(self):
