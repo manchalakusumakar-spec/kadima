@@ -98,13 +98,26 @@ def preflight(installer,context):
         raise Blocked('flat_account_preflight_unconfirmed')
 
 
-def planned_files(fast):
-    env='KADIMA_CELESTIAL_ENABLED=1\n'
-    if fast:env+='KADIMA_FAST_MOMENTUM_LIVE=1\n'
-    files={ENVFILE:env}
+def planned_files(fast,gap):
+    known={'KADIMA_CELESTIAL_ENABLED=1','KADIMA_FAST_MOMENTUM_LIVE=1','KADIMA_GAP_LIVE=1'}
+    existing=set()
+    if ENVFILE.exists():
+        if ENVFILE.is_symlink():
+            raise Blocked('existing_activation_file_differs:'+ENVFILE.name)
+        existing={line.strip() for line in ENVFILE.read_text().splitlines() if line.strip()}
+        if not existing.issubset(known) or 'KADIMA_CELESTIAL_ENABLED=1' not in existing:
+            raise Blocked('existing_activation_file_differs:'+ENVFILE.name)
+    lines=['KADIMA_CELESTIAL_ENABLED=1']
+    if fast or 'KADIMA_FAST_MOMENTUM_LIVE=1' in existing:
+        lines.append('KADIMA_FAST_MOMENTUM_LIVE=1')
+    if gap or 'KADIMA_GAP_LIVE=1' in existing:
+        lines.append('KADIMA_GAP_LIVE=1')
+    files={ENVFILE:'\n'.join(lines)+'\n'}
     files.update({SYSTEMD/(u+'.d')/DROPIN:'[Service]\nEnvironmentFile='+str(ENVFILE)+'\n' for u in UNITS})
     for path,content in files.items():
-        if path.is_symlink() or path.exists() and path.read_text()!=content:
+        if path.is_symlink():
+            raise Blocked('existing_activation_file_differs:'+path.name)
+        if path.exists() and path != ENVFILE and path.read_text()!=content:
             raise Blocked('existing_activation_file_differs:'+path.name)
     return files
 
@@ -112,6 +125,7 @@ def planned_files(fast):
 def activate_services(installer,context,files):
     preflight(installer,context)
     created=[]
+    replaced={}
     restart_attempted=False
     try:
         command(['systemctl','stop',*UNITS])
@@ -119,17 +133,25 @@ def activate_services(installer,context,files):
         source_check(installer)
         preflight(installer,context)
         for path,content in files.items():
-            if path.exists():continue
             path.parent.mkdir(parents=True,exist_ok=True)
-            created.append(path)
-            with path.open('x') as out:out.write(content)
-            path.chmod(0o644)
+            if path.exists():
+                if path.read_text()==content:continue
+                if path != ENVFILE:raise Blocked('existing_activation_file_differs:'+path.name)
+                replaced[path]=path.read_text()
+            else:
+                created.append(path)
+            temporary=path.with_name('.'+path.name+'.gap-live.tmp')
+            with temporary.open('w') as out:
+                out.write(content);out.flush();os.fsync(out.fileno())
+            temporary.chmod(0o644)
+            os.replace(temporary,path)
         command(['systemctl','daemon-reload'])
         restart_attempted=True
         command(['systemctl','start',*UNITS])
         for unit in UNITS:command(['systemctl','is-active','--quiet',unit])
     except Exception:
         if not restart_attempted:
+            for path,content in replaced.items():path.write_text(content)
             for path in reversed(created):path.unlink(missing_ok=True)
             command(['systemctl','daemon-reload'])
         # After restart, preserve installed mode; do not roll back under exposure.
@@ -138,7 +160,7 @@ def activate_services(installer,context,files):
         raise
 
 
-def check_runtime_flags(fast):
+def check_runtime_flags(fast,gap):
     for unit in UNITS:
         pid=command(['systemctl','show',unit,'-p','MainPID','--value']).stdout.strip()
         if not pid.isdigit() or int(pid)<=0:raise Blocked('restarted_service_unavailable')
@@ -146,6 +168,8 @@ def check_runtime_flags(fast):
         if env.get(b'KADIMA_CELESTIAL_ENABLED')!=b'1':raise Blocked('rollout_environment_overridden')
         if fast and unit==UNITS[0] and env.get(b'KADIMA_FAST_MOMENTUM_LIVE')!=b'1':
             raise Blocked('fast_environment_overridden')
+        if gap and unit==UNITS[0] and env.get(b'KADIMA_GAP_LIVE')!=b'1':
+            raise Blocked('gap_environment_overridden')
 
 
 def resume(token,reporter):
@@ -165,7 +189,7 @@ def resume(token,reporter):
         raise Blocked('resume_not_confirmed')
 
 
-def run_activation(fast):
+def run_activation(fast,gap):
     installer=load_module('activation_installer','executor_fix/install.py')
     reporter=load_module('activation_reporter','tools/deployment_report.py')
     source_check(installer)
@@ -179,16 +203,16 @@ def run_activation(fast):
     already_loaded=False
     if cfg.get('rollout_enabled') is True:
         try:
-            check_runtime_flags(fast)
+            check_runtime_flags(fast,gap)
             already_loaded=True
         except Blocked:pass
     if already_loaded:
         # Retrying a news warm-up failure must not restart the collector again.
         preflight(installer,context)
     else:
-        files=planned_files(fast)
+        files=planned_files(fast,gap)
         activate_services(installer,context,files)
-        check_runtime_flags(fast)
+        check_runtime_flags(fast,gap)
     # Startup/news collection may take several requests. Never invent success.
     deadline=time.monotonic()+60
     while True:
@@ -219,13 +243,14 @@ def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--apply',action='store_true')
     parser.add_argument('--enable-fast',action='store_true')
+    parser.add_argument('--enable-gap',action='store_true')
     args=parser.parse_args()
     if not args.apply:raise SystemExit('Use --apply to change service rollout flags and request guarded auto resume.')
     if os.geteuid()!=0:raise SystemExit('Run with sudo -n python3.')
     with open('/run/lock/kadima-activation.lock','w') as lock:
         try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:raise SystemExit('Another activation is running.')
-        try:run_activation(args.enable_fast)
+        try:run_activation(args.enable_fast,args.enable_gap)
         except Exception as exc:
             detail=str(exc) if isinstance(exc,Blocked) else type(exc).__name__
             print(json.dumps({'activation':'BLOCKED_OR_UNCONFIRMED','reason':detail,
