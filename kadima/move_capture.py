@@ -263,6 +263,10 @@ class MoveCaptureDetector:
 
     def ingest(self, identity: SpotIdentity, ts: datetime, price: float,
                volume=None, previous_close=None):
+        # Reject malformed observations before allocating per-symbol state.
+        if (not isinstance(identity, SpotIdentity) or not identity.name
+                or ts.tzinfo is None or not _number(price, positive=True)):
+            return None, False
         tracker = self.trackers.setdefault(identity.name, SymbolTracker(identity))
         if not tracker.add(ts, price, volume, previous_close):
             return None, False
