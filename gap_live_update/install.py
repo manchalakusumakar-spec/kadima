@@ -13,11 +13,28 @@ import sys
 
 ROOT=Path(__file__).resolve().parents[1]
 BASE_PATH=ROOT/'stock_fast_update/install.py'
+COMPOSED_EXECUTOR='6161c04be1266e5e9b010f67a9466c22c0fc8ef0'
+DEPLOYED_SESSION_MULTI_EXECUTOR='346f780545139367a4152725743c7275a14e8239'
 
 spec=importlib.util.spec_from_file_location('_gap_base_installer',BASE_PATH)
 base=importlib.util.module_from_spec(spec)
 sys.modules[spec.name]=base
 spec.loader.exec_module(base)
+
+# The AWS executor is already the reviewed stock-fast + session-auto +
+# multi-position composition. Preserve those layers while adding Gap.
+_original_read_file=base.read_file
+_composed_path=ROOT/'gap_live_update/auto_executor.py'
+if base.digest(_original_read_file(_composed_path)) != COMPOSED_EXECUTOR:
+    raise base.Blocked('composed_gap_executor_hash_mismatch')
+
+def _gap_read_file(path, missing=False):
+    path=Path(path)
+    if path == ROOT/'kadima/auto_executor.py':
+        return _original_read_file(_composed_path, missing=missing)
+    return _original_read_file(path, missing=missing)
+
+base.read_file=_gap_read_file
 
 base.FILES={
     'run.py':'9036548a589752d26efe2bf952b25cdc590a7cdf',
@@ -25,7 +42,7 @@ base.FILES={
         '8c01cc55e7348244212c6012ed5468bdb9853895',
         'a0f874a87ce63ca920e99b4724e36bae86e68ce1'),
     'kadima/stock_fast.py':'d4c537156dbb080a50b249d5164e9506f1e1b8dd',
-    'kadima/auto_executor.py':'f830afebc49b764e48b91bd4c61f2260e769d25f',
+    'kadima/auto_executor.py':DEPLOYED_SESSION_MULTI_EXECUTOR,
     'kadima/gap_and_go.py':'b26599c469ec9e0af4dcd9503aa6965365bb4647',
     'kadima/gap_baseline.py':None,
     'kadima/gap_live.py':None,
