@@ -105,6 +105,21 @@ class InstallerCompositionTests(unittest.TestCase):
                 module.ROOT/'kadima/auto_executor.py')),
             module.COMPOSED_EXECUTOR)
 
+    def test_gap_installer_preflight_allows_only_verified_long_carryforward_shape(self):
+        spec=importlib.util.spec_from_file_location(
+            'gap_live_installer_preflight_test',Path('gap_live_update/install.py'))
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        helper_spec=importlib.util.spec_from_file_location(
+            'gap_live_executor_fixture',Path('executor_fix/install.py'))
+        helper=importlib.util.module_from_spec(helper_spec);helper_spec.loader.exec_module(helper)
+        code=module.base.broker_preflight_code(helper.PREFLIGHT)
+        self.assertIn("product == 'CARRYFORWARD'",code)
+        self.assertIn('active_contracts',code)
+        self.assertIn("quantity > 0",code)
+        compile(code,'gap_preflight_test','exec')
+        with self.assertRaises(module.base.Blocked):
+            module.base.broker_preflight_code('unexpected')
+
     def test_gap_installer_accepts_loaded_or_unloaded_rollout_only_while_paused(self):
         spec=importlib.util.spec_from_file_location(
             'gap_live_installer_pause_test',Path('gap_live_update/install.py'))
