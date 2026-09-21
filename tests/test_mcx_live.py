@@ -169,16 +169,18 @@ class MCXInstallerTests(unittest.TestCase):
         raw=module.base.read_file(module.ROOT/'kadima/auto_executor.py')
         self.assertEqual(module.base.digest(raw),module.COMPOSED_EXECUTOR)
 
-    def test_installer_accepts_every_reviewed_pre_mcx_activator(self):
-        spec=importlib.util.spec_from_file_location('mcx_installer_lineage',
+    def test_installer_never_mutates_target_activation_helper(self):
+        spec=importlib.util.spec_from_file_location('mcx_installer_boundary',
             Path('mcx_live_update/install.py'))
         module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
-        self.assertEqual(set(module.REVIEWED_ACTIVATORS),{
-            'ee50fdc6615e94db4fb28e7e279408ab1c7d740d',
-            '055e05bc2f20b2faf0a4fb4de4aae579249a06ac',
-        })
-        self.assertEqual(module.base.FILES['tools/activate_execution.py'],
-                         module.REVIEWED_ACTIVATORS)
+        self.assertNotIn('tools/activate_execution.py',module.base.FILES)
+        # go_live executes the helper from the reviewed release worktree,
+        # so an older helper in /home/ubuntu/kadima-py cannot block install.
+        go_spec=importlib.util.spec_from_file_location('mcx_go_live_boundary',
+            Path('mcx_live_update/go_live.py'))
+        go=importlib.util.module_from_spec(go_spec);go_spec.loader.exec_module(go)
+        self.assertEqual((go.PACKAGE/'tools/activate_execution.py').resolve(),
+                         Path('tools/activate_execution.py').resolve())
 
     def test_one_command_runner_stops_before_activation_if_install_fails(self):
         spec=importlib.util.spec_from_file_location('mcx_go_live',
