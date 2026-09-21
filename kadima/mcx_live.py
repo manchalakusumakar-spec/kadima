@@ -199,6 +199,10 @@ class Worker:
             future["ltp"], level, row["strike"], row["ltp"], days, direction)
         if stop is None:
             return None
+        lot_size = row.get("broker_lot_size")
+        if (not isinstance(lot_size,(int,float)) or isinstance(lot_size,bool)
+                or not math.isfinite(lot_size) or lot_size <= 0 or lot_size != int(lot_size)):
+            return None
         score = _score(fm,om)
         return dict(strategy="mcx_momentum", root=future["name"], direction=direction,
                     future_symbol=future["symbol"], future_token=future["token"],
@@ -207,7 +211,7 @@ class Worker:
                     symbol=row["symbol"], strike=row["strike"], expiry=row["expiry"],
                     ltp=row["ltp"], bid=row["bid"], ask=row["ask"],
                     spread_pct=round(spread,3), option_move_pct=round(om["premium_move_pct"],3),
-                    option_oi_change=om["oi_change"], stop=stop, lot_size=int(row["broker_lot_size"]),
+                    option_oi_change=om["oi_change"], stop=stop, lot_size=int(lot_size),
                     score=score, ts=now.isoformat(), baseline_at=fm["baseline_at"])
 
     def _enter(self, row, now):
