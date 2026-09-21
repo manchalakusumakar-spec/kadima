@@ -1,4 +1,4 @@
-"""All active stock roots, nearest expiry ATM +/- one strike, in FULL batches.
+"""All active NFO stock roots, nearest expiry ATM +/- one strike, in FULL batches.
 
 No top-mover promotion cutoff. Polling shares SESSION's cross-process budget.
 One spot plus six option tokens per stock permits seven stocks per 50-token
@@ -20,12 +20,16 @@ from .scrip_master import ScripMaster
 from .session import SESSION
 from .utils import in_market_hours, now_ist
 from .universe_display import selected_contract, write_snapshot
+from .stock_fast import Recorder as StockFastRecorder
 
 
 def stock_roots(master, on):
     contracts = active_contracts(master.rows, on)
+    # Stock-fast is an NSE/NFO stock-options strategy. BFO stock-option
+    # listings are a separate venue/scope and must not be counted as unresolved
+    # NFO coverage; doing so makes an otherwise healthy NSE F&O universe fail.
     roots = sorted({(r['exch_seg'], r['name']) for r in contracts.values()
-                    if r['instrumenttype'] == 'OPTSTK'})
+                    if r['instrumenttype'] == 'OPTSTK' and r['exch_seg'] == 'NFO'})
     spots = {}
     for r in master.rows:
         if (r.get('exch_seg') == 'NSE' and r.get('instrumenttype', '') == ''
@@ -35,7 +39,7 @@ def stock_roots(master, on):
     for exchange, name in roots:
         tokens = set(spots.get(name, []))
         step = master.infer_strike_step(name, exchange)
-        if len(tokens) != 1 or not step or exchange != 'NFO':
+        if len(tokens) != 1 or not step:
             missing.append(dict(name=name, exchange=exchange, reason='spot_or_strike_mapping_unresolved'))
         else:
             resolved[name] = Index(name, 'NSE', next(iter(tokens)), exchange, name, step, 0)
@@ -78,12 +82,19 @@ class FullUniverseScanner:
         self.chains = {n: OptionChain(i, self.scrips, strikes_each_side=1) for n, i in self.indices.items()}
         self.histories = {n: gamma.GammaHistory() for n in self.indices}
         self.radar = Radar()
+        self.fast_recorder = StockFastRecorder()
         self.last = {}
         self.scores = {}
         self.prices = {}
         self.day = now_ist().date()
         self._stop = threading.Event()
         self.report()
+
+    def _fast_invalidate(self, name):
+        try:
+            self.fast_recorder.invalidate(name)
+        except Exception as exc:
+            audit.log('STOCK_FAST_RECORDER_ERROR', index=name, error_type=type(exc).__name__)
 
     def report(self, **extra):
         now = now_ist()
@@ -93,7 +104,7 @@ class FullUniverseScanner:
             option_chains_tracked=len(self.chains), option_chain_limit=None,
             option_chains_fresh=fresh, missing=self.missing,
             ok=not self.missing and bool(self.chains) and fresh == len(self.chains),
-            coverage='all_resolved_active_stock_roots_nearest_expiry_atm_plus_minus_one', **extra))
+            coverage='all_resolved_active_nfo_stock_roots_nearest_expiry_atm_plus_minus_one', **extra))
         try:
             write_snapshot(dict(ts=now.isoformat(),tracked=sorted(self.scores.values(),key=lambda r:r['score'],reverse=True),
                 prices=self.prices,execution='central_executor_gated',coverage=dict(
@@ -120,6 +131,7 @@ class FullUniverseScanner:
             if not spot_row:
                 celestial.publish(producer, [])
                 stock_handoff.invalidate(name)
+                self._fast_invalidate(name)
                 continue
             spot = float(spot_row['ltp'])
             self.prices[name]=dict(ltp=spot,received_at=spot_row['_received_at'])
@@ -131,6 +143,7 @@ class FullUniverseScanner:
                     or not chain.accept_full_sample(fetched)):
                 celestial.publish(producer, [])
                 stock_handoff.invalidate(name)
+                self._fast_invalidate(name)
                 continue
             expiry = datetime.strptime(chain._expiry, '%d%b%Y').replace(
                 tzinfo=IST, hour=MARKET_CLOSE[0], minute=MARKET_CLOSE[1])
@@ -138,15 +151,22 @@ class FullUniverseScanner:
             if days <= 0:
                 celestial.publish(producer, [])
                 stock_handoff.invalidate(name)
+                self._fast_invalidate(name)
                 continue
             stamp = spot_row['_received_at']
+            vwap = float(spot_row.get('avgPrice') or 0)
+            vwap = vwap if math.isfinite(vwap) and vwap > 0 else None
+            # This producer is intentionally independent of Gamma direction/tier.
+            try:
+                self.fast_recorder.publish(chain, spot, stamp, vwap)
+            except Exception as exc:
+                self._fast_invalidate(name)
+                audit.log('STOCK_FAST_RECORDER_ERROR', index=name, error_type=type(exc).__name__)
             result = gamma.score(name, chain, self.histories[name], spot, days)
             contract,status=selected_contract(chain,result.direction,spot,days,stamp)
             self.scores[name]=dict(name=name,spot=spot,tier=result.tier,score=result.score,
                 direction=result.direction,last_updated=stamp,best_contract=contract,strike_status=status)
             self.last[name] = stamp
-            vwap = float(spot_row.get('avgPrice') or 0)
-            vwap = vwap if math.isfinite(vwap) and vwap > 0 else None
             candidates = self.radar.publish_chain(chain, spot, stamp, result, vwap=vwap)
             if candidates:
                 stock_handoff.publish(name, result.direction, result.tier, result.score, dict(
@@ -170,6 +190,7 @@ class FullUniverseScanner:
                     self.scores.pop(name,None)
                     celestial.publish(self.indices[name].opt_exchange + ':' + name, [])
                     stock_handoff.invalidate(name)
+                    self._fast_invalidate(name)
                 audit.log('full_universe_batch_failed', error=type(exc).__name__, count=len(group))
             self.report(cycle_running=True)
         self.report(cycle_seconds=round(time.monotonic() - started, 2), cycle_running=False)

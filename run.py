@@ -11,10 +11,16 @@ from kadima import audit, alerts
 
 def main():
     engine = Engine()
+    from kadima import auto_executor, stock_fast, stock_fast_api
+    stock_fast_worker = stock_fast.Worker(auto_executor.EXECUTOR, engine.scrips)
+
+    def stop_all():
+        stock_fast_worker.stop()
+        engine.stop()
 
     def _sigterm(signum, frame):
         audit.log("sigterm_received", signum=signum)
-        engine.stop()
+        stop_all()
         sys.exit(0)
 
     signal.signal(signal.SIGTERM, _sigterm)
@@ -36,6 +42,7 @@ def main():
     audit.log("state_api_started", port=8080)
     from kadima import control_api, auto_executor, angel_orders
     control_api.register(auto_executor.EXECUTOR, angel_orders)
+    stock_fast_api.register(control_api, stock_fast_worker)
     threading.Thread(
         target=lambda: uvicorn.run(control_api.app, host="0.0.0.0", port=8081,
                                     log_level="warning"),
@@ -47,7 +54,7 @@ def main():
             time.sleep(30)
 
     engine.start()
-
+    stock_fast_worker.start()
 
     try:
         while True:
@@ -55,13 +62,13 @@ def main():
             if killswitch.engaged():
                 audit.log("kill_switch_detected_in_loop")
                 alerts.send("Kill switch engaged - KADIMA halting.")
-                engine.stop()
+                stop_all()
                 return 0
             if not force_start and not in_market_hours() and now_ist().hour >= 15:
-                engine.stop()
+                stop_all()
                 return 0
     except KeyboardInterrupt:
-        engine.stop()
+        stop_all()
         return 0
 
 if __name__ == "__main__":

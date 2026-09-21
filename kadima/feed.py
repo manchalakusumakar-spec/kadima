@@ -18,6 +18,7 @@ Design notes that matter more than the code:
 """
 from __future__ import annotations
 
+import math
 import queue
 import threading
 import time
@@ -57,12 +58,23 @@ class TickFeed:
 
     # ------------------------------------------------------------- ws handlers
     def _handle_tick(self, wsapp, message) -> None:
-        self._last_tick_at = time.monotonic()
         try:
-            token = str(message.get("token", "")).strip()
+            raw_token = message.get("token")
+            token = str(raw_token).strip() if isinstance(raw_token, (str, int)) and not isinstance(raw_token, bool) else ""
+            if not token:
+                audit.log("tick_rejected", reason="missing_token")
+                return
             # SmartAPI sends prices in paise for most segments
-            ltp = message.get("last_traded_price")
-            ltp = float(ltp) / 100.0 if ltp is not None else None
+            raw_price = message.get("last_traded_price")
+            try:
+                ltp = float(raw_price) / 100.0 if raw_price is not None and not isinstance(raw_price, bool) else None
+            except (TypeError, ValueError, OverflowError):
+                ltp = None
+            if ltp is None or not math.isfinite(ltp) or ltp <= 0:
+                # Never refresh heartbeat/spot time or persist a candle from an
+                # invalid price. Keep the last valid observation and let it age.
+                audit.log("tick_rejected", token=token[:64], reason="invalid_price")
+                return
             vol = message.get("volume_trade_for_the_day")
             bid = message.get("best_5_buy_data", [{}])
             ask = message.get("best_5_sell_data", [{}])
@@ -72,6 +84,7 @@ class TickFeed:
 
             tick = {"ts": ts, "token": token, "ltp": ltp, "volume": vol,
                     "bid": bid_px, "ask": ask_px}
+            self._last_tick_at = time.monotonic()
 
             try:
                 self._writer_q.put_nowait(

@@ -43,19 +43,32 @@ def normalized(name):
     return ' '.join(name.upper().split())
 
 
-def company_map(data):
-    out = {}
+def company_map(data, symbols=None):
+    candidates = {}
     for row in csv.DictReader(io.StringIO(data.decode('utf-8-sig'))):
         row = {k.strip(): v.strip() for k, v in row.items()}
         symbol, name = row.get('SYMBOL'), row.get('NAME OF COMPANY')
         if not symbol or not name:
             raise ValueError('NSE company mapping schema changed')
-        key = normalized(name)
-        if key in out and out[key] != symbol:
-            raise ValueError('Ambiguous company identity')
-        out[key] = symbol
-    if not out:
+        candidates.setdefault(normalized(name), set()).add(symbol)
+    if not candidates:
         raise ValueError('Empty company identity map')
+    targets = None if symbols is None else set(symbols)
+    out = {}
+    for key, listed in candidates.items():
+        if len(listed) == 1:
+            out[key] = next(iter(listed))
+            continue
+        if targets is None:
+            raise ValueError('Ambiguous company identity')
+        relevant = listed & targets
+        if len(relevant) == 1:
+            out[key] = next(iter(relevant))
+        elif len(relevant) > 1:
+            # Two active targets sharing the same company title cannot be
+            # attributed safely from a title-only RSS item.
+            continue
+        # Duplicate listings outside the requested F&O universe are irrelevant.
     return out
 
 
@@ -144,7 +157,7 @@ class NewsCollector:
         events, sources, errors = {}, {}, {}
         try:
             if self._mapping is None or self._mapping_day != now.date():
-                self._mapping = company_map(self.fetch(COMPANIES))
+                self._mapping = company_map(self.fetch(COMPANIES), self.symbols)
                 self._mapping_day = now.date()
             covered = self.symbols & set(self._mapping.values())
             for category, url in FEEDS.items():

@@ -1,0 +1,10 @@
+{
+  "schema": 1,
+  "valid_from": "2026-09-19",
+  "valid_through": "2026-12-31",
+  "holidays": ["2026-01-15", "2026-01-26", "2026-02-15", "2026-03-03", "2026-03-21", "2026-03-26", "2026-03-31", "2026-04-03", "2026-04-14", "2026-05-01", "2026-05-28", "2026-06-26", "2026-08-15", "2026-09-14", "2026-10-02", "2026-10-20", "2026-11-08", "2026-11-10", "2026-11-24", "2026-12-25"],
+  "sources": ["https://www.nseindia.com/api/holiday-master?type=trading (FO, accessed 2026-09-19)", "https://www.nseindia.com/resources/exchange-communication-holidays", "BSE notice 20251212-8, Equity and Equity Derivatives calendar; shared normal-session exclusions only"],
+  "arm_at": "09:00",
+  "entries_at": "09:15",
+  "stop_entries_at": "15:35"
+}

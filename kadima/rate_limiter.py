@@ -5,8 +5,12 @@ Quote calls also use the cross-process limiter attached to SESSION.api.
 """
 from __future__ import annotations
 
+import math
+import os
+import sqlite3
 import threading
 import time
+import uuid
 from collections import deque
 
 
@@ -58,44 +62,92 @@ LOGIN = RateLimiter(max_calls=1, period_sec=1.0)
 
 
 
+SHARED_QUOTE_WAIT_SEC = 12.0
+
+
 class SharedQuoteLimiter:
     """Serialize quote requests across processes sharing KADIMA_DATA_DIR.
 
     Conservative spacing is intentional: this deployment has recorded repeated
     access-denied responses. This is a local budget, not a claim about the
     broker's maximum allowance. Calls on other hosts remain outside this budget.
+
+    Tickets are FIFO across threads and processes. A busy scanner must rejoin
+    the tail after each call instead of racing an OI poll for every free slot.
+    Expiring tickets bound the wait when a worker exits while queued. The
+    existing budget row remains authoritative, including during a rolling
+    upgrade; fairness requires all quote clients to run this version.
     """
     def __init__(self, path=None, interval=1.1):
+        if not math.isfinite(interval) or interval <= 0:
+            raise ValueError('quote interval must be finite and positive')
         self.path = path
         self.interval = interval
 
-    def wait_and_allow(self, timeout_sec=3.0):
-        import os
-        import sqlite3
-        from .config import DATA_DIR
-        path = self.path or os.path.join(DATA_DIR, 'quote_budget.sqlite3')
-        os.makedirs(os.path.dirname(path), exist_ok=True)
+    def wait_and_allow(self, timeout_sec=SHARED_QUOTE_WAIT_SEC):
+        if not math.isfinite(timeout_sec) or timeout_sec < 0:
+            raise ValueError('quote timeout must be finite and nonnegative')
+        if timeout_sec == 0:
+            return False
+        path = self.path
+        if path is None:
+            from .config import DATA_DIR
+            path = os.path.join(DATA_DIR, 'quote_budget.sqlite3')
+        os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
         deadline = time.monotonic() + timeout_sec
-        while time.monotonic() < deadline:
-            c = None
-            try:
-                c = sqlite3.connect(path, timeout=0.05)
-                c.execute('CREATE TABLE IF NOT EXISTS budget (id INTEGER PRIMARY KEY, next REAL)')
-                c.execute('BEGIN IMMEDIATE')
-                row = c.execute('SELECT next FROM budget WHERE id=1').fetchone()
-                now = time.time()
-                if row is None or now >= row[0]:
-                    c.execute('INSERT OR REPLACE INTO budget VALUES (1,?)', (now+self.interval,))
+        expires = time.time() + timeout_sec
+        ticket = uuid.uuid4().hex
+        queued = False
+        try:
+            while time.monotonic() < deadline:
+                c = None
+                try:
+                    c = sqlite3.connect(path, timeout=min(.05, max(0, deadline-time.monotonic())))
+                    c.execute('CREATE TABLE IF NOT EXISTS budget (id INTEGER PRIMARY KEY, next REAL)')
+                    c.execute('CREATE TABLE IF NOT EXISTS quote_waiters ('
+                              'seq INTEGER PRIMARY KEY AUTOINCREMENT, '
+                              'ticket TEXT NOT NULL UNIQUE, expires REAL NOT NULL)')
+                    c.execute('BEGIN IMMEDIATE')
+                    now = time.time()
+                    if time.monotonic() >= deadline or now >= expires:
+                        return False
+                    c.execute('DELETE FROM quote_waiters WHERE expires <= ?', (now,))
+                    if not queued:
+                        c.execute('INSERT INTO quote_waiters(ticket, expires) VALUES (?, ?)',
+                                  (ticket, expires))
+                    first = c.execute('SELECT ticket FROM quote_waiters ORDER BY seq LIMIT 1').fetchone()
+                    row = c.execute('SELECT next FROM budget WHERE id=1').fetchone()
+                    if first and first[0] == ticket and (row is None or now >= row[0]):
+                        # Space actual grants, not future reservations: a delayed
+                        # queue head must not release a burst of overdue slots.
+                        c.execute('INSERT OR REPLACE INTO budget VALUES (1,?)', (now+self.interval,))
+                        c.execute('DELETE FROM quote_waiters WHERE ticket=?', (ticket,))
+                        c.commit()
+                        queued = False
+                        return True
                     c.commit()
-                    return True
-                c.rollback()
-            except sqlite3.OperationalError:
-                pass
-            finally:
-                if c is not None:
-                    c.close()
-            time.sleep(min(.05, max(0, deadline-time.monotonic())))
-        return False
+                    queued = True
+                except sqlite3.OperationalError:
+                    # Busy/failed storage never grants permission to call the API.
+                    pass
+                finally:
+                    if c is not None:
+                        c.close()
+                time.sleep(min(.05, max(0, deadline-time.monotonic())))
+            return False
+        finally:
+            if queued:
+                # Best effort; an unremovable or crashed ticket also expires.
+                c = None
+                try:
+                    c = sqlite3.connect(path, timeout=.05)
+                    c.execute('DELETE FROM quote_waiters WHERE ticket=?', (ticket,))
+                    c.commit()
+                except sqlite3.OperationalError:
+                    pass
+                finally:
+                    if c is not None:
+                        c.close()
 
 
 SHARED_QUOTE = SharedQuoteLimiter()
@@ -107,8 +159,8 @@ def protect_quote_api(api):
     if getattr(method, '_kadima_budgeted', False):
         return
     def quote(*args, **kwargs):
-        if not SHARED_QUOTE.wait_and_allow(timeout_sec=3.0):
-            raise TimeoutError('KADIMA shared quote budget unavailable')
+        if not SHARED_QUOTE.wait_and_allow(timeout_sec=SHARED_QUOTE_WAIT_SEC):
+            raise TimeoutError('KADIMA shared quote budget unavailable after bounded FIFO wait')
         return method(*args, **kwargs)
     quote._kadima_budgeted = True
     api.getMarketData = quote
