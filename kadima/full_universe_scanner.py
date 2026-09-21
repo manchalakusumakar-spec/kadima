@@ -181,13 +181,27 @@ class FullUniverseScanner:
             stamp = spot_row['_received_at']
             vwap = float(spot_row.get('avgPrice') or 0)
             vwap = vwap if math.isfinite(vwap) and vwap > 0 else None
-            # This producer is intentionally independent of Gamma direction/tier.
+            result = gamma.score(name, chain, self.histories[name], spot, days)
+            vel = chain.velocity.alerts()
+            ce_tokens = {q.token for q in chain.quotes.values() if q.opt_type == 'CE'}
+            pe_tokens = {q.token for q in chain.quotes.values() if q.opt_type == 'PE'}
+            ce_hits = len({v['token'] for v in vel if v['token'] in ce_tokens})
+            pe_hits = len({v['token'] for v in vel if v['token'] in pe_tokens})
+            oi_direction = 'CE' if ce_hits > pe_hits else 'PE' if pe_hits > ce_hits else None
+            # The stock-fast producer remains independent for detection; Gamma/OI
+            # metadata is attached only so Gap live confirmation can fail closed
+            # without a second option-chain poll.
             try:
-                self.fast_recorder.publish(chain, spot, stamp, vwap)
+                self.fast_recorder.publish(chain, spot, stamp, vwap,
+                    spot_context=dict(
+                        day_open=float(spot_row.get('open') or 0),
+                        previous_close=float(spot_row.get('close') or 0),
+                        cumulative_volume=float(spot_row.get('tradeVolume') or 0)),
+                    gamma=dict(score=result.score, tier=result.tier,
+                               direction=result.direction, oi_direction=oi_direction))
             except Exception as exc:
                 self._fast_invalidate(name)
                 audit.log('STOCK_FAST_RECORDER_ERROR', index=name, error_type=type(exc).__name__)
-            result = gamma.score(name, chain, self.histories[name], spot, days)
             contract,status=selected_contract(chain,result.direction,spot,days,stamp)
             self.scores[name]=dict(name=name,spot=spot,tier=result.tier,score=result.score,
                 direction=result.direction,last_updated=stamp,best_contract=contract,strike_status=status)
