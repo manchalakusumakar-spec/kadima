@@ -29,7 +29,8 @@ MULTI = '''        # KADIMA CAPITAL-BASED MULTI-POSITION v1
             return self._reject(portfolio_block, index_name, direction)
 '''
 MULTI_GAP = '''        with self._lock:
-            same_underlying = any(p.index == index_name and p.status != 'closed'
+            same_underlying = any(getattr(p, 'index', None) == index_name
+                                  and getattr(p, 'status', None) != 'closed'
                                   for p in self.state.positions.values())
         if same_underlying:
             return self._reject("same_underlying_position_exists", index_name, direction)
