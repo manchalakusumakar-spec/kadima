@@ -65,6 +65,20 @@ class ActivationTests(unittest.TestCase):
             with self.assertRaises(a.Blocked):a.planned_files(True,True)
             self.assertEqual(a.ENVFILE.read_text(),'USER_DEFINED=1\n')
 
+    def test_mcx_activation_requires_explicit_cap_and_preserves_existing_flags(self):
+        with tempfile.TemporaryDirectory() as tmp,patch.object(a,'ENVFILE',Path(tmp)/'env'), \
+                patch.object(a,'SYSTEMD',Path(tmp)/'systemd'):
+            a.ENVFILE.write_text('KADIMA_CELESTIAL_ENABLED=1\nKADIMA_GAP_LIVE=1\n')
+            files=a.planned_files(False,False,True,15000)
+            text=files[a.ENVFILE]
+            self.assertIn('KADIMA_GAP_LIVE=1',text)
+            self.assertIn('KADIMA_MCX_LIVE=1',text)
+            self.assertIn('KADIMA_MCX_CAPITAL_INR=15000',text)
+            with self.assertRaisesRegex(a.Blocked,'mcx_capital_required'):
+                a.planned_files(False,False,True,None)
+            with self.assertRaisesRegex(a.Blocked,'mcx_capital_out_of_bounds'):
+                a.planned_files(False,False,True,0)
+
     def test_existing_known_env_can_be_additively_upgraded_for_gap(self):
         with tempfile.TemporaryDirectory() as tmp,patch.object(a,'ENVFILE',Path(tmp)/'env'), \
                 patch.object(a,'SYSTEMD',Path(tmp)/'systemd'):
