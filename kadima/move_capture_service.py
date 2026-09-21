@@ -1,8 +1,9 @@
 """Independent spot-only Move Capture service.
 
 Subscribes resolved F&O underlyings (plus selected indices) over SmartWebSocketV2,
-feeds the broker-free detector, and writes bounded shadow snapshots/events.
-It never imports the shared executor/order transport and never places an order.
+feeds the broker-free detector, publishes fresh hot-stock candidates through a
+durable handoff, and writes bounded snapshots/events. It never imports the
+shared executor/order transport and never places an order itself.
 """
 from __future__ import annotations
 
@@ -15,6 +16,7 @@ import threading
 import time
 
 from . import audit
+from . import move_capture_handoff as handoff
 from .config import ANGEL_API_KEY, ANGEL_CLIENT_ID, GAMMA_INDICES, IST
 from .instrument_master import stock_universe
 from .move_capture import MoveCaptureDetector, SpotIdentity
@@ -32,10 +34,16 @@ HEARTBEAT_SECONDS = 12
 MAX_SYMBOLS = 512
 
 
+def live_requested():
+    return os.environ.get("KADIMA_MOVE_CAPTURE_LIVE", "0") == "1"
+
+
 def universe():
     """Spot identities only; option venue is irrelevant at discovery time."""
     result = {}
     for row in stock_universe():
+        if row.get("opt_exchange") != "NFO":
+            continue
         try:
             name = str(row["name"])
             exchange = str(row["spot_exchange"])
@@ -106,6 +114,8 @@ class MoveCaptureService:
         self._last_tick_mono = 0.0
         self._connected = False
         self._reconnects = 0
+        self._last_publish_second = {}
+        self._published_names = set()
 
     def token_list(self):
         grouped = {}
@@ -131,18 +141,32 @@ class MoveCaptureService:
         volume = _volume(message.get("volume_trade_for_the_day"))
         previous_close = _price(message.get("closed_price"))
         now = now_ist()
-        _, promoted = self.detector.ingest(
+        candidate, promoted = self.detector.ingest(
             identity, now, price, volume=volume, previous_close=previous_close)
         self._last_tick_mono = time.monotonic()
-        if promoted:
-            row = next((r for r in self.detector.snapshot(now)["hot"]
-                        if r["underlying"] == identity.name), None)
-            if row:
-                event = dict(event="MOVE_CAPTURE_SHADOW_TRIGGER", **row)
-                append_event(event)
-                audit.log("MOVE_CAPTURE_SHADOW_TRIGGER",
-                          underlying=identity.name, score=row["score"],
-                          direction=row["direction"], price=row["price"])
+
+        hot = self.detector.hot.get(identity.name)
+        if identity.kind == "STOCK" and hot is not None:
+            second = int(now.timestamp())
+            if self._last_publish_second.get(identity.name) != second:
+                try:
+                    handoff.publish(hot)
+                    self._last_publish_second[identity.name] = second
+                    self._published_names.add(identity.name)
+                except (ValueError, TypeError):
+                    audit.log("MOVE_CAPTURE_HANDOFF_REJECTED",
+                              underlying=identity.name)
+        elif identity.name in self._published_names:
+            handoff.invalidate(identity.name)
+            self._published_names.discard(identity.name)
+
+        if promoted and hot:
+            event = dict(event="MOVE_CAPTURE_TRIGGER", live_requested=live_requested(), **hot)
+            append_event(event)
+            audit.log("MOVE_CAPTURE_TRIGGER",
+                      underlying=identity.name, score=hot["score"],
+                      direction=hot["direction"], price=hot["price"],
+                      live_requested=live_requested())
 
     def on_open(self, _wsapp):
         self._connected = True
@@ -187,21 +211,33 @@ class MoveCaptureService:
     def status(self):
         now = now_ist()
         value = self.detector.snapshot(now)
+        active_stock_hot = {
+            row["underlying"] for row in value["hot"]
+            if row.get("asset_scope") == "STOCK"
+        }
+        for name in list(self._published_names - active_stock_hot):
+            handoff.invalidate(name)
+            self._published_names.discard(name)
         silence = None if not self._last_tick_mono else max(
             0.0, time.monotonic() - self._last_tick_mono)
         value.update(
+            mode="LIVE_READY" if live_requested() else "OBSERVE_ONLY",
+            execution_enabled=live_requested(),
             service="kadima-move-capture",
             subscribed_symbols=len(self.identities),
             websocket_connected=self._connected,
             seconds_since_tick=None if silence is None else round(silence, 2),
             reconnects=self._reconnects,
             market_hours=in_market_hours(),
+            handoff_active=len(active_stock_hot),
+            execution_path="central_guarded_executor",
         )
         return value
 
     def run(self):
         audit.log("move_capture_starting", symbols=len(self.identities),
-                  mode="SHADOW_OBSERVE_ONLY")
+                  mode="LIVE_READY" if live_requested() else "OBSERVE_ONLY",
+                  live_requested=live_requested())
         next_snapshot = 0.0
         while not self._stop.is_set():
             market = in_market_hours()
@@ -235,6 +271,9 @@ class MoveCaptureService:
                 next_snapshot = now_mono + 2.0
             self._stop.wait(0.5)
         self.teardown()
+        for name in list(self._published_names):
+            handoff.invalidate(name)
+        self._published_names.clear()
         audit.log("move_capture_stopped")
 
     def stop(self):
