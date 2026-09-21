@@ -11,6 +11,7 @@ SINGLE_LEGACY = '''        with self._lock:
         if open_count >= min(1, MAX_CONCURRENT_POSITIONS):
             return self._reject("max_concurrent_positions", index_name, direction)
 '''
+SINGLE = SINGLE_LEGACY  # compatibility for existing offline fixtures
 SINGLE_GAP = '''        with self._lock:
             open_count = len(self.state.positions)
             same_underlying = any(p.index == index_name and p.status != 'closed'
