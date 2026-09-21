@@ -102,6 +102,32 @@ class InstallerCompositionTests(unittest.TestCase):
                 module.ROOT/'kadima/auto_executor.py')),
             module.COMPOSED_EXECUTOR)
 
+    def test_gap_installer_accepts_loaded_or_unloaded_rollout_only_while_paused(self):
+        spec=importlib.util.spec_from_file_location(
+            'gap_live_installer_pause_test',Path('gap_live_update/install.py'))
+        module=importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        fresh=datetime.now(timezone.utc).isoformat()
+        for rollout in (False,True):
+            with self.subTest(rollout=rollout):
+                module.base.paused_status(dict(
+                    ts=fresh,positions=[],
+                    config=dict(rollout_enabled=rollout,
+                                auto_trade_enabled=False,kill_latched=False)))
+        bad=[
+            dict(rollout_enabled=True,auto_trade_enabled=True,kill_latched=False),
+            dict(rollout_enabled=True,auto_trade_enabled=False,kill_latched=True),
+            dict(rollout_enabled=None,auto_trade_enabled=False,kill_latched=False),
+        ]
+        for config in bad:
+            with self.subTest(config=config),self.assertRaises(module.base.Blocked):
+                module.base.paused_status(dict(ts=fresh,positions=[],config=config))
+        with self.assertRaises(module.base.Blocked):
+            module.base.paused_status(dict(
+                ts=fresh,positions=[{'signal_id':1}],
+                config=dict(rollout_enabled=True,
+                            auto_trade_enabled=False,kill_latched=False)))
+
     def test_activation_manifest_pins_composed_executor_and_dependencies(self):
         manifest=json.loads(Path('tools/activation_source.json').read_text())
         self.assertEqual(manifest['kadima/auto_executor.py'],
