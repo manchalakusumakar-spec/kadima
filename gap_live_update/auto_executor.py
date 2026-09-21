@@ -551,7 +551,7 @@ class AutoExecutor:
             return self._reject("daily_loss_limit_breached", index_name, direction)
         if execution_ledger.seen(source_signal_id):
             return self._reject("signal_already_submitted", index_name, direction)
-        if index_name in self._manual_carryforward_underlyings:
+        if index_name in getattr(self, '_manual_carryforward_underlyings', set()):
             return self._reject("manual_carryforward_same_underlying", index_name, direction)
         with self._lock:
             same_underlying = any(
