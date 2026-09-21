@@ -201,6 +201,50 @@ class Celestial(unittest.TestCase):
         self.assertFalse(c.health('reconciliation')['positions'][0]['managed'])
         self.assertEqual(self.ex.state.positions,{})
 
+    def test_verified_manual_carryforward_is_known_unmanaged_and_does_not_enter_state(self):
+        self.ex.state.positions.clear()
+        self.ex.celestial_master=SimpleNamespace(rows=[self.contract()])
+        self.ex._restored=True
+        row=self.broker();row['producttype']='CARRYFORWARD'
+        with patch.object(f.executor,'fetch_broker_positions',return_value=[row]):
+            self.ex.reconcile_on_startup()
+        health=c.health('reconciliation')
+        self.assertTrue(health['ok'],health)
+        self.assertFalse(self.ex._reconcile_blocked)
+        self.assertEqual(self.ex.state.positions,{})
+        self.assertEqual(self.ex._manual_carryforward_underlyings,{'STOCK'})
+        view=health['positions'][0]
+        self.assertEqual(view['source'],'MANUAL_CARRYFORWARD')
+        self.assertTrue(view['managed'])
+        self.assertFalse(view['auto_managed'])
+        self.assertEqual(view['reason'],'carryforward_observed_not_managed')
+
+    def test_manual_carryforward_block_clears_after_broker_position_is_gone(self):
+        self.ex.state.positions.clear()
+        self.ex.celestial_master=SimpleNamespace(rows=[self.contract()])
+        self.ex._restored=True
+        row=self.broker();row['producttype']='CARRYFORWARD'
+        with patch.object(f.executor,'fetch_broker_positions',return_value=[row]):
+            self.ex.reconcile_on_startup()
+        self.assertEqual(self.ex._manual_carryforward_underlyings,{'STOCK'})
+        with patch.object(f.executor,'fetch_broker_positions',return_value=[]):
+            self.ex.reconcile_on_startup()
+        self.assertFalse(self.ex._reconcile_blocked)
+        self.assertEqual(self.ex._manual_carryforward_underlyings,set())
+
+    def test_invalid_carryforward_lot_still_blocks_reconciliation(self):
+        self.ex.state.positions.clear()
+        self.ex.celestial_master=SimpleNamespace(rows=[self.contract()])
+        self.ex._restored=True
+        row=self.broker();row.update(producttype='CARRYFORWARD',netqty='5')
+        with patch.object(f.executor,'fetch_broker_positions',return_value=[row]):
+            self.ex.reconcile_on_startup()
+        health=c.health('reconciliation')
+        self.assertFalse(health['ok'])
+        self.assertTrue(self.ex._reconcile_blocked)
+        self.assertEqual(health['positions'][0]['reason'],'contract_or_lot_mismatch')
+        self.assertEqual(self.ex._manual_carryforward_underlyings,set())
+
     def test_external_quantity_change_is_not_an_assumed_fill(self):
         with self.setup_adoption():self.ex.reconcile_on_startup()
         row=self.broker();row['netqty']='5'

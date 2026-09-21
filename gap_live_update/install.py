@@ -1,0 +1,139 @@
+"""Guarded Gap live source installer.
+
+Uses the reviewed stock-fast transaction installer but expands the allowed source
+set only to this Gap release. It never changes live flags; activation is separate.
+"""
+from __future__ import annotations
+
+import fcntl
+import importlib.util
+import os
+from pathlib import Path
+import sys
+
+ROOT=Path(__file__).resolve().parents[1]
+BASE_PATH=ROOT/'stock_fast_update/install.py'
+COMPOSED_EXECUTOR='a163c2077ccd304dcd5c274333e4f8a32648b34e'
+DEPLOYED_SESSION_MULTI_EXECUTOR='346f780545139367a4152725743c7275a14e8239'
+PREVIOUS_GAP_EXECUTOR='6161c04be1266e5e9b010f67a9466c22c0fc8ef0'
+
+spec=importlib.util.spec_from_file_location('_gap_base_installer',BASE_PATH)
+base=importlib.util.module_from_spec(spec)
+sys.modules[spec.name]=base
+spec.loader.exec_module(base)
+
+# The AWS executor is already the reviewed stock-fast + session-auto +
+# multi-position composition. Preserve those layers while adding Gap.
+_original_read_file=base.read_file
+_composed_path=ROOT/'gap_live_update/auto_executor.py'
+if base.digest(_original_read_file(_composed_path)) != COMPOSED_EXECUTOR:
+    raise base.Blocked('composed_gap_executor_hash_mismatch')
+
+def _gap_read_file(path, missing=False):
+    path=Path(path)
+    if path == ROOT/'kadima/auto_executor.py':
+        return _original_read_file(_composed_path, missing=missing)
+    return _original_read_file(path, missing=missing)
+
+base.read_file=_gap_read_file
+
+# Stock-fast's original installer was designed for the first Celestial rollout
+# and therefore insists rollout_enabled is False. Gap is an additive upgrade on
+# hosts where Celestial may already be loaded. Accept either explicit rollout
+# state, but still require global auto paused, kill clear, zero local API
+# positions, and a fresh authenticated control snapshot.
+def _gap_paused_status(status):
+    if not isinstance(status,dict) or not isinstance(status.get('config'),dict):
+        raise base.Blocked('control_schema_unknown')
+    cfg=status['config']
+    if type(cfg.get('rollout_enabled')) is not bool:
+        raise base.Blocked('celestial_rollout_state_unknown')
+    if cfg.get('auto_trade_enabled') is not False:
+        raise base.Blocked('global_auto_must_be_paused_for_gap_install')
+    if cfg.get('kill_latched') is not False:
+        raise base.Blocked('kill_state_requires_operator_review')
+    if not isinstance(status.get('positions'),list) or status['positions']:
+        raise base.Blocked('local_api_exposure_or_unknown')
+    try:
+        timestamp=base.datetime.fromisoformat(status['ts'])
+        age=(base.datetime.now(base.timezone.utc)-timestamp).total_seconds()
+        if timestamp.tzinfo is None or not 0 <= age <= 30:
+            raise ValueError()
+    except (KeyError,ValueError,TypeError):
+        raise base.Blocked('stale_or_unknown_control_timestamp') from None
+
+base.paused_status=_gap_paused_status
+
+def _carryforward_preflight_code(code):
+    """Allow only verified long CARRYFORWARD options during guarded upgrade."""
+    contract_anchor="    SESSION.ensure()\n    for name in ('position','orderBook'):\n"
+    position_anchor="""                if quantity != 0:
+                    reason = 'broker_positions_not_flat'
+                    raise RuntimeError()
+"""
+    if code.count(contract_anchor)!=1 or code.count(position_anchor)!=1:
+        raise base.Blocked('broker_preflight_shape_changed')
+    contract_block="""    SESSION.ensure()
+    from kadima.scrip_master import ScripMaster
+    from kadima.celestial_universe import active_contracts
+    from kadima.utils import now_ist
+    contracts = active_contracts(ScripMaster.load().rows, now_ist().date())
+    for name in ('position','orderBook'):
+"""
+    position_block="""                if quantity != 0:
+                    product = str(row.get('producttype') or '')
+                    exchange = str(row.get('exchange') or '')
+                    token = str(row.get('symboltoken') or '')
+                    symbol = str(row.get('tradingsymbol') or '')
+                    contract = contracts.get((exchange, token))
+                    carry_ok = (
+                        product == 'CARRYFORWARD' and quantity > 0
+                        and quantity == int(quantity) and contract is not None
+                        and int(quantity) % int(contract['lot_size']) == 0
+                        and symbol == str(contract['symbol']))
+                    if not carry_ok:
+                        reason = 'broker_positions_not_flat'
+                        raise RuntimeError()
+"""
+    result=code.replace(contract_anchor,contract_block,1).replace(position_anchor,position_block,1)
+    compile(result,'gap_carryforward_broker_preflight','exec')
+    return result
+
+base.broker_preflight_code=_carryforward_preflight_code
+
+base.FILES={
+    'run.py':'9036548a589752d26efe2bf952b25cdc590a7cdf',
+    'kadima/full_universe_scanner.py':(
+        '8c01cc55e7348244212c6012ed5468bdb9853895',
+        'a0f874a87ce63ca920e99b4724e36bae86e68ce1'),
+    'kadima/stock_fast.py':'d4c537156dbb080a50b249d5164e9506f1e1b8dd',
+    # Preserve/upgrade the reviewed NSE RSS collector only from the exact
+    # currently installed source. Other macro/news services remain untouched.
+    'kadima/news_collector.py':'8a6a2375924b7551effb88e48204c7564ee4ae48',
+    'kadima/celestial_adoption.py':'2273bb837257a09ba9d9e5a7bae52560f595e3bf',
+    'kadima/auto_executor.py':(DEPLOYED_SESSION_MULTI_EXECUTOR,PREVIOUS_GAP_EXECUTOR),
+    # Gap files may be absent on the first live installation. An earlier
+    # paper-only gap_and_go.py is also an accepted reviewed starting point.
+    'kadima/gap_and_go.py':(None,'b26599c469ec9e0af4dcd9503aa6965365bb4647'),
+    'kadima/gap_baseline.py':None,
+    'kadima/gap_live.py':None,
+}
+
+
+def main():
+    base.main()
+
+
+if __name__=='__main__':
+    try:
+        fd=os.open('/run/lock/kadima-gap-live-install.lock',
+                   os.O_CREAT|os.O_RDWR|os.O_NOFOLLOW,0o600)
+        with os.fdopen(fd,'w') as lock:
+            fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
+            main()
+    except base.Blocked as exc:
+        print('BLOCKED:',str(exc))
+        raise SystemExit(1)
+    except Exception as exc:
+        print('BLOCKED:',type(exc).__name__,'(details suppressed; no credential output)')
+        raise SystemExit(1)

@@ -85,12 +85,49 @@ def process_context(installer):
     return python,env,owner
 
 
+def carryforward_preflight_code(code):
+    """Permit only verified long CARRYFORWARD options; all other exposure blocks."""
+    contract_anchor="    SESSION.ensure()\n    for name in ('position','orderBook'):\n"
+    position_anchor="""                if quantity != 0:
+                    reason = 'broker_positions_not_flat'
+                    raise RuntimeError()
+"""
+    if code.count(contract_anchor)!=1 or code.count(position_anchor)!=1:
+        raise Blocked('broker_preflight_shape_changed')
+    contract_block="""    SESSION.ensure()
+    from kadima.scrip_master import ScripMaster
+    from kadima.celestial_universe import active_contracts
+    from kadima.utils import now_ist
+    contracts = active_contracts(ScripMaster.load().rows, now_ist().date())
+    for name in ('position','orderBook'):
+"""
+    position_block="""                if quantity != 0:
+                    product = str(row.get('producttype') or '')
+                    exchange = str(row.get('exchange') or '')
+                    token = str(row.get('symboltoken') or '')
+                    symbol = str(row.get('tradingsymbol') or '')
+                    contract = contracts.get((exchange, token))
+                    carry_ok = (
+                        product == 'CARRYFORWARD' and quantity > 0
+                        and quantity == int(quantity) and contract is not None
+                        and int(quantity) % int(contract['lot_size']) == 0
+                        and symbol == str(contract['symbol']))
+                    if not carry_ok:
+                        reason = 'broker_positions_not_flat'
+                        raise RuntimeError()
+"""
+    result=code.replace(contract_anchor,contract_block,1).replace(position_anchor,position_block,1)
+    compile(result,'activation_carryforward_preflight','exec')
+    return result
+
+
 def preflight(installer,context):
     python,env,owner=context
-    # The reviewed preflight reads broker positions/orders and local state.
-    # SDK stdout/stderr remain captured; only its success marker is accepted.
+    # Read-only broker preflight permits verified long carry-forward exposure,
+    # but still refuses intraday positions, shorts, invalid contracts/lots and
+    # pending/unknown broker orders.
     try:
-        result=command([python,'-c',installer.PREFLIGHT],cwd=REPO,env=env,
+        result=command([python,'-c',carryforward_preflight_code(installer.PREFLIGHT)],cwd=REPO,env=env,
             user=owner.pw_uid,group=owner.pw_gid,extra_groups=[])
     except Exception as exc:
         raise Blocked(installer.failure_summary(exc,'flat_account_preflight')) from None
@@ -98,13 +135,26 @@ def preflight(installer,context):
         raise Blocked('flat_account_preflight_unconfirmed')
 
 
-def planned_files(fast):
-    env='KADIMA_CELESTIAL_ENABLED=1\n'
-    if fast:env+='KADIMA_FAST_MOMENTUM_LIVE=1\n'
-    files={ENVFILE:env}
+def planned_files(fast,gap):
+    known={'KADIMA_CELESTIAL_ENABLED=1','KADIMA_FAST_MOMENTUM_LIVE=1','KADIMA_GAP_LIVE=1'}
+    existing=set()
+    if ENVFILE.exists():
+        if ENVFILE.is_symlink():
+            raise Blocked('existing_activation_file_differs:'+ENVFILE.name)
+        existing={line.strip() for line in ENVFILE.read_text().splitlines() if line.strip()}
+        if not existing.issubset(known) or 'KADIMA_CELESTIAL_ENABLED=1' not in existing:
+            raise Blocked('existing_activation_file_differs:'+ENVFILE.name)
+    lines=['KADIMA_CELESTIAL_ENABLED=1']
+    if fast or 'KADIMA_FAST_MOMENTUM_LIVE=1' in existing:
+        lines.append('KADIMA_FAST_MOMENTUM_LIVE=1')
+    if gap or 'KADIMA_GAP_LIVE=1' in existing:
+        lines.append('KADIMA_GAP_LIVE=1')
+    files={ENVFILE:'\n'.join(lines)+'\n'}
     files.update({SYSTEMD/(u+'.d')/DROPIN:'[Service]\nEnvironmentFile='+str(ENVFILE)+'\n' for u in UNITS})
     for path,content in files.items():
-        if path.is_symlink() or path.exists() and path.read_text()!=content:
+        if path.is_symlink():
+            raise Blocked('existing_activation_file_differs:'+path.name)
+        if path.exists() and path != ENVFILE and path.read_text()!=content:
             raise Blocked('existing_activation_file_differs:'+path.name)
     return files
 
@@ -112,6 +162,7 @@ def planned_files(fast):
 def activate_services(installer,context,files):
     preflight(installer,context)
     created=[]
+    replaced={}
     restart_attempted=False
     try:
         command(['systemctl','stop',*UNITS])
@@ -119,17 +170,31 @@ def activate_services(installer,context,files):
         source_check(installer)
         preflight(installer,context)
         for path,content in files.items():
-            if path.exists():continue
             path.parent.mkdir(parents=True,exist_ok=True)
-            created.append(path)
-            with path.open('x') as out:out.write(content)
-            path.chmod(0o644)
+            if path.exists():
+                if path.read_text()==content:continue
+                if path != ENVFILE:raise Blocked('existing_activation_file_differs:'+path.name)
+                current=path.read_text()
+                current_lines={line.strip() for line in current.splitlines() if line.strip()}
+                desired_lines={line.strip() for line in content.splitlines() if line.strip()}
+                if (not current_lines or 'KADIMA_CELESTIAL_ENABLED=1' not in current_lines
+                        or not current_lines.issubset(desired_lines)):
+                    raise Blocked('activation_environment_changed_during_preparation')
+                replaced[path]=current
+            else:
+                created.append(path)
+            temporary=path.with_name('.'+path.name+'.gap-live.tmp')
+            with temporary.open('w') as out:
+                out.write(content);out.flush();os.fsync(out.fileno())
+            temporary.chmod(0o644)
+            os.replace(temporary,path)
         command(['systemctl','daemon-reload'])
         restart_attempted=True
         command(['systemctl','start',*UNITS])
         for unit in UNITS:command(['systemctl','is-active','--quiet',unit])
     except Exception:
         if not restart_attempted:
+            for path,content in replaced.items():path.write_text(content)
             for path in reversed(created):path.unlink(missing_ok=True)
             command(['systemctl','daemon-reload'])
         # After restart, preserve installed mode; do not roll back under exposure.
@@ -138,7 +203,7 @@ def activate_services(installer,context,files):
         raise
 
 
-def check_runtime_flags(fast):
+def check_runtime_flags(fast,gap):
     for unit in UNITS:
         pid=command(['systemctl','show',unit,'-p','MainPID','--value']).stdout.strip()
         if not pid.isdigit() or int(pid)<=0:raise Blocked('restarted_service_unavailable')
@@ -146,6 +211,8 @@ def check_runtime_flags(fast):
         if env.get(b'KADIMA_CELESTIAL_ENABLED')!=b'1':raise Blocked('rollout_environment_overridden')
         if fast and unit==UNITS[0] and env.get(b'KADIMA_FAST_MOMENTUM_LIVE')!=b'1':
             raise Blocked('fast_environment_overridden')
+        if gap and unit==UNITS[0] and env.get(b'KADIMA_GAP_LIVE')!=b'1':
+            raise Blocked('gap_environment_overridden')
 
 
 def resume(token,reporter):
@@ -165,7 +232,7 @@ def resume(token,reporter):
         raise Blocked('resume_not_confirmed')
 
 
-def run_activation(fast):
+def run_activation(fast,gap):
     installer=load_module('activation_installer','executor_fix/install.py')
     reporter=load_module('activation_reporter','tools/deployment_report.py')
     source_check(installer)
@@ -179,16 +246,16 @@ def run_activation(fast):
     already_loaded=False
     if cfg.get('rollout_enabled') is True:
         try:
-            check_runtime_flags(fast)
+            check_runtime_flags(fast,gap)
             already_loaded=True
         except Blocked:pass
     if already_loaded:
         # Retrying a news warm-up failure must not restart the collector again.
         preflight(installer,context)
     else:
-        files=planned_files(fast)
+        files=planned_files(fast,gap)
         activate_services(installer,context,files)
-        check_runtime_flags(fast)
+        check_runtime_flags(fast,gap)
     # Startup/news collection may take several requests. Never invent success.
     deadline=time.monotonic()+60
     while True:
@@ -219,13 +286,14 @@ def main():
     parser=argparse.ArgumentParser()
     parser.add_argument('--apply',action='store_true')
     parser.add_argument('--enable-fast',action='store_true')
+    parser.add_argument('--enable-gap',action='store_true')
     args=parser.parse_args()
     if not args.apply:raise SystemExit('Use --apply to change service rollout flags and request guarded auto resume.')
     if os.geteuid()!=0:raise SystemExit('Run with sudo -n python3.')
     with open('/run/lock/kadima-activation.lock','w') as lock:
         try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:raise SystemExit('Another activation is running.')
-        try:run_activation(args.enable_fast)
+        try:run_activation(args.enable_fast,args.enable_gap)
         except Exception as exc:
             detail=str(exc) if isinstance(exc,Blocked) else type(exc).__name__
             print(json.dumps({'activation':'BLOCKED_OR_UNCONFIRMED','reason':detail,

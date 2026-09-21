@@ -57,12 +57,21 @@ class ActivationTests(unittest.TestCase):
     def test_existing_configuration_is_never_overwritten(self):
         with tempfile.TemporaryDirectory() as tmp,patch.object(a,'ENVFILE',Path(tmp)/'env'), \
                 patch.object(a,'SYSTEMD',Path(tmp)/'systemd'):
-            files=a.planned_files(True)
+            files=a.planned_files(True,True)
             self.assertIn('KADIMA_FAST_MOMENTUM_LIVE=1',files[a.ENVFILE])
+            self.assertIn('KADIMA_GAP_LIVE=1',files[a.ENVFILE])
             self.assertEqual(len(files),3)
             a.ENVFILE.write_text('USER_DEFINED=1\n')
-            with self.assertRaises(a.Blocked):a.planned_files(True)
+            with self.assertRaises(a.Blocked):a.planned_files(True,True)
             self.assertEqual(a.ENVFILE.read_text(),'USER_DEFINED=1\n')
+
+    def test_existing_known_env_can_be_additively_upgraded_for_gap(self):
+        with tempfile.TemporaryDirectory() as tmp,patch.object(a,'ENVFILE',Path(tmp)/'env'), \
+                patch.object(a,'SYSTEMD',Path(tmp)/'systemd'):
+            a.ENVFILE.write_text('KADIMA_CELESTIAL_ENABLED=1\nKADIMA_FAST_MOMENTUM_LIVE=1\n')
+            files=a.planned_files(True,True)
+            self.assertIn('KADIMA_GAP_LIVE=1',files[a.ENVFILE])
+            self.assertIn('KADIMA_FAST_MOMENTUM_LIVE=1',files[a.ENVFILE])
 
     def test_source_mismatch_blocks_before_process_or_api_access(self):
         with tempfile.TemporaryDirectory() as tmp,patch.object(a,'REPO',Path(tmp)):
@@ -87,6 +96,18 @@ class ActivationTests(unittest.TestCase):
                 self.assertNotIn('SECRET',str(caught.exception))
                 if detail.startswith('broker'):self.assertEqual(str(caught.exception),detail)
 
+    def test_carryforward_preflight_is_exact_and_fail_closed(self):
+        spec=importlib.util.spec_from_file_location('activation_executor_fixture',
+            ROOT/'executor_fix/install.py')
+        installer=importlib.util.module_from_spec(spec);spec.loader.exec_module(installer)
+        code=a.carryforward_preflight_code(installer.PREFLIGHT)
+        self.assertIn("product == 'CARRYFORWARD'",code)
+        self.assertIn("active_contracts",code)
+        self.assertIn("broker_positions_not_flat",code)
+        compile(code,'carryforward_preflight_test','exec')
+        with self.assertRaisesRegex(a.Blocked,'broker_preflight_shape_changed'):
+            a.carryforward_preflight_code('not the reviewed preflight')
+
     def test_failed_broker_output_never_exposes_sdk_secrets(self):
         installer=types.SimpleNamespace(PREFLIGHT='code',failure_summary=lambda e,s:'preflight_failed')
         owner=types.SimpleNamespace(pw_uid=1000,pw_gid=1000)
@@ -105,7 +126,7 @@ class ActivationTests(unittest.TestCase):
                 patch.object(a,'process_context'),patch.object(a,'planned_files'), \
                 patch.object(a,'activate_services'),patch.object(a,'check_runtime_flags'), \
                 patch.object(a.time,'monotonic',side_effect=[0,61]),patch.object(a,'resume') as resume:
-            with self.assertRaisesRegex(a.Blocked,'startup_health_not_ready'):a.run_activation(True)
+            with self.assertRaisesRegex(a.Blocked,'startup_health_not_ready'):a.run_activation(True,True)
         resume.assert_not_called()
 
     def test_success_reports_missing_index_coverage_without_inventing_it(self):
@@ -122,7 +143,7 @@ class ActivationTests(unittest.TestCase):
                 patch.object(a,'activate_services') as activate,patch.object(a,'check_runtime_flags'), \
                 patch.object(a,'preflight') as preflight, \
                 patch.object(a,'resume') as resume,contextlib.redirect_stdout(io.StringIO()) as out:
-            a.run_activation(True)
+            a.run_activation(True,True)
         resume.assert_called_once()
         activate.assert_not_called()
         preflight.assert_called_once()

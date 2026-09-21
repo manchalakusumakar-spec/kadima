@@ -6,12 +6,49 @@ already-installed calendar/permit guards. Only the specified anchors may change.
 """
 import ast
 
-SINGLE = '''        with self._lock:
+SINGLE_LEGACY = '''        with self._lock:
             open_count = len(self.state.positions)
         if open_count >= min(1, MAX_CONCURRENT_POSITIONS):
             return self._reject("max_concurrent_positions", index_name, direction)
 '''
+SINGLE = SINGLE_LEGACY  # compatibility for existing offline fixtures
+SINGLE_GAP = '''        with self._lock:
+            open_count = len(self.state.positions)
+            same_underlying = any(p.index == index_name and p.status != 'closed'
+                                  for p in self.state.positions.values())
+        if same_underlying:
+            return self._reject("same_underlying_position_exists", index_name, direction)
+        if open_count >= min(1, MAX_CONCURRENT_POSITIONS):
+            return self._reject("max_concurrent_positions", index_name, direction)
+'''
+SINGLE_GAP_V2 = '''        with self._lock:
+            open_count = len(self.state.positions)
+            same_underlying = any(
+                getattr(p, 'index', None) == index_name
+                and getattr(p, 'status', None) != 'closed'
+                and (kind == 'gap_and_go' or getattr(p, 'kind', None) == 'gap_and_go')
+                for p in self.state.positions.values())
+        if same_underlying:
+            return self._reject("same_underlying_position_exists", index_name, direction)
+        if open_count >= min(1, MAX_CONCURRENT_POSITIONS):
+            return self._reject("max_concurrent_positions", index_name, direction)
+'''
 MULTI = '''        # KADIMA CAPITAL-BASED MULTI-POSITION v1
+        from . import portfolio_capacity
+        portfolio_block = portfolio_capacity.entry_block(
+            self.state.positions, execution_ledger.pending())
+        if portfolio_block:
+            return self._reject(portfolio_block, index_name, direction)
+'''
+MULTI_GAP = '''        with self._lock:
+            same_underlying = any(
+                getattr(p, 'index', None) == index_name
+                and getattr(p, 'status', None) != 'closed'
+                and (kind == 'gap_and_go' or getattr(p, 'kind', None) == 'gap_and_go')
+                for p in self.state.positions.values())
+        if same_underlying:
+            return self._reject("same_underlying_position_exists", index_name, direction)
+        # KADIMA CAPITAL-BASED MULTI-POSITION v1
         from . import portfolio_capacity
         portfolio_block = portfolio_capacity.entry_block(
             self.state.positions, execution_ledger.pending())
@@ -66,7 +103,16 @@ def patch_executor(raw):
     text = raw.decode()
     if text.count('market_session_gate.entry_block') != 2:
         raise ValueError('session_entry_guards_required')
-    for old, new in ((SINGLE, MULTI), (BEFORE_CLOCK, AFTER_CLOCK), (POLL, BATCHED)):
+    if text.count(SINGLE_GAP_V2) == 1:
+        single = SINGLE_GAP_V2
+        multi = MULTI_GAP
+    elif text.count(SINGLE_GAP) == 1:
+        single = SINGLE_GAP
+        multi = MULTI_GAP
+    else:
+        single = SINGLE_LEGACY
+        multi = MULTI
+    for old, new in ((single, multi), (BEFORE_CLOCK, AFTER_CLOCK), (POLL, BATCHED)):
         if text.count(old) != 1:
             raise ValueError('multi_position_patch_anchor_changed')
         text = text.replace(old, new, 1)

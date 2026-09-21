@@ -170,7 +170,7 @@ class Recorder:
         with c:
             c.execute('DELETE FROM stock_fast_snapshots WHERE name=?', (name,))
 
-    def publish(self, chain, spot, stamp, vwap):
+    def publish(self, chain, spot, stamp, vwap, spot_context=None, gamma=None):
         now = _now()
         if self.day != now.date():
             self.windows.clear()
@@ -196,6 +196,13 @@ class Recorder:
                     chain_at=stamp, session_vwap=vwap, ladder_width=1,
                     quotes=[asdict(q) for q in chain.quotes.values()],
                     fast_metrics=metrics, source='received_full_quote_samples')
+        if isinstance(spot_context, dict):
+            for key in ('day_open','previous_close','cumulative_volume'):
+                value = spot_context.get(key)
+                if _finite(value, 0 if key == 'cumulative_volume' else .000001):
+                    data[key] = value
+        if isinstance(gamma, dict):
+            data['gamma'] = gamma
         encoded = json.dumps(data, allow_nan=False)
         if len(encoded) > MAX_PAYLOAD:
             raise ValueError('stock_fast_snapshot_too_large')

@@ -28,8 +28,8 @@ ENV=Path('/etc/kadima/session-auto.env')
 SYSTEMD=Path('/etc/systemd/system')
 TIMER='kadima-session-auto.timer'
 SERVICE='kadima-session-auto.service'
-BASE_EXECUTOR='f830afebc49b764e48b91bd4c61f2260e769d25f'
-INSTALL_HELPER='587e138396139fc3abc6407b7329d686676df9a3'
+BASE_EXECUTOR=('f830afebc49b764e48b91bd4c61f2260e769d25f','362923e19b763975d1a6cf8c18a23459585e0259','502744a63d0b5a5d5aa9c74c39e7bd7cf5334c88')
+INSTALL_HELPER='00ac2c1ba6b5a68a21cd2bf532dd53e1440e6e35'
 MARKER='# KADIMA SESSION AUTO ENTRY GUARD v1'
 ENV_CONTENT='KADIMA_CELESTIAL_ENABLED=1\nKADIMA_FAST_MOMENTUM_LIVE=1\nKADIMA_SESSION_AUTOTRADE=1\n'
 
@@ -40,7 +40,8 @@ def digest(raw):
 
 def patch_executor(raw):
     """Exact two entry-only insertions; never edits check_exits or risk functions."""
-    if digest(raw)!=BASE_EXECUTOR:
+    reviewed=BASE_EXECUTOR if isinstance(BASE_EXECUTOR,(tuple,list)) else (BASE_EXECUTOR,)
+    if digest(raw) not in reviewed:
         raise ValueError('reviewed_executor_required')
     text=raw.decode()
     first="        if not getattr(chain, '_entry_guard', lambda: True)():\n"

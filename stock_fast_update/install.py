@@ -161,7 +161,8 @@ def backend_plan(package, target, owner):
         compile(incoming, name, 'exec')
         item = change_for(target/name, incoming, owner)
         current = digest(item.original) if item.original is not None else None
-        if current not in (base, digest(incoming)):
+        bases = tuple(base) if isinstance(base, (tuple, list)) else (base,)
+        if current not in bases + (digest(incoming),):
             raise Blocked('unreviewed_target:'+name)
         fingerprints[item.path] = item.original
         if item.original != incoming:

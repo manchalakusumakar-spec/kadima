@@ -35,20 +35,25 @@ class StockActivationManifestTests(unittest.TestCase):
         for relative in self.manifest:
             destination = self.target / relative
             destination.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copyfile(ROOT / relative, destination)
+            source = (ROOT / 'gap_live_update/auto_executor.py'
+                      if relative == 'kadima/auto_executor.py' else ROOT / relative)
+            shutil.copyfile(source, destination)
         self.activation.REPO = self.target
 
     def test_all_manifest_hashes_match_the_reviewed_checkout(self):
         for relative, expected in self.manifest.items():
             with self.subTest(path=relative):
-                self.assertEqual(git_blob((ROOT / relative).read_bytes()), expected)
+                source = (ROOT / 'gap_live_update/auto_executor.py'
+                          if relative == 'kadima/auto_executor.py' else ROOT / relative)
+                self.assertEqual(git_blob(source.read_bytes()), expected)
 
     def test_stock_entrypoint_and_preserved_dependencies_are_pinned(self):
         required = {'run.py', 'kadima/full_universe_scanner.py', 'kadima/stock_fast.py',
-                    'kadima/stock_fast_api.py', 'kadima/feed.py', 'kadima/rate_limiter.py'}
+                    'kadima/stock_fast_api.py', 'kadima/feed.py', 'kadima/rate_limiter.py',
+                    'kadima/gap_and_go.py', 'kadima/gap_baseline.py', 'kadima/gap_live.py'}
         self.assertTrue(required.issubset(self.manifest))
         self.assertEqual(self.manifest['kadima/full_universe_scanner.py'],
-                         'a0f874a87ce63ca920e99b4724e36bae86e68ce1')
+                         '530c41a3fe4fe1e706dcfde3437f4c16e1a19b69')
         self.assertNotIn('kadima/config.py', self.manifest)  # Deployment configuration is not replaced.
 
     def test_complete_reviewed_source_is_accepted(self):
