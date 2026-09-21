@@ -102,6 +102,17 @@ class MCXLiveTests(unittest.TestCase):
         self.assertEqual(result['reason'],'mcx_one_lot_cost_exceeds_capital')
         self.assertEqual(executor.state.positions,{})
 
+    def test_underlying_structure_breach_requests_shared_exit(self):
+        pos=types.SimpleNamespace(kind='mcx_momentum',status='open',swing_level=7000,
+                                  index='CRUDEOIL',direction='CE',signal_id=99)
+        executor=types.SimpleNamespace(
+            _lock=__import__('threading').RLock(),
+            state=types.SimpleNamespace(positions={'99':pos}),
+            manual_exit=Mock())
+        worker=mcx_live.Worker(executor,types.SimpleNamespace(rows=[]))
+        worker._protect([dict(name='CRUDEOIL',fresh=True,ltp=6999)])
+        executor.manual_exit.assert_called_once_with(99,'mcx_underlying_structure_failed')
+
     def test_signal_requires_full_five_minute_future_and_option_confirmation(self):
         executor=types.SimpleNamespace(state=types.SimpleNamespace(positions={}))
         worker=mcx_live.Worker(executor,types.SimpleNamespace(rows=[]))
@@ -155,7 +166,7 @@ class MCXInstallerTests(unittest.TestCase):
         self.assertEqual(manifest['kadima/auto_executor.py'],
                          '7cfe6cf21a520ba967d6a672b2f54a99bbe81321')
         self.assertEqual(manifest['kadima/mcx_live.py'],
-                         '1f1eede315ffecbf9469c6fcfc6746371b0f2f7e')
+                         '293f6be928348393cc5c3e5941ddbae33f19cf9d')
         self.assertEqual(manifest['kadima/instrument_master.py'],
                          'a04a6c3636d49081fb49d48ac745aea0adc73f1f')
 
