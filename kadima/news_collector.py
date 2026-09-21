@@ -13,7 +13,7 @@ import urllib.request
 import xml.etree.ElementTree as ET
 from datetime import datetime, timedelta
 from email.utils import parsedate_to_datetime
-from urllib.parse import urlparse
+from urllib.parse import urlparse, urljoin
 
 from . import audit, celestial, news_catalysts
 from .config import IST
@@ -132,11 +132,16 @@ def parse_feed(data, *, category, mapping, symbols, now):
         if expiry <= now:
             continue
         url = item.findtext('link', '').strip()
-        parsed = urlparse(url)
         trusted = ('www.nseindia.com', 'nsearchives.nseindia.com', 'archives.nseindia.com')
-        # NSE RSS occasionally emits http links for its own archive. Accept only
-        # those exact trusted hosts and canonicalise to https before storage.
-        # Relative, credential-bearing and third-party links remain rejected.
+        # NSE has emitted three reviewed link forms in its RSS over time:
+        # absolute http(s), protocol-relative //host/path, and archive-relative
+        # /corporate/... paths. Canonicalise all three to HTTPS, but never
+        # accept credentials, arbitrary schemes or third-party hosts.
+        if url.startswith('//'):
+            url = 'https:' + url
+        elif url.startswith('/'):
+            url = urljoin('https://nsearchives.nseindia.com/', url)
+        parsed = urlparse(url)
         if (parsed.scheme not in ('http','https') or parsed.hostname not in trusted
                 or parsed.username or parsed.password):
             raise ValueError('Invalid announcement source')
