@@ -36,9 +36,18 @@ class HelperTests(unittest.TestCase):
             path=Path(td)/'macro.json'
             path.write_text(json.dumps(dict(ts=NOW.isoformat(),economic_calendar=[
                 {'date':'2026-09-21','end_date':'2026-09-21','name':'TEST'}])))
-            fake=types.SimpleNamespace(SNAPSHOT_PATH=str(path))
-            with patch.dict('sys.modules',{'kadima.macro_watch':fake}):
+            with patch.object(gap_live,'MACRO_SNAPSHOT_PATH',str(path)):
                 self.assertFalse(gap_live._macro_clear(NOW))
+
+    def test_gap_worker_does_not_import_macro_watch_source(self):
+        tree=ast.parse(Path('kadima/gap_live.py').read_text())
+        imports=set()
+        for node in ast.walk(tree):
+            if isinstance(node,ast.ImportFrom):
+                imports.add((node.module or '').split('.')[-1])
+            elif isinstance(node,ast.Import):
+                imports.update(a.name.split('.')[-1] for a in node.names)
+        self.assertNotIn('macro_watch',imports)
 
     def test_live_worker_has_no_direct_order_transport(self):
         tree=ast.parse(Path('kadima/gap_live.py').read_text())
