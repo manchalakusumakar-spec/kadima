@@ -1,0 +1,107 @@
+from datetime import datetime, timedelta
+import os
+import types
+import unittest
+from unittest.mock import Mock, patch
+
+from kadima import commodity_watch as watch
+from kadima import instrument_master as im
+from kadima import mcx_live
+from kadima.celestial_scanner import PremiumWindow
+from kadima.celestial_universe import active_contracts
+from kadima.config import IST
+
+NOW=datetime(2026,9,21,18,0,tzinfo=IST)
+
+
+def rows():
+    out=[]
+    for name, base in [('CRUDEOIL',7000),('GOLD',120000),('NATURALGAS',400),
+                       ('SILVER',150000),('COPPER',1200)]:
+        out.append(dict(name=name,exch_seg='MCX',instrumenttype='FUTCOM',
+            token=name+'F',symbol=name+'29SEP26FUT',expiry='29SEP2026',
+            lotsize='10',strike='0',permitted_to_trade=True))
+        for side in ('CE','PE'):
+            out.append(dict(name=name,exch_seg='MCX',instrumenttype='OPTFUT',
+                token=name+side,symbol=name+'28SEP26'+str(base)+side,
+                expiry='28SEP2026',lotsize='10',strike=str(base*100),
+                permitted_to_trade=True))
+    return out
+
+
+class MCXLiveTests(unittest.TestCase):
+    def test_all_five_roots_are_catalogued(self):
+        catalog=watch.catalog(rows(),NOW.date())
+        self.assertEqual(set(r['name'] for r in catalog),set(mcx_live.ROOTS))
+        self.assertIn('COPPER',watch.ROOTS)
+
+    def test_instrument_master_keeps_mcx_lot_but_not_stock_universe(self):
+        lot,sym,universe,spot={},{},{},{}
+        row=rows()[0]
+        im._absorb_row(row,lot,sym,universe,spot)
+        self.assertEqual(lot[row['token']],10)
+        self.assertEqual(sym[row['token']],row['symbol'])
+        self.assertEqual(universe,{})
+        self.assertEqual(spot,{})
+
+    def test_active_contracts_recognises_mcx_options_for_reconciliation(self):
+        contracts=active_contracts(rows(),NOW.date())
+        self.assertIn(('MCX','CRUDEOILCE'),contracts)
+        self.assertEqual(contracts[('MCX','CRUDEOILCE')]['lot_size'],10)
+        self.assertNotIn(('MCX','CRUDEOILF'),contracts)
+
+    def test_option_mapping_requires_matching_side_and_not_after_future_expiry(self):
+        catalog=watch.catalog(rows(),NOW.date())
+        future=dict(next(r for r in catalog if r['name']=='CRUDEOIL' and r['instrumenttype']=='FUTCOM'),
+                    ltp=7005,fresh=True)
+        ce=mcx_live._option_for(catalog,future,'CE')
+        pe=mcx_live._option_for(catalog,future,'PE')
+        self.assertEqual((ce['type'],pe['type']),('CE','PE'))
+        self.assertEqual((ce['strike'],pe['strike']),(7000,7000))
+
+    def test_live_requires_explicit_flag_cap_and_global_auto(self):
+        executor=types.SimpleNamespace(
+            _reconcile_blocked=False,
+            state=types.SimpleNamespace(positions={}))
+        fake_cfg=dict(auto_trade_enabled=True,kill_latched=False)
+        with patch.dict(os.environ,{'KADIMA_MCX_LIVE':'1','KADIMA_MCX_CAPITAL_INR':'15000'}), \
+             patch.object(mcx_live.celestial,'enabled',return_value=True), \
+             patch.object(mcx_live.celestial,'read_config',return_value=fake_cfg), \
+             patch.object(mcx_live.killswitch,'engaged',return_value=False), \
+             patch.object(mcx_live.exit_manager,'realized_pnl_today',return_value=0), \
+             patch.object(mcx_live.execution_ledger,'pending',return_value=[]):
+            self.assertEqual(mcx_live.global_blocks(executor,NOW),[])
+        with patch.dict(os.environ,{},clear=True):
+            self.assertIn('mcx_live_disabled',mcx_live.global_blocks(executor,NOW))
+
+    def test_one_lot_entry_fails_closed_when_cost_exceeds_cap(self):
+        executor=types.SimpleNamespace(
+            _execution_lock=__import__('threading').RLock(),
+            _reconcile_blocked=False,_last_reconcile=1,
+            state=types.SimpleNamespace(positions={}))
+        worker=mcx_live.Worker(executor,types.SimpleNamespace(rows=[]))
+        row=dict(root='GOLD',direction='CE',token='T',symbol='GOLDCE',
+            score=90,ts=NOW.isoformat(),baseline_at=NOW.isoformat(),ask=1000,
+            stop=900,lot_size=100)
+        with patch.object(mcx_live,'global_blocks',return_value=[]), \
+             patch.object(mcx_live,'capital_limit',return_value=15000), \
+             patch.object(mcx_live.capital_guard,'available_equity',return_value=100000):
+            result=worker._enter(row,NOW)
+        self.assertFalse(result['ok'])
+        self.assertEqual(result['reason'],'mcx_one_lot_cost_exceeds_capital')
+        self.assertEqual(executor.state.positions,{})
+
+    def test_signal_requires_full_five_minute_future_and_option_confirmation(self):
+        executor=types.SimpleNamespace(state=types.SimpleNamespace(positions={}))
+        worker=mcx_live.Worker(executor,types.SimpleNamespace(rows=[]))
+        contracts=watch.catalog(rows(),NOW.date())
+        future=dict(next(r for r in contracts if r['name']=='CRUDEOIL' and r['instrumenttype']=='FUTCOM'),
+                    ltp=7000,volume=1000,oi=10000,bid=6999,ask=7001,
+                    spread_pct=.03,fresh=True)
+        # A fresh quote without a five-minute window never becomes a trade.
+        with patch.object(mcx_live,'_fetch',return_value={'status':True,'data':{'fetched':[]}}):
+            self.assertIsNone(worker._candidate(contracts,future,NOW))
+
+
+if __name__=='__main__':
+    unittest.main()
