@@ -18,8 +18,8 @@ price/volume/OI confirmation before buying CE or PE.
 - Explicit rupee capital cap via `KADIMA_MCX_CAPITAL_INR`; no default.
 - One MCX auto position maximum.
 - One lot maximum.
-- Existing global kill, daily-loss limit, broker reconciliation and durable
-  order/fill ledger remain mandatory.
+- Existing global kill, daily-loss limit, broker reconciliation, macro-event
+  suppression and durable order/fill ledger remain mandatory.
 - Fresh MCX FULL quotes and a five-minute observation window are required.
 - Futures move >=0.35%, volume-rate spike >=1.5x, and positive OI build.
 - Selected option premium move >=5%, volume-rate spike >=1.5x, positive OI
