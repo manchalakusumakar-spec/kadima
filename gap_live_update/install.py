@@ -43,7 +43,9 @@ base.FILES={
         'a0f874a87ce63ca920e99b4724e36bae86e68ce1'),
     'kadima/stock_fast.py':'d4c537156dbb080a50b249d5164e9506f1e1b8dd',
     'kadima/auto_executor.py':DEPLOYED_SESSION_MULTI_EXECUTOR,
-    'kadima/gap_and_go.py':'b26599c469ec9e0af4dcd9503aa6965365bb4647',
+    # Gap files may be absent on the first live installation. An earlier
+    # paper-only gap_and_go.py is also an accepted reviewed starting point.
+    'kadima/gap_and_go.py':(None,'b26599c469ec9e0af4dcd9503aa6965365bb4647'),
     'kadima/gap_baseline.py':None,
     'kadima/gap_live.py':None,
 }
