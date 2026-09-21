@@ -11,10 +11,12 @@ from kadima import audit, alerts
 
 def main():
     engine = Engine()
-    from kadima import auto_executor, stock_fast, stock_fast_api
+    from kadima import auto_executor, stock_fast, stock_fast_api, gap_live
     stock_fast_worker = stock_fast.Worker(auto_executor.EXECUTOR, engine.scrips)
+    gap_worker = gap_live.Worker(auto_executor.EXECUTOR, engine.scrips)
 
     def stop_all():
+        gap_worker.stop()
         stock_fast_worker.stop()
         engine.stop()
 
@@ -55,6 +57,7 @@ def main():
 
     engine.start()
     stock_fast_worker.start()
+    gap_worker.start()
 
     try:
         while True:
