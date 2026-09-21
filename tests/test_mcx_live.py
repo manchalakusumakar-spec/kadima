@@ -65,6 +65,7 @@ class MCXLiveTests(unittest.TestCase):
             state=types.SimpleNamespace(positions={}))
         fake_cfg=dict(auto_trade_enabled=True,kill_latched=False)
         with patch.dict(os.environ,{'KADIMA_MCX_LIVE':'1','KADIMA_MCX_CAPITAL_INR':'15000'}), \
+             patch.object(mcx_live,'macro_clear',return_value=True), \
              patch.object(mcx_live.celestial,'enabled',return_value=True), \
              patch.object(mcx_live.celestial,'read_config',return_value=fake_cfg), \
              patch.object(mcx_live.killswitch,'engaged',return_value=False), \
@@ -73,6 +74,10 @@ class MCXLiveTests(unittest.TestCase):
             self.assertEqual(mcx_live.global_blocks(executor,NOW),[])
         with patch.dict(os.environ,{},clear=True):
             self.assertIn('mcx_live_disabled',mcx_live.global_blocks(executor,NOW))
+
+    def test_macro_gate_fails_closed(self):
+        with patch.object(mcx_live,'MACRO_SNAPSHOT_PATH','/definitely/missing'):
+            self.assertFalse(mcx_live.macro_clear(NOW))
 
     def test_one_lot_entry_fails_closed_when_cost_exceeds_cap(self):
         executor=types.SimpleNamespace(
