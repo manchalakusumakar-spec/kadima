@@ -11,10 +11,13 @@ from kadima import audit, alerts
 
 def main():
     engine = Engine()
-    from kadima import auto_executor, stock_fast, stock_fast_api
+    from kadima import auto_executor, stock_fast, stock_fast_api, move_capture_execution
     stock_fast_worker = stock_fast.Worker(auto_executor.EXECUTOR, engine.scrips)
+    move_capture_worker = move_capture_execution.MoveCaptureExecutionWorker(
+        auto_executor.EXECUTOR, engine.scrips)
 
     def stop_all():
+        move_capture_worker.stop()
         stock_fast_worker.stop()
         engine.stop()
 
@@ -55,6 +58,7 @@ def main():
 
     engine.start()
     stock_fast_worker.start()
+    move_capture_worker.start()
 
     try:
         while True:
