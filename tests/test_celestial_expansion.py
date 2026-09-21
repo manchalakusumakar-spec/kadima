@@ -127,6 +127,30 @@ class Expansion(unittest.TestCase):
         events,_=news.parse_feed(rss(item(title='Other Example Limited')),category='announcements',mapping=mapping,symbols={'EXAMPLE'},now=NOW)
         self.assertEqual(events,[])
 
+    def test_company_mapping_resolves_duplicate_only_against_requested_universe(self):
+        data=(b'SYMBOL,NAME OF COMPANY\n'
+              b'FEL,Future Enterprises Limited\n'
+              b'FELDVR,Future Enterprises Limited\n'
+              b'EXAMPLE,Example Limited\n')
+        mapping=news.company_map(data, {'FEL','EXAMPLE'})
+        self.assertEqual(mapping['FUTURE ENTERPRISES LIMITED'],'FEL')
+        self.assertEqual(mapping['EXAMPLE LIMITED'],'EXAMPLE')
+        mapping=news.company_map(data, {'EXAMPLE'})
+        self.assertNotIn('FUTURE ENTERPRISES LIMITED',mapping)
+        with self.assertRaises(ValueError):
+            news.company_map(data)
+
+    def test_relevant_duplicate_company_remains_fail_closed_via_coverage(self):
+        data=(b'SYMBOL,NAME OF COMPANY\n'
+              b'AAA,Same Limited\n'
+              b'BBB,Same Limited\n')
+        mapping=news.company_map(data, {'AAA','BBB'})
+        self.assertEqual(mapping,{})
+        collector=news.NewsCollector(['AAA','BBB'],lambda url:data if url==news.COMPANIES else rss())
+        with patch.object(news.news_catalysts,'ingest') as ingest:
+            self.assertFalse(collector.collect());ingest.assert_not_called()
+        self.assertEqual(celestial.health('news')['errors']['company_mapping'],'unresolved_symbols')
+
     def test_results_filing_and_denial_never_invent_direction(self):
         self.assertEqual(news.classify('Company denies trading suspended rumor'),(0,False))
         events,_=news.parse_feed(rss(item()),category='financial_results',mapping={'EXAMPLE LIMITED':'EXAMPLE'},symbols={'EXAMPLE'},now=NOW)
