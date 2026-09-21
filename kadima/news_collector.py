@@ -114,9 +114,12 @@ def parse_feed(data, *, category, mapping, symbols, now):
     build = channel.findtext('lastBuildDate')
     published = [stamp(item.findtext('pubDate', '')) for item in items]
     latest = stamp(build) if build else max(published, default=None)
-    # A successful HTTP response containing an old/empty file is not live news.
-    if latest is None or not 0 <= (now - latest).total_seconds() <= 36 * 3600:
-        raise ValueError('Publisher feed is stale or undated')
+    # Feed reachability/parse validity establishes coverage. The age of the
+    # latest filing does NOT: a category can legitimately have no new event for
+    # days or weeks. Missing/future timestamps still fail closed; publisher age
+    # is retained as diagnostic metadata by the caller.
+    if latest is None or latest > now:
+        raise ValueError('Publisher feed timestamp unavailable or future-dated')
     events = {}
     for item, published_at in zip(items, published):
         company = re.split(r'\s+-\s+Ex-Date:', item.findtext('title', ''), flags=re.I)[0]
@@ -130,10 +133,16 @@ def parse_feed(data, *, category, mapping, symbols, now):
             continue
         url = item.findtext('link', '').strip()
         parsed = urlparse(url)
-        if (parsed.scheme != 'https' or parsed.hostname not in
-                ('www.nseindia.com', 'nsearchives.nseindia.com', 'archives.nseindia.com')
+        trusted = ('www.nseindia.com', 'nsearchives.nseindia.com', 'archives.nseindia.com')
+        # NSE RSS occasionally emits http links for its own archive. Accept only
+        # those exact trusted hosts and canonicalise to https before storage.
+        # Relative, credential-bearing and third-party links remain rejected.
+        if (parsed.scheme not in ('http','https') or parsed.hostname not in trusted
                 or parsed.username or parsed.password):
             raise ValueError('Invalid announcement source')
+        if parsed.scheme == 'http':
+            url = parsed._replace(scheme='https').geturl()
+            parsed = urlparse(url)
         description = item.findtext('description', '')
         score, block = classify(description) if category == 'announcements' else (0, False)
         # Shared document URL deduplicates stories/categories about one filing.
@@ -165,7 +174,10 @@ class NewsCollector:
                     items, publisher_at = parse_feed(self.fetch(url), category=category,
                         mapping=self._mapping, symbols=covered, now=now)
                     events.update({e['id']: e for e in items})
-                    sources[category] = dict(url=url, publisher_at=publisher_at, ok=True)
+                    published_dt = datetime.fromisoformat(publisher_at)
+                    sources[category] = dict(
+                        url=url, publisher_at=publisher_at, ok=True,
+                        publisher_age_hours=round(max(0,(now-published_dt).total_seconds())/3600,1))
                 except Exception as exc:
                     errors[category] = type(exc).__name__
             if not covered or self.symbols - covered:
