@@ -24,7 +24,7 @@
   "kadima/portfolio_capacity.py": "c5d92290e608d22241afbad88cf5eb6dcd4bf22b",
   "kadima/market_session_gate.py": "5633eba4177f6ade457d6bdd32ec4e154f27e68a",
   "kadima/commodity_watch.py": "2697a9b637ff4bd19f4a100fd3340a91facb216b",
-  "kadima/instrument_master.py": "f02360048e5e160aaa8d4fa74588dba16a84b3fa",
+  "kadima/instrument_master.py": "a04a6c3636d49081fb49d48ac745aea0adc73f1f",
   "kadima/celestial_universe.py": "0776824179727d22d5e250a3c8ae1ecf2322ce2f",
   "kadima/mcx_live.py": "497bef9f437bdb4786aee08b1a45f963b05ee108"
 }
