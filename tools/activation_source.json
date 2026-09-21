@@ -20,7 +20,7 @@
   "kadima/rate_limiter.py": "9886d951be6997e0ddf8fdda640529f5f751a25c",
   "kadima/gap_and_go.py": "b49527a16984c306293b5b9874fb17ed88c6ee31",
   "kadima/gap_baseline.py": "97e2851b4c599ca7b04fedba2bacc39169074455",
-  "kadima/gap_live.py": "8f62bbf1b32641bbfb9f048713e7e3808bdf2b52",
+  "kadima/gap_live.py": "9f282800528fd942ff5da8014da93c2ac3602b34",
   "kadima/portfolio_capacity.py": "c5d92290e608d22241afbad88cf5eb6dcd4bf22b",
   "kadima/market_session_gate.py": "5633eba4177f6ade457d6bdd32ec4e154f27e68a"
 }
