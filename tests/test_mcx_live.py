@@ -53,10 +53,15 @@ class MCXLiveTests(unittest.TestCase):
         self.assertEqual(spot,{})
 
     def test_active_contracts_recognises_mcx_options_for_reconciliation(self):
-        contracts=active_contracts(rows(),NOW.date())
-        self.assertIn(('MCX','CRUDEOILCE'),contracts)
-        self.assertEqual(contracts[('MCX','CRUDEOILCE')]['lot_size'],10)
-        self.assertNotIn(('MCX','CRUDEOILF'),contracts)
+        source=rows()
+        contracts=active_contracts(source,NOW.date())
+        ce=next(r for r in source if r['name']=='CRUDEOIL'
+                and r['instrumenttype']=='OPTFUT' and r['symbol'].endswith('CE'))
+        fut=next(r for r in source if r['name']=='CRUDEOIL'
+                 and r['instrumenttype']=='FUTCOM')
+        self.assertIn(('MCX',ce['token']),contracts)
+        self.assertEqual(contracts[('MCX',ce['token'])]['lot_size'],10)
+        self.assertNotIn(('MCX',fut['token']),contracts)
 
     def test_option_mapping_requires_matching_side_and_not_after_future_expiry(self):
         catalog=watch.catalog(rows(),NOW.date())
