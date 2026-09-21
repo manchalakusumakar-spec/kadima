@@ -201,6 +201,11 @@ class MoveCaptureExecutionWorker:
         if 0 <= time.monotonic() - last < RETRY_SECONDS:
             return
 
+        first = self.first_samples.get(name)
+        if (first and first.get("episode") == data["episode"]
+                and 0 <= time.monotonic() - first["at"] < CONFIRM_MIN_AGE_SEC):
+            return
+
         chain, q, days = self._chain(data)
         confirmation, reason = self._confirm(data, q)
         if confirmation is None:
