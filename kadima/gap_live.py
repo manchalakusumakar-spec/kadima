@@ -102,7 +102,7 @@ def _future_confirmation(master, name, now):
                     futures_symbol=contract.get("symbol"),
                     futures_oi_change=oi_change,
                     futures_price_change=ltp-opening)
-    except (ValueError, TypeError, KeyError, OverflowError):
+    except Exception:
         return dict(futures_available=True, futures_ok=False)
 
 
@@ -118,6 +118,7 @@ class Worker:
         self.attempted = {}
         self.shield_state = {}
         self.wall_history = defaultdict(lambda: defaultdict(lambda: deque(maxlen=20)))
+        self.vwap_state = {}
 
     def _history(self, index):
         now = now_ist()
@@ -207,6 +208,9 @@ class Worker:
                     and _finite(gamma.get("score"), 70))
         news = celestial.news_impact(name, "CE", now)
         wall_ratio, wall_distance = self._wall_metrics(data, now)
+        prior_vwap = self.vwap_state.get(name)
+        if not _finite(prior_vwap, .000001):
+            raise ValueError("gap_vwap_warmup")
         confirmations = dict(
             bull_shield=shield_ok, gamma_oi=gamma_ok,
             futures_available=False, futures_ok=False,
@@ -216,7 +220,7 @@ class Worker:
         row = gap_and_go.evaluate(
             name, today, previous_close=previous,
             session_vwap=data.get("session_vwap"),
-            prior_vwap=data.get("session_vwap"),
+            prior_vwap=prior_vwap,
             baseline_volume=baseline, confirmations=confirmations, now=now)
         if row.get("stage") == "CONFIRMED" and row.get("eligible"):
             confirmations.update(_future_confirmation(self.scrips, name, now))
@@ -322,6 +326,10 @@ class Worker:
             except Exception as exc:
                 audit.log("GAP_LIVE_PREPARATION_REJECTED", index=key,
                           error_type=type(exc).__name__)
+            finally:
+                vwap = data.get("session_vwap")
+                if _finite(vwap, .000001):
+                    self.vwap_state[key] = vwap
         celestial.health("gap_and_go_live", dict(ok=True, live_requested=True,
             mode="GUARDED_LIVE", candidates=len(candidates), prepared=prepared,
             one_lot_max=True, scan_window="09:15-10:30_IST"))
