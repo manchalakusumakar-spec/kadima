@@ -1,4 +1,6 @@
 import ast
+import hashlib
+import importlib.util
 from datetime import datetime, timedelta, timezone
 import json
 from pathlib import Path
@@ -54,6 +56,47 @@ class HelperTests(unittest.TestCase):
                     blocked_calls.add(name)
         self.assertFalse(blocked_imports & {'angel_orders','execution_ledger'})
         self.assertFalse(blocked_calls)
+
+
+class InstallerCompositionTests(unittest.TestCase):
+    @staticmethod
+    def git_blob(raw):
+        return hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()
+
+    def test_composed_executor_preserves_gap_session_and_multi_layers(self):
+        raw=Path('gap_live_update/auto_executor.py').read_bytes()
+        text=raw.decode()
+        self.assertEqual(self.git_blob(raw),'6161c04be1266e5e9b010f67a9466c22c0fc8ef0')
+        self.assertIn("kind == 'gap_and_go'",text)
+        self.assertEqual(text.count('KADIMA SESSION AUTO ENTRY GUARD v1'),2)
+        self.assertIn('KADIMA CAPITAL-BASED MULTI-POSITION v1',text)
+        self.assertIn('portfolio_capacity.affordable_lots',text)
+        self.assertNotIn('min(1, MAX_CONCURRENT_POSITIONS)',text)
+
+    def test_gap_installer_accepts_only_reviewed_deployed_executor_lineage(self):
+        spec=importlib.util.spec_from_file_location(
+            'gap_live_installer_test',Path('gap_live_update/install.py'))
+        module=importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        self.assertEqual(module.DEPLOYED_SESSION_MULTI_EXECUTOR,
+                         '346f780545139367a4152725743c7275a14e8239')
+        self.assertEqual(module.COMPOSED_EXECUTOR,
+                         '6161c04be1266e5e9b010f67a9466c22c0fc8ef0')
+        self.assertEqual(module.base.FILES['kadima/auto_executor.py'],
+                         module.DEPLOYED_SESSION_MULTI_EXECUTOR)
+        self.assertEqual(
+            module.base.digest(module.base.read_file(
+                module.ROOT/'kadima/auto_executor.py')),
+            module.COMPOSED_EXECUTOR)
+
+    def test_activation_manifest_pins_composed_executor_and_dependencies(self):
+        manifest=json.loads(Path('tools/activation_source.json').read_text())
+        self.assertEqual(manifest['kadima/auto_executor.py'],
+                         '6161c04be1266e5e9b010f67a9466c22c0fc8ef0')
+        self.assertEqual(manifest['kadima/market_session_gate.py'],
+                         '5633eba4177f6ade457d6bdd32ec4e154f27e68a')
+        self.assertEqual(manifest['kadima/portfolio_capacity.py'],
+                         'c5d92290e608d22241afbad88cf5eb6dcd4bf22b')
 
 
 if __name__=='__main__':
