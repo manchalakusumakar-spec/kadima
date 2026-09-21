@@ -260,7 +260,8 @@ class Lifecycle(unittest.TestCase):
     def test_gap_live_uses_shared_executor_one_lot_and_revalidation(self):
         self.ex.state.positions.clear()
         q=types.SimpleNamespace(symbol='STOCKCE',token='T',strike=100,opt_type='CE',
-            ltp=100,bid=99.5,ask=100.5,delta=.5,iv=40,volume=5000,oi=10000,spread_pct=1)
+            ltp=100,bid=99.5,ask=100.5,delta=.5,iv=40,volume=5000,oi=10000,
+            spread_pct=1,stop_price=90)
         chain=types.SimpleNamespace(quotes={'T':q},
             index=types.SimpleNamespace(opt_exchange='NFO'),_last_poll=time.monotonic())
         chain._spot_received_at=time.monotonic()
