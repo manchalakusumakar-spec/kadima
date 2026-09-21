@@ -165,10 +165,26 @@ class Expansion(unittest.TestCase):
         events,_=news.parse_feed(rss(item()),category='financial_results',mapping={'EXAMPLE LIMITED':'EXAMPLE'},symbols={'EXAMPLE'},now=NOW)
         self.assertEqual(events[0]['score'],0)
 
-    def test_stale_or_undated_rss_cannot_claim_coverage(self):
-        for data in (rss(build='01-Aug-2026 10:00:00'),b'<rss><channel><title>NSE</title></channel></rss>'):
-            with self.assertRaises(ValueError):
-                news.parse_feed(data,category='announcements',mapping={},symbols=set(),now=NOW)
+    def test_quiet_but_valid_rss_keeps_coverage_while_undated_fails(self):
+        events,latest=news.parse_feed(
+            rss(build='01-Aug-2026 10:00:00'),
+            category='financial_results',mapping={},symbols=set(),now=NOW)
+        self.assertEqual(events,[])
+        self.assertTrue(latest.startswith('2026-08-01'))
+        with self.assertRaises(ValueError):
+            news.parse_feed(b'<rss><channel><title>NSE</title></channel></rss>',
+                category='announcements',mapping={},symbols=set(),now=NOW)
+
+    def test_trusted_nse_http_links_are_canonicalised_but_offsite_still_rejected(self):
+        mapping={'EXAMPLE LIMITED':'EXAMPLE'}
+        events,_=news.parse_feed(
+            rss(item(url='http://nsearchives.nseindia.com/corporate/a.pdf')),
+            category='announcements',mapping=mapping,symbols={'EXAMPLE'},now=NOW)
+        self.assertEqual(events[0]['url'],
+                         'https://nsearchives.nseindia.com/corporate/a.pdf')
+        with self.assertRaises(ValueError):
+            news.parse_feed(rss(item(url='http://example.test/a.pdf')),
+                category='announcements',mapping=mapping,symbols={'EXAMPLE'},now=NOW)
 
     def test_malformed_xml_or_offsite_attribution_rejected(self):
         for data in (b'<!DOCTYPE rss><rss/>',rss(item(url='https://example.test/news'))):
@@ -190,7 +206,9 @@ class Expansion(unittest.TestCase):
         collector=news.NewsCollector(['EXAMPLE'],lambda url:b'SYMBOL,NAME OF COMPANY\nEXAMPLE,Example Limited\n' if url==news.COMPANIES else rss())
         with patch.object(news.news_catalysts,'ingest') as ingest:self.assertTrue(collector.collect())
         self.assertEqual(ingest.call_args.kwargs['covered_symbols'],['EXAMPLE'])
-        self.assertEqual(len(celestial.health('news')['sources']),4)
+        sources=celestial.health('news')['sources']
+        self.assertEqual(len(sources),4)
+        self.assertTrue(all('publisher_age_hours' in value for value in sources.values()))
 
     def position(self):
         return SimpleNamespace(signal_id=1,index='TEST',exchange='NFO',token='T',direction='CE')
