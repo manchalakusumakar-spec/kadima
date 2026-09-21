@@ -61,6 +61,28 @@ class BaselineTests(unittest.TestCase):
             rows, NOW.replace(hour=9, minute=15)))
 
 
+class PrefilterTests(unittest.TestCase):
+    def test_prefilter_is_default_off(self):
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertFalse(gap.paper_prefilter_enabled())
+
+    def test_full_quote_prefilter_detects_gap_but_never_marks_entry_eligible(self):
+        quote = dict(open=102.0, close=100.0, ltp=103.0, avgPrice=102.5,
+                     tradeVolume=50000)
+        row = gap.observe_full_quote("PATANJALI", quote, NOW.replace(hour=9, minute=16))
+        self.assertEqual(row["stage"], gap.Stage.GAP_DETECTED.value)
+        self.assertEqual(row["mode"], "PAPER_PREFILTER")
+        self.assertFalse(row["eligible"])
+        self.assertAlmostEqual(row["metrics"]["gap_pct"], 2.0)
+
+    def test_full_quote_prefilter_fails_closed_on_missing_previous_close(self):
+        row = gap.observe_full_quote("PATANJALI",
+            dict(open=102.0, ltp=103.0, avgPrice=102.5, tradeVolume=1),
+            NOW.replace(hour=9, minute=16))
+        self.assertEqual(row["stage"], gap.Stage.WATCH.value)
+        self.assertFalse(row["eligible"])
+
+
 class DetectorTests(unittest.TestCase):
     def evaluate(self, bars=None, **kwargs):
         return gap.evaluate("PATANJALI", bars or good_bars(),
