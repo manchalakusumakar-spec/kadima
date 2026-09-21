@@ -1,9 +1,8 @@
-"""Gap-and-Go detector and paper ledger.
+"""Gap-and-Go detector, paper ledger and guarded live intent helpers.
 
-This module has no broker-order path. CONFIRMED means the paper detector's
-entry gates passed; it never calls AutoExecutor, Angel One, or execution_ledger.
-Thresholds are initial hypotheses for replay/paper calibration, not probabilities
-or guarantees of profit.
+Detection remains pure. Live orders, when explicitly enabled, must still travel
+through KADIMA's shared AutoExecutor/ledger; this module never talks to Angel One
+directly. Thresholds are hypotheses, not probabilities or profit guarantees.
 """
 from __future__ import annotations
 
@@ -75,6 +74,54 @@ def _window(now):
 def paper_prefilter_enabled():
     """Explicit opt-in for read-only/paper prefilter publication."""
     return os.environ.get("KADIMA_GAP_PAPER", "0") == "1"
+
+
+def live_requested():
+    """Separate explicit live opt-in; defaults OFF on every installation."""
+    return os.environ.get("KADIMA_GAP_LIVE", "0") == "1"
+
+
+def live_blocks(symbol, now=None):
+    """Existing global permissions remain mandatory for Gap live entry."""
+    from . import celestial
+    from .utils import now_ist
+    now = now or now_ist()
+    cfg = celestial.read_config()
+    reasons = []
+    if not live_requested():
+        reasons.append("gap_live_disabled")
+    if not celestial.enabled():
+        reasons.append("rollout_disabled")
+    if not cfg.get("auto_trade_enabled"):
+        reasons.append("auto_paused")
+    if cfg.get("kill_latched"):
+        reasons.append("kill_latched")
+    news = celestial.news_impact(symbol, "CE", now)
+    if not news.get("news_available"):
+        reasons.append("fresh_news_coverage_required")
+    if news.get("news_blocked"):
+        reasons.append("news_risk_block")
+    return reasons
+
+
+def signal_id(row):
+    """One durable live opportunity per underlying/episode."""
+    from . import storage
+    c = storage.conn()
+    c.execute("CREATE TABLE IF NOT EXISTS gap_episodes "
+              "(episode TEXT PRIMARY KEY, signal_id INTEGER NOT NULL)")
+    with c:
+        saved = c.execute("SELECT signal_id FROM gap_episodes WHERE episode=?",
+                          (row["episode"],)).fetchone()
+        if saved:
+            return saved[0]
+        cur = c.execute("INSERT INTO signals "
+            "(ts,index_name,tier,score,direction,payload,kind) VALUES (?,?,?,?,?,?,?)",
+            (row["ts"], row["symbol"], "CONFIRMED", row.get("score", 0),
+             "CE", __import__("json").dumps(row), "gap_and_go"))
+        sid = cur.lastrowid
+        c.execute("INSERT INTO gap_episodes VALUES (?,?)", (row["episode"], sid))
+        return sid
 
 
 def observe_full_quote(symbol, quote, now, rules=None):
@@ -259,6 +306,10 @@ def evaluate(symbol, bars5, *, previous_close, session_vwap, prior_vwap,
 
     row["stage"] = Stage.CONFIRMED.value
     row["eligible"] = True
+    row["mode"] = "LIVE_READY" if live_requested() else "PAPER_ONLY"
+    row["blocked_reasons"].extend(live_blocks(symbol, now) if live_requested() else [])
+    if row["blocked_reasons"]:
+        row["eligible"] = False
     return row
 
 
