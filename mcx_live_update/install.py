@@ -14,11 +14,26 @@ import sys
 
 ROOT=Path(__file__).resolve().parents[1]
 BASE_PATH=ROOT/'stock_fast_update/install.py'
+COMPOSED_EXECUTOR='7cfe6cf21a520ba967d6a672b2f54a99bbe81321'
+DEPLOYED_GAP_EXECUTOR='a163c2077ccd304dcd5c274333e4f8a32648b34e'
 
 spec=importlib.util.spec_from_file_location('_mcx_base_installer',BASE_PATH)
 base=importlib.util.module_from_spec(spec)
 sys.modules[spec.name]=base
 spec.loader.exec_module(base)
+
+_original_read_file=base.read_file
+_composed_path=ROOT/'mcx_live_update/auto_executor.py'
+if base.digest(_original_read_file(_composed_path)) != COMPOSED_EXECUTOR:
+    raise base.Blocked('composed_mcx_executor_hash_mismatch')
+
+def _mcx_read_file(path, missing=False):
+    path=Path(path)
+    if path == ROOT/'kadima/auto_executor.py':
+        return _original_read_file(_composed_path, missing=missing)
+    return _original_read_file(path, missing=missing)
+
+base.read_file=_mcx_read_file
 
 
 def _paused_status(status):
@@ -84,7 +99,7 @@ base.broker_preflight_code=_carryforward_preflight_code
 base.FILES={
     'run.py':'86f8232e1efee90e5eed20cd507f360f3ab969bf',
     'kadima/engine.py':'a1875f1d73889c850403320cd30e583cbf5ca469',
-    'kadima/auto_executor.py':'502744a63d0b5a5d5aa9c74c39e7bd7cf5334c88',
+    'kadima/auto_executor.py':DEPLOYED_GAP_EXECUTOR,
     'kadima/commodity_watch.py':'7103168af0cbe9aec4f622dd41627da7854697a9',
     'kadima/instrument_master.py':'7d1338047157f1ec91cf19f3ec6099ca5b658c2e',
     'kadima/celestial_universe.py':'26f2433d9d3ca09389c5f9485105a4008f99b9de',
