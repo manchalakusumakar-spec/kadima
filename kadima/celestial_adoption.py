@@ -40,6 +40,17 @@ def inspect(executor, broker_rows, book, owned_ids, owned_tags, master):
                 view['reason']='managed_quantity_changed_externally'
             elif not allow:
                 view['reason']='adoption_disabled_or_external_order_pending'
+            elif qty>0 and key[2]=='CARRYFORWARD' and contract is not None:
+                if qty % contract['lot_size'] or view['symbol']!=contract['symbol']:
+                    view['reason']='contract_or_lot_mismatch'
+                else:
+                    # Verified manual carry-forward exposure is reconciled as
+                    # known-but-unmanaged. KADIMA never creates a Position for
+                    # it, never exits/trails it, and only blocks new entries in
+                    # the same underlying while it remains at the broker.
+                    view.update(source='MANUAL_CARRYFORWARD',managed=True,
+                        auto_managed=False,reason='carryforward_observed_not_managed',
+                        underlying=str(contract.get('name') or ''))
             elif qty<=0 or key[2]!='INTRADAY' or contract is None:
                 view['reason']='unsupported_position_type_or_contract'
             elif qty % contract['lot_size'] or view['symbol']!=contract['symbol']:
