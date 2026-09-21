@@ -215,12 +215,12 @@ class Worker:
         level = min(s[1] for s in samples) if direction == "CE" else max(s[1] for s in samples)
         if not (level < future["ltp"] if direction == "CE" else level > future["ltp"]):
             return None
-        expiry = datetime.fromisoformat(row["expiry"]).replace(
-            tzinfo=config.IST, hour=23, minute=30)
-        days = (expiry-now).total_seconds()/86400
-        stop = trade_policy.premium_stop(
-            future["ltp"], level, row["strike"], row["ltp"], days, direction)
-        if stop is None:
+        # MCX OPTFUT is an option on a futures contract. Do not reuse the
+        # equity/spot Black-Scholes structure mapper here. The primary exit is
+        # the observed futures structure level; a 15% premium stop is a
+        # secondary hard-loss backstop and is still subject to rupee risk sizing.
+        stop = row["ltp"] * 0.85
+        if not 0 < stop < row["ltp"]:
             return None
         lot_size = row.get("broker_lot_size")
         if (not isinstance(lot_size,(int,float)) or isinstance(lot_size,bool)
@@ -234,7 +234,8 @@ class Worker:
                     symbol=row["symbol"], strike=row["strike"], expiry=row["expiry"],
                     ltp=row["ltp"], bid=row["bid"], ask=row["ask"],
                     spread_pct=round(spread,3), option_move_pct=round(om["premium_move_pct"],3),
-                    option_oi_change=om["oi_change"], stop=stop, lot_size=int(lot_size),
+                    option_oi_change=om["oi_change"], stop=stop,
+                    underlying_stop=level, lot_size=int(lot_size),
                     score=score, ts=now.isoformat(), baseline_at=fm["baseline_at"])
 
     def _enter(self, row, now):
@@ -275,7 +276,7 @@ class Worker:
                 direction=row["direction"], symbol=row["symbol"], token=row["token"],
                 exchange="MCX", entry_price=0.0, entry_ts=now, lots=1,
                 lot_size=lot, remaining_qty=0, status="entry_pending",
-                swing_level=None, structural_stop=row["stop"],
+                swing_level=row["underlying_stop"], structural_stop=row["stop"],
                 effective_stop=row["stop"], allocated_capital=cost)
             self.executor.state.positions[str(sid)] = pos
             result = execution_ledger.submit(pos, "BUY", lot, limit_price)
@@ -285,6 +286,23 @@ class Worker:
             audit.log("MCX_LIVE_DISPATCH_RESULT", signal_id=sid, root=row["root"],
                       direction=row["direction"], score=row["score"], **result)
             return dict(result, signal_id=sid)
+
+    def _protect(self, futures):
+        by_root={row.get("name"):row for row in futures if row.get("fresh")}
+        with self.executor._lock:
+            positions=list(self.executor.state.positions.values())
+        for pos in positions:
+            if (getattr(pos,"kind",None)!="mcx_momentum"
+                    or pos.status not in ("open","entry_pending")
+                    or not isinstance(pos.swing_level,(int,float))):
+                continue
+            future=by_root.get(pos.index)
+            if not future or not isinstance(future.get("ltp"),(int,float)):
+                continue
+            breached=(future["ltp"] <= pos.swing_level if pos.direction=="CE"
+                      else future["ltp"] >= pos.swing_level)
+            if breached:
+                self.executor.manual_exit(pos.signal_id,"mcx_underlying_structure_failed")
 
     def cycle(self):
         now = now_ist()
@@ -296,6 +314,7 @@ class Worker:
             return
         contracts = self._contracts(now)
         futures = self._future_rows(contracts,now)
+        self._protect(futures)
         option_contracts = {}
         for future in futures:
             if not future.get("fresh"):
