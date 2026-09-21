@@ -1,6 +1,6 @@
 {
   "kadima/angel_orders.py": "6e379765f37044c255e5ca61b2a3b05abeec77dd",
-  "kadima/auto_executor.py": "dee6014ad85cd525cdc0f132561d0d69b7064117",
+  "kadima/auto_executor.py": "0f4b5253f22cf2eda1f93d544fe4d4e1e63442ef",
   "kadima/celestial.py": "dfac18b9d76f11428357cc7d6b4d8f88d15278fa",
   "kadima/celestial_adoption.py": "2273bb837257a09ba9d9e5a7bae52560f595e3bf",
   "kadima/control_api.py": "6734f4e822b2c6cf14fae88539a4bfd87b7292fb",
@@ -20,5 +20,5 @@
   "kadima/rate_limiter.py": "9886d951be6997e0ddf8fdda640529f5f751a25c",
   "kadima/gap_and_go.py": "b49527a16984c306293b5b9874fb17ed88c6ee31",
   "kadima/gap_baseline.py": "97e2851b4c599ca7b04fedba2bacc39169074455",
-  "kadima/gap_live.py": "7b94cca432751b2ca3fafc8699846fe46641feac"
+  "kadima/gap_live.py": "8f62bbf1b32641bbfb9f048713e7e3808bdf2b52"
 }
