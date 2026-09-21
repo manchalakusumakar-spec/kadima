@@ -21,14 +21,17 @@ NOW=datetime(2026,9,21,18,0,tzinfo=IST)
 
 def rows():
     out=[]
+    token=1000
     for name, base in [('CRUDEOIL',7000),('GOLD',120000),('NATURALGAS',400),
                        ('SILVER',150000),('COPPER',1200)]:
+        token += 1
         out.append(dict(name=name,exch_seg='MCX',instrumenttype='FUTCOM',
-            token=name+'F',symbol=name+'29SEP26FUT',expiry='29SEP2026',
+            token=str(token),symbol=name+'29SEP26FUT',expiry='29SEP2026',
             lotsize='10',strike='0',permitted_to_trade=True))
         for side in ('CE','PE'):
+            token += 1
             out.append(dict(name=name,exch_seg='MCX',instrumenttype='OPTFUT',
-                token=name+side,symbol=name+'28SEP26'+str(base)+side,
+                token=str(token),symbol=name+'28SEP26'+str(base)+side,
                 expiry='28SEP2026',lotsize='10',strike=str(base*100),
                 permitted_to_trade=True))
     return out
