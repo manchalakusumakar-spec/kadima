@@ -36,6 +36,33 @@ def _gap_read_file(path, missing=False):
 
 base.read_file=_gap_read_file
 
+# Stock-fast's original installer was designed for the first Celestial rollout
+# and therefore insists rollout_enabled is False. Gap is an additive upgrade on
+# hosts where Celestial may already be loaded. Accept either explicit rollout
+# state, but still require global auto paused, kill clear, zero local API
+# positions, and a fresh authenticated control snapshot.
+def _gap_paused_status(status):
+    if not isinstance(status,dict) or not isinstance(status.get('config'),dict):
+        raise base.Blocked('control_schema_unknown')
+    cfg=status['config']
+    if type(cfg.get('rollout_enabled')) is not bool:
+        raise base.Blocked('celestial_rollout_state_unknown')
+    if cfg.get('auto_trade_enabled') is not False:
+        raise base.Blocked('global_auto_must_be_paused_for_gap_install')
+    if cfg.get('kill_latched') is not False:
+        raise base.Blocked('kill_state_requires_operator_review')
+    if not isinstance(status.get('positions'),list) or status['positions']:
+        raise base.Blocked('local_api_exposure_or_unknown')
+    try:
+        timestamp=base.datetime.fromisoformat(status['ts'])
+        age=(base.datetime.now(base.timezone.utc)-timestamp).total_seconds()
+        if timestamp.tzinfo is None or not 0 <= age <= 30:
+            raise ValueError()
+    except (KeyError,ValueError,TypeError):
+        raise base.Blocked('stale_or_unknown_control_timestamp') from None
+
+base.paused_status=_gap_paused_status
+
 base.FILES={
     'run.py':'9036548a589752d26efe2bf952b25cdc590a7cdf',
     'kadima/full_universe_scanner.py':(
