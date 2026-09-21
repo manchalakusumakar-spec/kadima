@@ -531,7 +531,8 @@ class AutoExecutor:
             return self._reject("signal_already_submitted", index_name, direction)
         with self._lock:
             open_count = len(self.state.positions)
-            same_underlying = any(p.index == index_name and p.status != 'closed'
+            same_underlying = any(getattr(p, 'index', None) == index_name
+                                  and getattr(p, 'status', None) != 'closed'
                                   for p in self.state.positions.values())
         if same_underlying:
             return self._reject("same_underlying_position_exists", index_name, direction)
