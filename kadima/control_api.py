@@ -476,7 +476,7 @@ def celestial_top20(authorization: Optional[str] = Header(None)):
             row['action']='EXIT' if p['exit_reason'] or p['status']=='exit_pending' else 'TRAIL' if p['trail_active'] else 'ENTERED'
     return dict(ts=now_ist().isoformat(),candidates=rows,positions=positions,
         config=celestial_config(authorization),system={name:celestial.health(name) for name in
-            ('index_universe','stock_universe','reconciliation','news')},
+            ('index_universe','stock_universe','reconciliation','news','mcx_live')},
         readiness_note='Candidate prechecks only; execution rechecks alignment, structure, sizing, slots and broker state.',
         score_note='Heuristic scores, not win probabilities. No guaranteed 5% capture or fills.')
 
