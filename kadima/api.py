@@ -77,6 +77,8 @@ def state() -> dict:
         "unavailable": UNAVAILABLE,
         "notes": NOTES,
     }
+    from .memory_guard import status as memory_status
+    out['memory_guard'] = memory_status()
 
     for name, st in ENGINE.states.items():
         s = st.snap

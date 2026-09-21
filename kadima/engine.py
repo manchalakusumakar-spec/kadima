@@ -93,6 +93,8 @@ class IndexState:
 class Engine:
     def __init__(self) -> None:
         self.scrips = ScripMaster.load()
+        from . import memory_guard
+        memory_guard.start()
         from . import celestial
         from .celestial_scanner import Radar
         self.radar = Radar()

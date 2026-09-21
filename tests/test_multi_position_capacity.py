@@ -263,6 +263,9 @@ class RealExecutorTests(unittest.TestCase):
             return dict(ok=True,reason='awaiting_broker_fill',pending=True)
         self.session_gate=NS(entry_block=Mock(return_value=None))
         import kadima
+        # Deterministic synthetic host state; memory guard is tested separately.
+        self.memory_guard=NS(entry_block_reason=Mock(return_value=None))
+        p=patch.dict(sys.modules,{'kadima.memory_guard':self.memory_guard});p.start();self.addCleanup(p.stop)
         p=patch.object(kadima,'market_session_gate',self.session_gate,create=True);p.start();self.addCleanup(p.stop)
         p=patch.dict(sys.modules,{'kadima.market_session_gate':self.session_gate});p.start();self.addCleanup(p.stop)
         self.ns=dict(__package__='kadima',wraps=wraps,math=math,MAX_CONCURRENT_POSITIONS=1,

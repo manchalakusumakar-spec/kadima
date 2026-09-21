@@ -312,6 +312,8 @@ class MacroWatcher:
 
     # ---------------------------------------------------------- main loop
     def run_forever(self) -> None:
+        from . import memory_guard
+        memory_guard.start()
         last_vix = 0.0
         last_fiidii = 0.0
         last_news = 0.0
@@ -323,7 +325,7 @@ class MacroWatcher:
                 last_vix = now
                 self._save_snapshot()
 
-            if now - last_fiidii >= FIIDII_POLL_SEC:
+            if memory_guard.optional_work_allowed() and now - last_fiidii >= FIIDII_POLL_SEC:
                 rows = _fetch_fiidii()
                 if rows:
                     self._last_fiidii = {"rows": rows, "fetched_at": now_ist().isoformat()}
@@ -331,7 +333,7 @@ class MacroWatcher:
                 last_fiidii = now
                 self._save_snapshot()
 
-            if now - last_news >= NEWS_POLL_SEC:
+            if memory_guard.optional_work_allowed() and now - last_news >= NEWS_POLL_SEC:
                 articles = _fetch_news()
                 if articles:
                     self._last_news = articles
