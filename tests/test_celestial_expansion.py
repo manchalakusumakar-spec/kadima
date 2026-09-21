@@ -76,6 +76,15 @@ class Expansion(unittest.TestCase):
         self.assertEqual(set(indices), {'STOCK0'})
         self.assertEqual([x['name'] for x in missing], ['STOCK1'])
 
+    def test_bfo_stock_roots_are_out_of_scope_not_missing_nfo_coverage(self):
+        rows = master_rows(2)
+        bfo = rows[1].copy()
+        bfo.update(exch_seg='BFO', token='BFO1', symbol='STOCK0BFOCE')
+        rows.append(bfo)
+        indices, missing = full.stock_roots(ScripMaster(rows), NOW.date())
+        self.assertEqual(set(indices), {'STOCK0','STOCK1'})
+        self.assertFalse(any(x.get('exchange') == 'BFO' for x in missing))
+
     def test_all_batches_respect_50_tokens_and_have_no_promotion_cutoff(self):
         scanner = full.FullUniverseScanner(ScripMaster(master_rows(22)))
         calls = []

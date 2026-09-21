@@ -22,7 +22,7 @@ bounded stock-fast snapshot, regardless of Gamma direction or tier. The legacy
 Top-20-only scanner is not extended. The full-universe scanner must actually be
 running for this producer to exist.
 
-Coverage is resolved active stock-option roots, nearest expiry, ATM plus one
+Coverage is resolved active **NFO stock-option roots**, nearest expiry, ATM plus one
 strike either side (six option tokens per root). It is not every expiry or
 strike. Up to 512 roots are supported; excess roots fail explicitly rather than
 being silently omitted. There are no new WebSocket subscriptions and no synthetic

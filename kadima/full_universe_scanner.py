@@ -1,4 +1,4 @@
-"""All active stock roots, nearest expiry ATM +/- one strike, in FULL batches.
+"""All active NFO stock roots, nearest expiry ATM +/- one strike, in FULL batches.
 
 No top-mover promotion cutoff. Polling shares SESSION's cross-process budget.
 One spot plus six option tokens per stock permits seven stocks per 50-token
@@ -25,8 +25,11 @@ from .stock_fast import Recorder as StockFastRecorder
 
 def stock_roots(master, on):
     contracts = active_contracts(master.rows, on)
+    # Stock-fast is an NSE/NFO stock-options strategy. BFO stock-option
+    # listings are a separate venue/scope and must not be counted as unresolved
+    # NFO coverage; doing so makes an otherwise healthy NSE F&O universe fail.
     roots = sorted({(r['exch_seg'], r['name']) for r in contracts.values()
-                    if r['instrumenttype'] == 'OPTSTK'})
+                    if r['instrumenttype'] == 'OPTSTK' and r['exch_seg'] == 'NFO'})
     spots = {}
     for r in master.rows:
         if (r.get('exch_seg') == 'NSE' and r.get('instrumenttype', '') == ''
@@ -36,7 +39,7 @@ def stock_roots(master, on):
     for exchange, name in roots:
         tokens = set(spots.get(name, []))
         step = master.infer_strike_step(name, exchange)
-        if len(tokens) != 1 or not step or exchange != 'NFO':
+        if len(tokens) != 1 or not step:
             missing.append(dict(name=name, exchange=exchange, reason='spot_or_strike_mapping_unresolved'))
         else:
             resolved[name] = Index(name, 'NSE', next(iter(tokens)), exchange, name, step, 0)
@@ -101,7 +104,7 @@ class FullUniverseScanner:
             option_chains_tracked=len(self.chains), option_chain_limit=None,
             option_chains_fresh=fresh, missing=self.missing,
             ok=not self.missing and bool(self.chains) and fresh == len(self.chains),
-            coverage='all_resolved_active_stock_roots_nearest_expiry_atm_plus_minus_one', **extra))
+            coverage='all_resolved_active_nfo_stock_roots_nearest_expiry_atm_plus_minus_one', **extra))
         try:
             write_snapshot(dict(ts=now.isoformat(),tracked=sorted(self.scores.values(),key=lambda r:r['score'],reverse=True),
                 prices=self.prices,execution='central_executor_gated',coverage=dict(
