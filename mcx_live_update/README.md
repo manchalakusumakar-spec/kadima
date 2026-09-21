@@ -34,6 +34,19 @@ price/volume/OI confirmation before buying CE or PE.
 
 These thresholds are heuristics, not probabilities or profit guarantees.
 
+## One-command install + activation
+
+After this release is reviewed, the preferred operator path is one command:
+
+```bash
+sudo -n python3 mcx_live_update/go_live.py --mcx-capital <rupees>
+```
+
+That command runs the guarded broker-checked source installation first and only
+then runs live activation. Any unknown source hash, unsafe broker state,
+reconciliation/news failure, service failure or runtime-flag mismatch stops the
+sequence. It never bypasses a blocker and never sends a test order.
+
 ## Install source
 
 Run from a separate reviewed checkout/worktree:
