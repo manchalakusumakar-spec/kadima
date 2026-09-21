@@ -1,4 +1,6 @@
+import ast
 from datetime import date, datetime, timedelta, timezone
+from pathlib import Path
 import types
 import unittest
 from unittest.mock import patch
@@ -31,6 +33,28 @@ def confirms(**patch_):
                  next_resistance=110.0)
     value.update(patch_)
     return value
+
+
+class SafetyBoundaryTests(unittest.TestCase):
+    def test_gap_module_has_no_live_execution_imports_or_calls(self):
+        source = Path("kadima/gap_and_go.py").read_text()
+        tree = ast.parse(source)
+        blocked_modules = {"auto_executor", "angel_orders", "execution_ledger"}
+        imported = set()
+        blocked_calls = set()
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Import):
+                imported.update(alias.name.split(".")[-1] for alias in node.names)
+            elif isinstance(node, ast.ImportFrom):
+                imported.add((node.module or "").split(".")[-1])
+                imported.update(alias.name for alias in node.names)
+            elif isinstance(node, ast.Call):
+                fn = node.func
+                name = fn.attr if isinstance(fn, ast.Attribute) else fn.id if isinstance(fn, ast.Name) else None
+                if name in {"evaluate_and_enter", "submit", "place_limit_order"}:
+                    blocked_calls.add(name)
+        self.assertFalse(imported & blocked_modules, imported & blocked_modules)
+        self.assertFalse(blocked_calls, blocked_calls)
 
 
 class BaselineTests(unittest.TestCase):
