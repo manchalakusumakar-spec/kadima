@@ -169,6 +169,27 @@ class MCXInstallerTests(unittest.TestCase):
         raw=module.base.read_file(module.ROOT/'kadima/auto_executor.py')
         self.assertEqual(module.base.digest(raw),module.COMPOSED_EXECUTOR)
 
+    def test_installer_accepts_every_reviewed_pre_mcx_activator(self):
+        spec=importlib.util.spec_from_file_location('mcx_installer_lineage',
+            Path('mcx_live_update/install.py'))
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        self.assertEqual(set(module.REVIEWED_ACTIVATORS),{
+            'ee50fdc6615e94db4fb28e7e279408ab1c7d740d',
+            '055e05bc2f20b2faf0a4fb4de4aae579249a06ac',
+        })
+        self.assertEqual(module.base.FILES['tools/activate_execution.py'],
+                         module.REVIEWED_ACTIVATORS)
+
+    def test_one_command_runner_stops_before_activation_if_install_fails(self):
+        spec=importlib.util.spec_from_file_location('mcx_go_live',
+            Path('mcx_live_update/go_live.py'))
+        module=importlib.util.module_from_spec(spec);spec.loader.exec_module(module)
+        failed=types.SimpleNamespace(returncode=7)
+        with patch.object(module.subprocess,'run',return_value=failed) as run, \
+             self.assertRaises(SystemExit):
+            module.run('source_install',['python','installer'])
+        run.assert_called_once()
+
     def test_activation_manifest_pins_mcx_runtime(self):
         manifest=json.loads(Path('tools/activation_source.json').read_text())
         self.assertEqual(manifest['kadima/auto_executor.py'],
