@@ -64,6 +64,43 @@ def _gap_paused_status(status):
 
 base.paused_status=_gap_paused_status
 
+def _carryforward_preflight_code(code):
+    """Allow only verified long CARRYFORWARD options during guarded upgrade."""
+    contract_anchor="    SESSION.ensure()\n    for name in ('position','orderBook'):\n"
+    position_anchor="""                if quantity != 0:
+                    reason = 'broker_positions_not_flat'
+                    raise RuntimeError()
+"""
+    if code.count(contract_anchor)!=1 or code.count(position_anchor)!=1:
+        raise base.Blocked('broker_preflight_shape_changed')
+    contract_block="""    SESSION.ensure()
+    from kadima.scrip_master import ScripMaster
+    from kadima.celestial_universe import active_contracts
+    from kadima.utils import now_ist
+    contracts = active_contracts(ScripMaster.load().rows, now_ist().date())
+    for name in ('position','orderBook'):
+"""
+    position_block="""                if quantity != 0:
+                    product = str(row.get('producttype') or '')
+                    exchange = str(row.get('exchange') or '')
+                    token = str(row.get('symboltoken') or '')
+                    symbol = str(row.get('tradingsymbol') or '')
+                    contract = contracts.get((exchange, token))
+                    carry_ok = (
+                        product == 'CARRYFORWARD' and quantity > 0
+                        and quantity == int(quantity) and contract is not None
+                        and int(quantity) % int(contract['lot_size']) == 0
+                        and symbol == str(contract['symbol']))
+                    if not carry_ok:
+                        reason = 'broker_positions_not_flat'
+                        raise RuntimeError()
+"""
+    result=code.replace(contract_anchor,contract_block,1).replace(position_anchor,position_block,1)
+    compile(result,'gap_carryforward_broker_preflight','exec')
+    return result
+
+base.broker_preflight_code=_carryforward_preflight_code
+
 base.FILES={
     'run.py':'9036548a589752d26efe2bf952b25cdc590a7cdf',
     'kadima/full_universe_scanner.py':(
