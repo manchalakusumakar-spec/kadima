@@ -169,7 +169,7 @@ class MCXInstallerTests(unittest.TestCase):
         self.assertEqual(manifest['kadima/auto_executor.py'],
                          '7cfe6cf21a520ba967d6a672b2f54a99bbe81321')
         self.assertEqual(manifest['kadima/mcx_live.py'],
-                         '0ef33d468b9e67a28b41a75de685c04bd5b668bd')
+                         '86928e87cca0fe6c085466f9c0b5c715d4ebb415')
         self.assertEqual(manifest['kadima/instrument_master.py'],
                          'a04a6c3636d49081fb49d48ac745aea0adc73f1f')
 
