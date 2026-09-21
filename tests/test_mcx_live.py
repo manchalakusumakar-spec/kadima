@@ -85,6 +85,7 @@ class MCXLiveTests(unittest.TestCase):
             stop=900,lot_size=100)
         with patch.object(mcx_live,'global_blocks',return_value=[]), \
              patch.object(mcx_live,'capital_limit',return_value=15000), \
+             patch.object(mcx_live.capital_guard,'get_lot_size',return_value=100), \
              patch.object(mcx_live.capital_guard,'available_equity',return_value=100000):
             result=worker._enter(row,NOW)
         self.assertFalse(result['ok'])
