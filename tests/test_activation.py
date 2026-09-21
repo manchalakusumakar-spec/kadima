@@ -96,6 +96,18 @@ class ActivationTests(unittest.TestCase):
                 self.assertNotIn('SECRET',str(caught.exception))
                 if detail.startswith('broker'):self.assertEqual(str(caught.exception),detail)
 
+    def test_carryforward_preflight_is_exact_and_fail_closed(self):
+        spec=importlib.util.spec_from_file_location('activation_executor_fixture',
+            ROOT/'executor_fix/install.py')
+        installer=importlib.util.module_from_spec(spec);spec.loader.exec_module(installer)
+        code=a.carryforward_preflight_code(installer.PREFLIGHT)
+        self.assertIn("product == 'CARRYFORWARD'",code)
+        self.assertIn("active_contracts",code)
+        self.assertIn("broker_positions_not_flat",code)
+        compile(code,'carryforward_preflight_test','exec')
+        with self.assertRaisesRegex(a.Blocked,'broker_preflight_shape_changed'):
+            a.carryforward_preflight_code('not the reviewed preflight')
+
     def test_failed_broker_output_never_exposes_sdk_secrets(self):
         installer=types.SimpleNamespace(PREFLIGHT='code',failure_summary=lambda e,s:'preflight_failed')
         owner=types.SimpleNamespace(pw_uid=1000,pw_gid=1000)
