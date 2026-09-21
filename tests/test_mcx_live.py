@@ -111,7 +111,7 @@ class MCXLiveTests(unittest.TestCase):
                     spread_pct=.03,fresh=True)
         # A fresh quote without a five-minute window never becomes a trade.
         with patch.object(mcx_live,'_fetch',return_value={'status':True,'data':{'fetched':[]}}):
-            self.assertIsNone(worker._candidate(contracts,future,NOW))
+            self.assertIsNone(worker._candidate(contracts,future,{}, {}, NOW))
 
 
 
