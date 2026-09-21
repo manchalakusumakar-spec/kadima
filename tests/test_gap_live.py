@@ -75,7 +75,7 @@ class InstallerCompositionTests(unittest.TestCase):
     def test_composed_executor_preserves_gap_session_and_multi_layers(self):
         raw=Path('gap_live_update/auto_executor.py').read_bytes()
         text=raw.decode()
-        self.assertEqual(self.git_blob(raw),'02f431caedf8ab0c63724e12c90f3af6f6ab7ba7')
+        self.assertEqual(self.git_blob(raw),'a163c2077ccd304dcd5c274333e4f8a32648b34e')
         self.assertIn("kind == 'gap_and_go'",text)
         self.assertEqual(text.count('KADIMA SESSION AUTO ENTRY GUARD v1'),2)
         self.assertIn('KADIMA CAPITAL-BASED MULTI-POSITION v1',text)
@@ -90,7 +90,7 @@ class InstallerCompositionTests(unittest.TestCase):
         self.assertEqual(module.DEPLOYED_SESSION_MULTI_EXECUTOR,
                          '346f780545139367a4152725743c7275a14e8239')
         self.assertEqual(module.COMPOSED_EXECUTOR,
-                         '02f431caedf8ab0c63724e12c90f3af6f6ab7ba7')
+                         'a163c2077ccd304dcd5c274333e4f8a32648b34e')
         self.assertEqual(module.base.FILES['kadima/auto_executor.py'],
                          (module.DEPLOYED_SESSION_MULTI_EXECUTOR,
                           module.PREVIOUS_GAP_EXECUTOR))
@@ -134,7 +134,7 @@ class InstallerCompositionTests(unittest.TestCase):
     def test_activation_manifest_pins_composed_executor_and_dependencies(self):
         manifest=json.loads(Path('tools/activation_source.json').read_text())
         self.assertEqual(manifest['kadima/auto_executor.py'],
-                         '02f431caedf8ab0c63724e12c90f3af6f6ab7ba7')
+                         'a163c2077ccd304dcd5c274333e4f8a32648b34e')
         self.assertEqual(manifest['kadima/market_session_gate.py'],
                          '5633eba4177f6ade457d6bdd32ec4e154f27e68a')
         self.assertEqual(manifest['kadima/portfolio_capacity.py'],
