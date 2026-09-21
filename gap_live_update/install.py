@@ -13,8 +13,9 @@ import sys
 
 ROOT=Path(__file__).resolve().parents[1]
 BASE_PATH=ROOT/'stock_fast_update/install.py'
-COMPOSED_EXECUTOR='6161c04be1266e5e9b010f67a9466c22c0fc8ef0'
+COMPOSED_EXECUTOR='02f431caedf8ab0c63724e12c90f3af6f6ab7ba7'
 DEPLOYED_SESSION_MULTI_EXECUTOR='346f780545139367a4152725743c7275a14e8239'
+PREVIOUS_GAP_EXECUTOR='6161c04be1266e5e9b010f67a9466c22c0fc8ef0'
 
 spec=importlib.util.spec_from_file_location('_gap_base_installer',BASE_PATH)
 base=importlib.util.module_from_spec(spec)
@@ -72,7 +73,8 @@ base.FILES={
     # Preserve/upgrade the reviewed NSE RSS collector only from the exact
     # currently installed source. Other macro/news services remain untouched.
     'kadima/news_collector.py':'8a6a2375924b7551effb88e48204c7564ee4ae48',
-    'kadima/auto_executor.py':DEPLOYED_SESSION_MULTI_EXECUTOR,
+    'kadima/celestial_adoption.py':'2273bb837257a09ba9d9e5a7bae52560f595e3bf',
+    'kadima/auto_executor.py':(DEPLOYED_SESSION_MULTI_EXECUTOR,PREVIOUS_GAP_EXECUTOR),
     # Gap files may be absent on the first live installation. An earlier
     # paper-only gap_and_go.py is also an accepted reviewed starting point.
     'kadima/gap_and_go.py':(None,'b26599c469ec9e0af4dcd9503aa6965365bb4647'),
