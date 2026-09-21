@@ -16,6 +16,10 @@ ROOT=Path(__file__).resolve().parents[1]
 BASE_PATH=ROOT/'stock_fast_update/install.py'
 COMPOSED_EXECUTOR='7cfe6cf21a520ba967d6a672b2f54a99bbe81321'
 DEPLOYED_GAP_EXECUTOR='a163c2077ccd304dcd5c274333e4f8a32648b34e'
+REVIEWED_ACTIVATORS=(
+    'ee50fdc6615e94db4fb28e7e279408ab1c7d740d',
+    '055e05bc2f20b2faf0a4fb4de4aae579249a06ac',
+)
 
 spec=importlib.util.spec_from_file_location('_mcx_base_installer',BASE_PATH)
 base=importlib.util.module_from_spec(spec)
@@ -105,7 +109,7 @@ base.FILES={
     'kadima/instrument_master.py':'7d1338047157f1ec91cf19f3ec6099ca5b658c2e',
     'kadima/celestial_universe.py':'26f2433d9d3ca09389c5f9485105a4008f99b9de',
     'kadima/mcx_live.py':None,
-    'tools/activate_execution.py':'055e05bc2f20b2faf0a4fb4de4aae579249a06ac',
+    'tools/activate_execution.py':REVIEWED_ACTIVATORS,
 }
 
 
