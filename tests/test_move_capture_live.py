@@ -17,10 +17,12 @@ BASE = Path(__file__).resolve().parents[1]
 class FakeExecutor:
     def __init__(self):
         self.calls = []
+        self.contexts = []
 
     def evaluate_and_enter(self, *args, **kwargs):
-        self.calls.append((args, kwargs))
         context = kwargs["fast_context"]()
+        self.calls.append((args, kwargs))
+        self.contexts.append(context)
         if not context:
             return {"ok": False, "reason": "revalidation_failed"}
         return {"ok": True, "reason": "test_dispatch"}
@@ -110,7 +112,7 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(args[1], "CE")
         self.assertEqual(args[6], "fast_momentum")
         self.assertEqual(args[7], 101)
-        ctx = kwargs["fast_context"]()
+        ctx = ex.contexts[0]
         self.assertEqual(ctx["source_strategy"], "move_capture")
         self.assertEqual(ctx["strategy"], "fast_momentum")
         self.assertTrue(ctx["eligible"])
