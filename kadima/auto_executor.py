@@ -685,6 +685,14 @@ class AutoExecutor:
                     or any(latest.get(k)!=fast.get(k) for k in ('episode','token','symbol','exchange','direction','spot_stop'))
                     or fast_momentum.live_blocks(index_name,direction,now_ist(),latest.get('score',0))):
                 return self._reject('fast_invalidated_before_submission',index_name,direction)
+        if gap:
+            latest_gap = gap_context()
+            if (not latest_gap or not latest_gap.get('eligible')
+                    or not celestial.fresh(latest_gap.get('ts'))
+                    or any(latest_gap.get(k)!=gap.get(k)
+                           for k in ('episode','token','contract_symbol','exchange','direction','spot_stop'))
+                    or gap_and_go.live_blocks(index_name, now_ist())):
+                return self._reject('gap_invalidated_before_submission',index_name,direction)
         if selected is not None:
             latest = celestial.entry_candidate(index_name,direction,manual=manual_request,candidate_id=selected['id'])
             if latest is None or latest['last_updated'] != selected['last_updated']:
