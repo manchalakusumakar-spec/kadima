@@ -228,6 +228,9 @@ class Worker:
                 return dict(ok=False, reason="mcx_ask_unavailable")
             limit_price = round(ask * 1.005, 1)
             lot = row["lot_size"]
+            resolved_lot = capital_guard.get_lot_size(row["symbol"], row["token"])
+            if resolved_lot != lot:
+                return dict(ok=False, reason="mcx_lot_size_unverified")
             risk_unit = trade_policy.risk_per_unit(limit_price, row["stop"])
             if risk_unit is None:
                 return dict(ok=False, reason="mcx_structure_risk_invalid")
