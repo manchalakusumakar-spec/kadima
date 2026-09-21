@@ -27,9 +27,9 @@ JOB = 'kadima-session-auto.service'
 PINNED = {
     'stock_fast_update/install.py': '00ac2c1ba6b5a68a21cd2bf532dd53e1440e6e35',
     'executor_fix/install.py': 'e3f8970bcaeedfc14fd8f4ee295df53f23ec7e61',
-    'session_auto/install.py': '17d3400a69b35230dbbd7a1e1428d97481a62a0b',
-    'multi_position_update/install.py': 'a215f29afd19e1645e7f17911b7a8d97c7acd5f7',
-    'multi_position_update/patch.py': '335c01791105ad806b74abc44ef49526fb943607',
+    'session_auto/install.py': 'aa2efd3ebf19164bb0f80756436bd05e19ec5dc0',
+    'multi_position_update/install.py': '8b6b45049e7461e3408ccbe00cbf284df475ba82',
+    'multi_position_update/patch.py': '144bee5d5b60c4bc6e7db77591b526ddbb34faa5',
     'multi_position_update/reset_kill.py': '2769fbfe49cd8cc7a10634203bf225317cec1195',
     'session_auto/gate.py': '5633eba4177f6ade457d6bdd32ec4e154f27e68a',
 }
