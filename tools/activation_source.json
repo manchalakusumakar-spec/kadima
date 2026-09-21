@@ -8,7 +8,7 @@
   "kadima/execution_ledger.py": "1fde45163927f6fceff4a6ae8573e4242ac4fb18",
   "kadima/external_reconciliation.py": "c1eb8c7bb0e0b7f6842ff2aacbc7401f60f21ec9",
   "kadima/fast_momentum.py": "7eb165d7ae89be70133b0a8a4d4efeed964a7d70",
-  "kadima/full_universe_scanner.py": "8c01cc55e7348244212c6012ed5468bdb9853895",
+  "kadima/full_universe_scanner.py": "a0f874a87ce63ca920e99b4724e36bae86e68ce1",
   "kadima/news_catalysts.py": "2cdbcdd91616c75b8c57a9dc6192b6b6aa2c09e9",
   "kadima/news_collector.py": "8a6a2375924b7551effb88e48204c7564ee4ae48",
   "kadima/shield_confirmation.py": "88f8485c1f8845147db8074fb82b1dcda0bc90ef",
