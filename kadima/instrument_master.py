@@ -136,8 +136,10 @@ def _absorb_row(row: dict, lot_map: dict, sym_map: dict,
                 spot_map[name] = {"token": str(token), "exchange": "NSE"}
         return
 
-    # ---- derivatives (NFO/BFO) ----
-    if exch not in ("NFO", "BFO"):
+    # ---- derivatives (NFO/BFO/MCX) ----
+    # MCX lot sizes are needed by the live commodity lane even though MCX
+    # contracts are not part of the NSE/BSE stock-universe maps below.
+    if exch not in ("NFO", "BFO", "MCX"):
         return
 
     token = row.get("token")
@@ -158,6 +160,8 @@ def _absorb_row(row: dict, lot_map: dict, sym_map: dict,
     # F&O stock universe: OPTSTK only (excludes OPTIDX — the 4 indices
     # already have dedicated handling in engine.py / config.INDICES).
     itype = row.get("instrumenttype", "")
+    if exch == "MCX":
+        return
     if itype == "OPTSTK":
         name = row.get("name")
         if name:
