@@ -62,7 +62,10 @@ def _fetch(tokens):
     if not QUOTE.wait_and_allow(timeout_sec=3.0):
         raise ValueError("mcx_quote_rate_limited")
     SESSION.ensure()
-    response = SESSION.api.getMarketData(mode="FULL", exchangeTokens={"MCX": tokens})
+    try:
+        response = SESSION.api.getMarketData(mode="FULL", exchangeTokens={"MCX": tokens})
+    except TypeError:
+        response = SESSION.api.getMarketData("FULL", {"MCX": tokens})
     return response
 
 
