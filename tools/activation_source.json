@@ -3,7 +3,7 @@
   "kadima/auto_executor.py": "7cfe6cf21a520ba967d6a672b2f54a99bbe81321",
   "kadima/celestial.py": "dfac18b9d76f11428357cc7d6b4d8f88d15278fa",
   "kadima/celestial_adoption.py": "68e66fca7baca0b42cc29b80cd41cff301ae4f57",
-  "kadima/control_api.py": "6734f4e822b2c6cf14fae88539a4bfd87b7292fb",
+  "kadima/control_api.py": "dc2ec6f89de5b7bcfe40b67ba35e36a621d06965",
   "kadima/engine.py": "7f9ddb10bbc3a144a82d6de982c5ca934e2433d1",
   "kadima/execution_ledger.py": "1fde45163927f6fceff4a6ae8573e4242ac4fb18",
   "kadima/external_reconciliation.py": "c1eb8c7bb0e0b7f6842ff2aacbc7401f60f21ec9",
