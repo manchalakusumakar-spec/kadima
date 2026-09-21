@@ -8,7 +8,7 @@ from .config import IST
 from .celestial_scanner import PremiumWindow
 from .utils import now_ist
 
-ROOTS = ('CRUDEOIL', 'GOLD', 'NATURALGAS', 'SILVER')
+ROOTS = ('CRUDEOIL', 'GOLD', 'NATURALGAS', 'SILVER', 'COPPER')
 SNAPSHOT_PATH = Path.home() / 'kadima-py/state/macro_snapshot.json'
 
 
