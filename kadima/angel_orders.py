@@ -99,7 +99,19 @@ def place_limit_order(*, tradingsymbol: str, symboltoken: str, exchange: str,
 
     request_started = False
     try:
+        # This transport supports BUY entries and SELL exits of long options.
+        # Do not use this side-based rule for a future short-covering strategy.
+        if transactiontype == 'BUY':
+            from .memory_guard import entry_block_reason
+            reason = entry_block_reason()
+            if reason:
+                return OrderResult(False, None, reason)
         SESSION.ensure()
+        # Session refresh may allocate memory; check again just before sending.
+        if transactiontype == 'BUY':
+            reason = entry_block_reason()
+            if reason:
+                return OrderResult(False, None, reason)
         audit.log('ANGELONE_REQUEST', signal_id=signal_id, intent=ordertag,
                   symbol=tradingsymbol, side=transactiontype, quantity=quantity, price=price)
         request_started = True

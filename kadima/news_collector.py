@@ -186,7 +186,13 @@ class NewsCollector:
         return True
 
     def run(self):
+        from . import memory_guard
+        memory_guard.start()
         while not self._stop.is_set():
+            if not memory_guard.optional_work_allowed():
+                celestial.health('news', dict(ok=False, covered_symbols=[], reason='memory_guard_deferred'))
+                self._stop.wait(5)
+                continue
             try:
                 self.collect()
             except Exception as exc:

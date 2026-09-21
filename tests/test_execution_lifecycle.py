@@ -30,6 +30,9 @@ config = stub('config', DAILY_LOSS_LIMIT_INR=500, IST=timezone.utc,
               ORDER_PLACEMENT_ENABLED=True, in_no_auto_exit_window=lambda:False,
               DATA_DIR='', DB_PATH='')
 audit = stub('audit', log=Mock())
+memory_guard = stub('memory_guard', entry_block_reason=lambda:None,
+                    optional_work_allowed=lambda:True, start=lambda:None,
+                    status=lambda:{'state':'normal','entries_blocked':False})
 alerts = stub('alerts', enqueue=Mock())
 capital = stub('capital_guard', get_capital_for_signal=Mock(return_value=10000),
                enforce=Mock(return_value=(1, 'ok')), record_realized_pnl=Mock())

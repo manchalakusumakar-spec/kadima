@@ -479,6 +479,10 @@ class AutoExecutor:
                            fast_context=None):
         """snap: indicators.Snapshot from the calling IndexState, used for
         real VWAP (not a stub) in the entry-quality check."""
+        from .memory_guard import entry_block_reason
+        reason = entry_block_reason()
+        if reason:
+            return self._reject(reason, index_name, direction)
         if not getattr(chain, '_entry_guard', lambda: True)():
             return self._reject('stock_signal_expired_or_replaced', index_name, direction)
         selected = None
