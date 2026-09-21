@@ -1,8 +1,8 @@
 {
   "kadima/angel_orders.py": "6e379765f37044c255e5ca61b2a3b05abeec77dd",
-  "kadima/auto_executor.py": "6161c04be1266e5e9b010f67a9466c22c0fc8ef0",
+  "kadima/auto_executor.py": "02f431caedf8ab0c63724e12c90f3af6f6ab7ba7",
   "kadima/celestial.py": "dfac18b9d76f11428357cc7d6b4d8f88d15278fa",
-  "kadima/celestial_adoption.py": "2273bb837257a09ba9d9e5a7bae52560f595e3bf",
+  "kadima/celestial_adoption.py": "68e66fca7baca0b42cc29b80cd41cff301ae4f57",
   "kadima/control_api.py": "6734f4e822b2c6cf14fae88539a4bfd87b7292fb",
   "kadima/engine.py": "a1875f1d73889c850403320cd30e583cbf5ca469",
   "kadima/execution_ledger.py": "1fde45163927f6fceff4a6ae8573e4242ac4fb18",
