@@ -26,7 +26,7 @@ base.FILES={
         'a0f874a87ce63ca920e99b4724e36bae86e68ce1'),
     'kadima/stock_fast.py':'d4c537156dbb080a50b249d5164e9506f1e1b8dd',
     'kadima/auto_executor.py':'f830afebc49b764e48b91bd4c61f2260e769d25f',
-    'kadima/gap_and_go.py':None,
+    'kadima/gap_and_go.py':'b26599c469ec9e0af4dcd9503aa6965365bb4647',
     'kadima/gap_baseline.py':None,
     'kadima/gap_live.py':None,
 }
