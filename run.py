@@ -11,13 +11,19 @@ from kadima import audit, alerts
 
 def main():
     engine = Engine()
-    from kadima import auto_executor, stock_fast, stock_fast_api, move_capture_execution
+    from kadima import (auto_executor, stock_fast, stock_fast_api,
+                        gap_live, mcx_live, commodity_watch,
+                        move_capture_execution)
     stock_fast_worker = stock_fast.Worker(auto_executor.EXECUTOR, engine.scrips)
+    gap_worker = gap_live.Worker(auto_executor.EXECUTOR, engine.scrips)
+    mcx_worker = mcx_live.Worker(auto_executor.EXECUTOR, engine.scrips)
     move_capture_worker = move_capture_execution.MoveCaptureExecutionWorker(
         auto_executor.EXECUTOR, engine.scrips)
 
     def stop_all():
         move_capture_worker.stop()
+        mcx_worker.stop()
+        gap_worker.stop()
         stock_fast_worker.stop()
         engine.stop()
 
@@ -53,11 +59,15 @@ def main():
     audit.log("control_api_started", port=8081)
 
     if not force_start:
-        while not (in_premarket() or in_market_hours()):
+        while not (in_premarket() or in_market_hours()
+                   or (mcx_live.live_requested()
+                       and commodity_watch.monitoring_window(now_ist()))):
             time.sleep(30)
 
     engine.start()
     stock_fast_worker.start()
+    gap_worker.start()
+    mcx_worker.start()
     move_capture_worker.start()
 
     try:
@@ -68,7 +78,9 @@ def main():
                 alerts.send("Kill switch engaged - KADIMA halting.")
                 stop_all()
                 return 0
-            if not force_start and not in_market_hours() and now_ist().hour >= 15:
+            if (not force_start and not in_market_hours() and now_ist().hour >= 15
+                    and not (mcx_live.live_requested()
+                             and commodity_watch.monitoring_window(now_ist()))):
                 stop_all()
                 return 0
     except KeyboardInterrupt:
