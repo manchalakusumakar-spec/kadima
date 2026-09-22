@@ -22,6 +22,7 @@ from . import (alerts, audit, capital_guard, entry_quality, exit_manager,
 from . import angel_orders, forecast_trail, execution_ledger, trade_policy
 from . import celestial
 from . import fast_momentum
+from . import index_scalper
 from .config import (DAILY_LOSS_LIMIT_INR, IST, MAX_CONCURRENT_POSITIONS,
                      MAX_LOTS_PER_SIGNAL, ORDER_PLACEMENT_ENABLED)
 from .instrument_master import get_lot_size
@@ -243,6 +244,7 @@ class AutoExecutor:
         self._celestial_verified = set()
         self._celestial_quotes = {}
         self.fast_rows = {}
+        self.scalp_rows = {}
         self.entry_diagnostics = deque(maxlen=100)
 
     @serialized
@@ -488,14 +490,16 @@ class AutoExecutor:
         selected = None
         minimum = None
         fast = None
-        if kind == 'fast_momentum':
+        scalp = kind == index_scalper.KIND
+        live_blocks = index_scalper.live_blocks if scalp else fast_momentum.live_blocks
+        if kind == 'fast_momentum' or scalp:
             if not ORDER_PLACEMENT_ENABLED:
                 return self._reject('broker_orders_disabled',index_name,direction)
             fast = fast_context() if callable(fast_context) else None
-            if (not fast or not fast.get('eligible') or fast.get('strategy')!='fast_momentum'
+            if (not fast or not fast.get('eligible') or fast.get('strategy') != kind
                     or fast.get('underlying')!=index_name or fast.get('direction')!=direction
                     or not celestial.fresh(fast.get('ts'))
-                    or fast_momentum.live_blocks(index_name,direction,now_ist(),fast.get('score',0))):
+                    or live_blocks(index_name,direction,now_ist(),fast.get('score',0))):
                 return self._reject('fast_context_or_live_gate_blocked',index_name,direction)
         if celestial.enabled() and fast is None:
             if candidate_id is None:
@@ -527,6 +531,11 @@ class AutoExecutor:
             open_count = len(self.state.positions)
         if open_count >= min(1, MAX_CONCURRENT_POSITIONS):
             return self._reject("max_concurrent_positions", index_name, direction)
+        # Keep this lane exclusive even if a reviewed portfolio overlay is
+        # installed later: neither scalp nor other entries may share its slot.
+        if self.state.positions and (scalp or any(
+                getattr(p, 'kind', None) == index_scalper.KIND for p in self.state.positions.values())):
+            return self._reject('index_scalp_shared_slot_occupied', index_name, direction)
 
         if not 0 <= time.monotonic() - getattr(chain, '_spot_received_at', 0) <= 30:
             return self._reject('underlying_quote_stale', index_name, direction)
@@ -582,9 +591,12 @@ class AutoExecutor:
         allocation = capital_guard.get_capital_for_signal('bull_shield','CONFIRMED') if fast else capital_guard.get_capital_for_signal(kind, tier)
 
         verdict = risk_budget.select_within_budget(
-            candidates, spot, allocated_capital=allocation, max_lots=MAX_LOTS_PER_SIGNAL)
+            candidates, spot, allocated_capital=allocation,
+            max_lots=index_scalper.LOTS if scalp else MAX_LOTS_PER_SIGNAL)
         if verdict.candidate is None:
             return self._reject(f"risk_budget_{verdict.reason}", index_name, direction)
+        if scalp and verdict.lots != index_scalper.LOTS:
+            return self._reject('index_scalp_two_lots_exceed_budget', index_name, direction)
 
         chosen_quote = next(r.quote for r in ranked
                             if r.quote.token == verdict.candidate.token)
@@ -619,9 +631,11 @@ class AutoExecutor:
             self, SimpleNamespace(quote=chosen_quote), direction, verdict.lots)
         if allowed_lots == 0:
             return self._reject(f"capital_guard_{cap_reason}", index_name, direction)
+        if scalp and allowed_lots != index_scalper.LOTS:
+            return self._reject('index_scalp_two_lots_exceed_capital', index_name, direction)
 
         lot_size = get_lot_size(chosen_quote.symbol, chosen_quote.token)
-        if lot_size is None:
+        if lot_size is None or (scalp and (type(lot_size) is not int or lot_size <= 0)):
             return self._reject("lot_size_unresolvable_at_order_time", index_name, direction)
 
         # Require a fresh received LTP; do not fall back to a stale chain quote.
@@ -631,7 +645,11 @@ class AutoExecutor:
             return self._reject("fresh_entry_quote_unavailable", index_name, direction)
 
         limit_price = round(pricing_ltp * (1 + LIMIT_ORDER_BUFFER_PCT / 100.0), 1)
-        if fast:
+        if scalp:
+            limit_price = index_scalper.entry_limit(pricing_ltp, fast['entry'])
+            if limit_price is None:
+                return self._reject('index_scalp_entry_price_ran_away', index_name, direction)
+        elif fast:
             # Bounded entry price, no indefinite chasing after detection.
             cap = math.floor(fast['entry']*1.005*20)/20
             if pricing_ltp>cap:
@@ -640,6 +658,13 @@ class AutoExecutor:
         stop = verdict.candidate.stop_price
         allowed_lots = trade_policy.lots_within_allocation(
             allocation, limit_price, stop, lot_size, allowed_lots)
+        if scalp:
+            if allowed_lots != index_scalper.LOTS:
+                return self._reject('index_scalp_two_lots_exceed_fresh_budget', index_name, direction)
+            try:
+                index_scalper.plan(limit_price, stop, lot_size)
+            except ValueError as exc:
+                return self._reject(str(exc), index_name, direction)
         if allowed_lots < 1 or pricing_ltp <= stop:
             return self._reject('fresh_quote_exceeds_risk_or_invalidates_stop', index_name, direction)
         clock = time.monotonic()
@@ -647,6 +672,8 @@ class AutoExecutor:
                 or not 0 <= clock - chain._spot_received_at <= 30
                 or (fast is None and not 0 <= clock - chain._alignment_at <= 240)):
             return self._reject('entry_data_expired_before_submission', index_name, direction)
+        if scalp and allowed_lots != index_scalper.LOTS:
+            return self._reject('index_scalp_two_lots_exceed_portfolio_budget', index_name, direction)
         quantity = allowed_lots * lot_size
 
         if killswitch.engaged() or not in_market_hours() or past_signal_cutoff():
@@ -657,7 +684,7 @@ class AutoExecutor:
             latest = fast_context()
             if (not latest or not latest.get('eligible') or not celestial.fresh(latest.get('ts'))
                     or any(latest.get(k)!=fast.get(k) for k in ('episode','token','symbol','exchange','direction','spot_stop'))
-                    or fast_momentum.live_blocks(index_name,direction,now_ist(),latest.get('score',0))):
+                    or live_blocks(index_name,direction,now_ist(),latest.get('score',0))):
                 return self._reject('fast_invalidated_before_submission',index_name,direction)
         if selected is not None:
             latest = celestial.entry_candidate(index_name,direction,manual=manual_request,candidate_id=selected['id'])
@@ -777,6 +804,8 @@ class AutoExecutor:
                 reason = 'eod_force_close'
             elif reason:
                 pass
+            elif getattr(pos, 'kind', None) == 'index_scalp' and index_scalper.exit_reason(pos, ltp, now):
+                reason = index_scalper.exit_reason(pos, ltp, now)
             elif getattr(pos,'kind',None)=='fast_momentum' and fast_momentum.timeout_reason(pos,now):
                 reason = fast_momentum.timeout_reason(pos,now)
             elif ltp <= structural:

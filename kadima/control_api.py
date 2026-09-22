@@ -311,10 +311,12 @@ def dashboard_data(authorization: Optional[str] = Header(None)):
     equity = capital_guard.available_equity()
     realized_today = exit_manager.realized_pnl_today()
     daily_loss_used = max(0.0, -realized_today)
+    from . import index_scalper
 
     return {
         "ts": now_ist().isoformat(),
         "positions": position_views,
+        "index_scalper": index_scalper.status(getattr(EXECUTOR, 'scalp_rows', {})),
         "forecast_connection": getattr(EXECUTOR, "forecast_connection_status", {"status": "not_checked"}),
         "forecaster": read_forecast_report(),
         "fast_momentum": {

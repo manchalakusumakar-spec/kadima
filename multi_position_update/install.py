@@ -22,7 +22,7 @@ ROOT = Path('/home/ubuntu/kadima-py')
 SCHEDULER = Path('/opt/kadima-session-auto')
 TIMER = 'kadima-session-auto.timer'
 JOB = 'kadima-session-auto.service'
-SESSION_HASH = '3d44e27376a4ebf26123b29d762d19125add8635'
+SESSION_HASH = '4af4e494da6d2cf69d52e6182452101901b8ca46'
 HELPER_HASH = '587e138396139fc3abc6407b7329d686676df9a3'
 
 

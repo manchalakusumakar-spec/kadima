@@ -1,0 +1,34 @@
+{
+  "base_commit": "26ac9ec16044e1275eeaa83b959d981c5fff380d",
+  "files": {
+    "kadima/api.py": {
+      "before": "91cacb126620003d13307b3acd482bdaa20e67cb",
+      "after": "7dddd90e1703fa76f98bfba64f8b1881d478b14c"
+    },
+    "kadima/control_api.py": {
+      "before": "6734f4e822b2c6cf14fae88539a4bfd87b7292fb",
+      "after": "5081b3c0a5285075c86de11ee277deffff4972ca"
+    },
+    "kadima/auto_executor.py": {
+      "before": "82c736633dde815c42247b59ac53efd8cf79bd45",
+      "after": "f9ae57045cd156c19a1049337d74dcbcce1d8860"
+    },
+    "kadima/engine.py": {
+      "before": "24ea097e3fe9c07cdd3bdb16d72e8ab11b35dc66",
+      "after": "31da89d01abfc42dfefe82bc29dd9e4904e08d89"
+    },
+    "kadima/index_scalper.py": {
+      "before": null,
+      "after": "385c43ae6f4bd2077282801b0d2081cbdd3c7580"
+    }
+  },
+  "dependencies": {
+    "kadima/fast_momentum.py": "7eb165d7ae89be70133b0a8a4d4efeed964a7d70",
+    "kadima/trade_policy.py": "3d585c612c4d7adc0640d785a2e242d33529feb8",
+    "kadima/execution_ledger.py": "1fde45163927f6fceff4a6ae8573e4242ac4fb18",
+    "kadima/option_chain.py": "b2b9c4fea31e4528743e615319797e99d5e13e2c",
+    "kadima/instrument_master.py": "7d1338047157f1ec91cf19f3ec6099ca5b658c2e",
+    "kadima/angel_orders.py": "7d86be4a6c3ca3613dcbbe76dbeb440bd4e26b64",
+    "kadima/memory_guard.py": "5a12b173add065bbf132b52cea2c568f4f523be7"
+  }
+}
