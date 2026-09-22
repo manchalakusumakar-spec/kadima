@@ -273,6 +273,7 @@ class RealExecutorTests(unittest.TestCase):
             MIN_PROJECTED_RETURN_PCT=10,LIMIT_ORDER_BUFFER_PCT=2.5,SimpleNamespace=NS,
             celestial=NS(fresh=lambda *a:True,enabled=lambda:False),
             fast_momentum=NS(live_blocks=lambda *a:[]),killswitch=NS(engaged=lambda:False),
+            index_scalper=NS(KIND='index_scalp', LOTS=2, live_blocks=lambda *a:[]),
             in_market_hours=lambda:True,past_signal_cutoff=lambda:False,
             exit_manager=NS(realized_pnl_today=lambda:0),time=time,
             execution_ledger=NS(seen=lambda sid:False,pending=lambda:list(self.pending),submit=submit),
@@ -299,6 +300,16 @@ class RealExecutorTests(unittest.TestCase):
     def test_legacy_config_one_does_not_block_second(self):
         self.ns['MAX_CONCURRENT_POSITIONS']=1
         self.assertTrue(self.enter()['ok'])
+    def test_open_scalp_keeps_exclusive_slot_under_multi_position_overlay(self):
+        self.ex.state.positions['1'].kind = 'index_scalp'
+        self.assertEqual(self.enter()['reason'], 'index_scalp_shared_slot_occupied')
+        self.assertEqual(self.submitted, [])
+    def test_scalp_cannot_enter_alongside_existing_position_under_overlay(self):
+        self.fast['strategy'] = 'index_scalp'
+        result = self.ns['evaluate_and_enter'](self.ex, 'NEW', 'CE', self.chain, 100, NS(vwap=99), 5,
+            'index_scalp', 2, 'EXPERIMENTAL', 75, fast_context=lambda:self.fast.copy())
+        self.assertEqual(result['reason'], 'index_scalp_shared_slot_occupied')
+        self.assertEqual(self.submitted, [])
     def test_pending_order_blocks_without_second_broker_submission(self):
         self.pending.append(dict(state='unknown'))
         self.assertEqual(self.enter()['reason'],'portfolio_order_pending_wait');self.assertEqual(self.submitted,[])

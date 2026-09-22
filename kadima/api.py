@@ -79,6 +79,9 @@ def state() -> dict:
     }
     from .memory_guard import status as memory_status
     out['memory_guard'] = memory_status()
+    from . import index_scalper
+    lane = getattr(ENGINE, 'scalp_lane', None)
+    out['index_scalper'] = index_scalper.status(getattr(lane, 'rows', {}))
 
     for name, st in ENGINE.states.items():
         s = st.snap

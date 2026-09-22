@@ -1,5 +1,7 @@
 {
-  "kadima/memory_guard.py": [null],
+  "kadima/memory_guard.py": [
+    null
+  ],
   "kadima/alerts.py": [
     "b94fe1672a30eeb4ac183c8f42bf365271ee3609",
     "472c361e3636805bcb48591398a3f2a5fa708b18"
@@ -171,5 +173,8 @@
     null,
     "7db4dcbbccd7c9d709161439715cf1d0a68c24ba",
     "754b8685d99bffcef90688f3f7279eafa932e44c"
+  ],
+  "kadima/index_scalper.py": [
+    null
   ]
 }

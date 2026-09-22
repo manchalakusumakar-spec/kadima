@@ -21,6 +21,7 @@ from types import SimpleNamespace
 from . import alerts, audit, indicators, killswitch, last_known, storage, strike_selector
 from . import auto_executor
 from .fast_momentum import Lane as FastLane
+from . import index_scalper
 from .shield_confirmation import (SHIELD_MIN_SCORE, BANK_NAMES, ShieldEvidence,
     alignment, fresh, confirmation_checks, is_shield_confirmed)
 from .stock_execution import StockExecutionWorker
@@ -99,6 +100,8 @@ class Engine:
         from .celestial_scanner import Radar
         self.radar = Radar()
         self.fast_lane = FastLane()
+        self.scalp_lane = index_scalper.Lane()
+        self._scalp_reported = {}
         self._fast_reported = {}
         self.scan_indices = GAMMA_INDICES
         if celestial.enabled():
@@ -361,14 +364,38 @@ class Engine:
                 blocked_reasons=['fast_lane_error'],scenarios=[])
             audit.log('FAST_LANE_ERROR',index=st.name,error_type=type(exc).__name__)
 
+    def _scan_scalp(self, st):
+        try:
+            row = self.scalp_lane.scan(st)
+            auto_executor.EXECUTOR.scalp_rows[st.name] = row
+            signature = (row.get('episode'), row['stage'], tuple(row['blocked_reasons']))
+            if self._scalp_reported.get(st.name) != signature:
+                self._scalp_reported[st.name] = signature
+                audit.log('INDEX_SCALP_CANDIDATE', **row)
+            if row['eligible']:
+                sid = index_scalper.signal_id(row)
+                result = auto_executor.EXECUTOR.evaluate_and_enter(
+                    st.name, row['direction'], st.chain, st.spot, st.snap, row['days'],
+                    index_scalper.KIND, sid, 'EXPERIMENTAL', row['score'],
+                    fast_context=lambda state=st: self.scalp_lane.scan(state, record=False))
+                row.update(signal_id=sid, dispatch=result)
+                audit.log('INDEX_SCALP_DISPATCH_RESULT', signal_id=sid, index=st.name, **result)
+        except Exception as exc:
+            auto_executor.EXECUTOR.scalp_rows[st.name] = dict(
+                underlying=st.name, ts=now_ist().isoformat(), stage='BLOCKED', eligible=False,
+                blocked_reasons=['index_scalp_lane_error'])
+            if hasattr(self.scalp_lane, 'rows'):
+                self.scalp_lane.rows[st.name] = auto_executor.EXECUTOR.scalp_rows[st.name]
+            audit.log('INDEX_SCALP_LANE_ERROR', index=st.name, error_type=type(exc).__name__)
+
     def _oi_loop(self) -> None:
         while not self._stop.is_set():
             if in_market_hours() and not killswitch.engaged():
                 self._warm_bank_history()
                 for st in self.states.values():
                     from . import celestial
-                    if not celestial.enabled() and st.name in GAMMA_EXPIRY_ONLY and self._dte(st) > 1.0:
-                        continue  # monthly-only index -- scan only on its own expiry day
+                    gamma_expiry_only = (not celestial.enabled() and st.name in GAMMA_EXPIRY_ONLY
+                                         and self._dte(st) > 1.0)
                     if st.spot:
                         try:
                             st.chain.rebuild_ladder(st.spot)
@@ -377,8 +404,9 @@ class Engine:
                                 auto_executor.EXECUTOR.state.premium_tracker.record_chain(st.chain)
                                 # Separate price-led lane consumes the same successful poll.
                                 # Observation by default; never dispatch from the tick callback.
-                                self._scan_fast(st)
-                            if polled:
+                                if not gamma_expiry_only:
+                                    self._scan_fast(st)
+                            if polled and not gamma_expiry_only:
                                 auto_executor.EXECUTOR.update_structure(st.name, st.chain, st.spot)
                                 self._score_gamma(st)
                                 self.radar.publish_chain(st.chain,st.spot,
@@ -388,6 +416,10 @@ class Engine:
                                 if celestial.enabled():
                                     auto_executor.EXECUTOR.prepare_celestial_context(
                                         st.name,st.chain,st.spot,st.snap,self._dte(st))
+                            if polled:
+                                # Existing Gamma/Celestial dispatch gets first use
+                                # of the shared position slot on this index.
+                                self._scan_scalp(st)
                         except Exception as exc:        # noqa: BLE001
                             audit.log("oi_loop_error", index=st.name,
                                       error=str(exc))
