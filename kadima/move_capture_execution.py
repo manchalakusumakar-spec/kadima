@@ -18,7 +18,7 @@ import time
 from . import audit, celestial, config, fast_momentum, indicators
 from . import move_capture_handoff as handoff
 from . import strike_selector
-from .instrument_master import stock_universe
+from .celestial_universe import active_contracts
 from .option_chain import OptionChain
 from .utils import in_market_hours, now_ist
 
@@ -52,10 +52,26 @@ class MoveCaptureExecutionWorker:
 
     def _stocks(self):
         if self._stock_map is None:
-            self._stock_map = {
-                s["name"]: s for s in stock_universe()
-                if s.get("opt_exchange") == "NFO"
+            contracts = active_contracts(self.scrips.rows, now_ist().date())
+            names = {
+                row["name"] for row in contracts.values()
+                if row.get("instrumenttype") == "OPTSTK"
+                and row.get("exch_seg") == "NFO"
             }
+            spots = {}
+            for row in self.scrips.rows:
+                if (row.get("exch_seg") == "NSE"
+                        and row.get("instrumenttype", "") == ""
+                        and row.get("symbol", "").endswith("-EQ")
+                        and row.get("token")):
+                    spots.setdefault(row.get("name"), set()).add(str(row["token"]))
+            self._stock_map = {}
+            for name in names:
+                tokens = spots.get(name, set())
+                if len(tokens) == 1:
+                    self._stock_map[name] = dict(
+                        name=name, spot_exchange="NSE",
+                        spot_token=next(iter(tokens)), opt_exchange="NFO")
         return self._stock_map
 
     def _index(self, name):
