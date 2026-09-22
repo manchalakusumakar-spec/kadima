@@ -15,7 +15,7 @@ import os
 import threading
 import time
 
-from . import audit, celestial, config, fast_momentum, indicators
+from . import audit, celestial, config, fast_momentum, indicators, stock_fast
 from . import move_capture_handoff as handoff
 from . import strike_selector
 from .celestial_universe import active_contracts
@@ -203,6 +203,18 @@ class MoveCaptureExecutionWorker:
                 underlying=name, stage="LIVE_DISABLED", eligible=False,
                 ts=now.isoformat(), blocked_reasons=["move_capture_live_disabled"])
             return
+        try:
+            stock_controls = stock_fast.controls()
+        except Exception:
+            self.rows[name] = dict(
+                underlying=name, stage="BLOCKED", eligible=False,
+                ts=now.isoformat(), blocked_reasons=["stock_live_control_unavailable"])
+            return
+        if stock_controls.get("live_enabled") is not True:
+            self.rows[name] = dict(
+                underlying=name, stage="LIVE_DISABLED", eligible=False,
+                ts=now.isoformat(), blocked_reasons=["stock_live_control_disabled"])
+            return
         if data.get("asset_scope") != "STOCK":
             return
         if (data.get("underlying") != name or data.get("direction") not in ("CE", "PE")
@@ -249,7 +261,11 @@ class MoveCaptureExecutionWorker:
 
         def revalidate():
             latest = handoff.current(name)
-            if (not live_requested() or latest is None
+            try:
+                stock_live = stock_fast.controls().get("live_enabled") is True
+            except Exception:
+                stock_live = False
+            if (not live_requested() or not stock_live or latest is None
                     or latest["episode"] != episode
                     or latest["direction"] != direction):
                 return None
