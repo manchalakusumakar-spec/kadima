@@ -100,6 +100,20 @@ class DispatchTests(unittest.TestCase):
         self.assertEqual(ex.calls, [])
         self.assertEqual(worker.rows["AAA"]["stage"], "LIVE_DISABLED")
 
+    def test_stock_live_switch_blocks_move_capture_dispatch(self):
+        ex = FakeExecutor()
+        worker = live.MoveCaptureExecutionWorker(ex, SimpleNamespace())
+        data = candidate(datetime.now(IST))
+        row = dict(name="AAA", updated_at=data["observed_at"],
+                   episode=data["episode"], direction="CE", data=data)
+        with patch.object(live, "live_requested", return_value=True), \
+             patch.object(live.stock_fast, "controls", return_value={"live_enabled": False}), \
+             patch.object(worker, "_chain", side_effect=AssertionError("must not poll")):
+            worker.process(row)
+        self.assertEqual(ex.calls, [])
+        self.assertEqual(worker.rows["AAA"]["blocked_reasons"],
+                         ["stock_live_control_disabled"])
+
     def test_confirmed_candidate_reuses_guarded_fast_executor_contract(self):
         ex = FakeExecutor()
         worker = live.MoveCaptureExecutionWorker(ex, SimpleNamespace())
@@ -117,6 +131,7 @@ class DispatchTests(unittest.TestCase):
              patch.object(live.handoff, "current", return_value=current), \
              patch.object(live.handoff, "still_current", return_value=True), \
              patch.object(live.fast_momentum, "live_blocks", return_value=[]), \
+             patch.object(live.stock_fast, "controls", return_value={"live_enabled": True}), \
              patch.object(live.audit, "log"), \
              patch.object(worker, "_chain", return_value=(chain, quote, 2.0)), \
              patch.object(worker, "_confirm",
