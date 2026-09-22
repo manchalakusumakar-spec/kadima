@@ -70,6 +70,25 @@ class ConfirmationTests(unittest.TestCase):
 
 
 class DispatchTests(unittest.TestCase):
+    def test_live_stock_map_prefers_active_nfo_scope_over_bfo_duplicates(self):
+        now = datetime.now(IST)
+        expiry = now.strftime("%d%b%Y").upper()
+        rows = [
+            dict(exch_seg="NSE", instrumenttype="", symbol="AAA-EQ",
+                 name="AAA", token="1"),
+            dict(exch_seg="NFO", instrumenttype="OPTSTK", symbol="AAAOPTCE",
+                 name="AAA", token="11", expiry=expiry, lotsize="100",
+                 permitted_to_trade=True),
+            dict(exch_seg="BFO", instrumenttype="OPTSTK", symbol="AAAOPTCEBFO",
+                 name="AAA", token="12", expiry=expiry, lotsize="100",
+                 permitted_to_trade=True),
+        ]
+        scrips = SimpleNamespace(rows=rows)
+        worker = live.MoveCaptureExecutionWorker(FakeExecutor(), scrips)
+        stocks = worker._stocks()
+        self.assertEqual(stocks["AAA"]["opt_exchange"], "NFO")
+        self.assertEqual(stocks["AAA"]["spot_token"], "1")
+
     def test_live_disabled_never_polls_options_or_dispatches(self):
         ex = FakeExecutor()
         worker = live.MoveCaptureExecutionWorker(ex, SimpleNamespace())
