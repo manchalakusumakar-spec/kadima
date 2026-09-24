@@ -1,7 +1,8 @@
 # Dynamic stops: offline draft and bounded structure exception
 
-Status: OFFLINE_DRAFT. No executor, broker feed, order-placement flag or AWS
-service is changed by this draft. `stops.py` preserves its legacy two-argument
+Status: DISABLED_EXECUTION_ADAPTER. The executor and confirmed-fill ledger now
+accept explicitly bound plans; rollout defaults OFF. No AWS service or broker
+setting has been changed. `stops.py` preserves its legacy two-argument
 API; normalized draft calls require a `StopPosition` and market context.
 
 The base draft implements the supplied Intraday, Scalp, Gamma and CAS regimes
@@ -246,7 +247,7 @@ the stop engine's control.
 State schema version 3 persists source and the manual clock/policy snapshot.
 Versions 1 and 2 remain readable without granting manual CAS permission to
 old unattributed positions. Deployment must reconcile/cancel old broker stops
-explicitly where appropriate; this offline patch does not do so.
+explicitly where appropriate; this adapter does not discover or cancel external broker stops.
 
 ## Candle quality and Fibonacci candidates
 
@@ -297,3 +298,70 @@ costs, expiry and volatility segmentation. No historical edge is established.
 The available year-long CSV could not be materialized/read; a single older
 option-chain snapshot cannot validate intraday reversal paths or 60-second
 forecast probabilities.
+
+
+## Execution integration and release status
+
+`KADIMA_REGIME_STOPS_ENABLED=1` permits new bindings and enables the agreed
+manual policy for verified, managed NFO/BFO positions. It is OFF by default.
+Do not enable it merely because the unit tests pass. It changes manual CAS
+exit behavior immediately, even when no new regime plan has been bound.
+Unbound manual positions retain the existing Intraday protection before CAS.
+Existing persisted bindings continue to be evaluated if the flag is later
+turned off; rollback must account for these positions first.
+
+The internal `AutoExecutor.publish_stop_context` / `bind_stop_plan` boundary
+requires reconciled ownership, final confirmed fills, an exact entry-time,
+price, source and contract match, verified tick size and a future product/session
+deadline. It never derives a probability from scanner scores. Binding preserves
+previously earned protection. Plan source is immutable. Actual pending orders
+block binding; unknown sources and fractional lots remain rejected.
+
+Bound positions bypass legacy price/VWAP/thesis exits. Operator/session exits
+remain authoritative. Manual CAS also bypasses the strategy daily-loss exit,
+as explicitly requested; this does not prevent broker liquidation. Dashboard
+stop tightening updates the persisted active and protected stops, and is
+rejected during manual CAS. Legacy structure refresh cannot overwrite a bound
+plan. A persisted-state error blocks new entries and audits the affected position
+without silently reverting it to a conflicting legacy stop.
+
+The ledger persists the order link before transport and commits cumulative fills,
+position quantities and stop state together. Repeated broker snapshots cannot
+subtract quantity twice. Rejected and partially cancelled exits stay latched;
+remaining quantity is retried only after a terminal broker status. A full exit
+behind an outstanding partial requests cancellation once and waits for its final
+fill cursor. Cancellation acknowledgement is not proof of cancellation. An
+ambiguous cancellation requires broker reconciliation/operator investigation.
+Fresh matching bid/ask and the persisted tick size are required for a LIMIT sell;
+stale depth cannot be made fresh merely by receiving an LTP. Decisions continue
+on the one-second monitor even without a quote. No automatic market-order
+fallback or cancel/reprice loop has been added.
+
+Still required before live release:
+
+- A production adapter must supply and bind plans after confirmed fills, with
+  measured ATR/Greeks, source tags, tick sizes and verified session deadlines.
+  Current scanner entry paths do not automatically call the new binding API.
+- Wire fresh underlying context, completed bars and structure zones; validate
+  the short-horizon recovery probability out of sample before populating
+  `STRUCTURE_GUARD_VALIDATIONS`. The >=65% exception remains unavailable while
+  that registry is empty. Historical reversal profitability is unverified.
+- Reconcile any external stops and verify cancellation/repricing behavior in a
+  broker sandbox; an unfilled LIMIT order does not guarantee a timely exit.
+- Inventory the actual AWS source and configuration, compose against installed
+  session/portfolio overlays, rehearse flat-account installation and rollback,
+  then observe the deployed service and broker reconciliation.
+
+Run the following from a separate checkout of this PR on AWS to obtain the
+read-only inventory. It prints selected service flags and file hashes, not
+credentials; it does not install, enable trading or prove broker flatness:
+
+```sh
+sudo -n python3 tools/deployment_report.py --target /home/ubuntu/kadima-py
+```
+
+The session installer retains an exact hash allowlist including this executor;
+its composition tests preserve exit methods. The older MCX installer still uses
+its separately pinned executor: running it does not deploy the new stop adapter.
+Its dependency set includes the stop modules used by shared ledger reconciliation.
+Do not run an old installer as a substitute for a source-matched stop release.

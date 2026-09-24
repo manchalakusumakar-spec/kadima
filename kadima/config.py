@@ -270,3 +270,4 @@ STRUCTURE_GUARD_VALIDATIONS = {}
 # the existing CAS start, then no strategy price/thesis stops. Deadlines and
 # pending broker intents remain binding. No live adoption is enabled here.
 MANUAL_STOP_POLICY = dict(version=1, cas_start='15:15:00', full_premium_risk=True)
+REGIME_STOPS_ENABLED = os.environ.get('KADIMA_REGIME_STOPS_ENABLED', '0') == '1'
