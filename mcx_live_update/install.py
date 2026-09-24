@@ -136,6 +136,11 @@ base.FILES={
     'kadima/instrument_master.py':'7d1338047157f1ec91cf19f3ec6099ca5b658c2e',
     'kadima/celestial_universe.py':'26f2433d9d3ca09389c5f9485105a4008f99b9de',
     'kadima/mcx_live.py':None,
+    # Ledger fill reconciliation imports these only for persisted stop bindings.
+    'kadima/stop_runtime.py':None,
+    'kadima/regime_stops.py':None,
+    'kadima/structure_guard.py':None,
+    'kadima/structure_levels.py':None,
 }
 
 

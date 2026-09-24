@@ -75,19 +75,28 @@ def request_entry_exit(pos, reason):
             'pending': True, 'order_id': order_id}
 
 
-def submit(pos, side, quantity, price):
+def submit(pos, side, quantity, price, *, stop_state=None):
     """Persist before sending; ambiguous responses retain a blocking intent."""
     c = connection()
     if pending(pos.signal_id):
         return {'ok': False, 'reason': 'order_already_pending'}
+    if stop_state is not None and side != 'SELL':
+        raise ValueError('stop_binding_only_for_sell_intent')
     intent = 'K' + uuid.uuid4().hex[:15]
     previous = pos.status
+    original = pos
+    pos = copy.copy(pos)
     pos.status = 'entry_pending' if side == 'BUY' else 'exit_pending'
     with c:
         c.execute('INSERT INTO execution_orders '
                   '(intent,signal_id,side,quantity,state,created_at) VALUES (?,?,?,?,?,?)',
                   (intent, pos.signal_id, side, quantity, 'submitting', now_ist().isoformat()))
+        if stop_state is not None:
+            from . import stop_runtime
+            stop_runtime.link_order(c, intent, pos, stop_state, quantity)
         storage.upsert_position(pos, _connection=c)
+    original.__dict__.update(pos.__dict__)
+    pos = original
     try:
         result = angel_orders.place_limit_order(tradingsymbol=pos.symbol,
             symboltoken=pos.token, exchange=pos.exchange, transactiontype=side,
@@ -100,6 +109,9 @@ def submit(pos, side, quantity, price):
         pos.status = 'closed' if side == 'BUY' else previous
         with c:
             c.execute("UPDATE execution_orders SET state='terminal' WHERE intent=?", (intent,))
+            if stop_state is not None:
+                stop_runtime.confirm_fill(c, dict(intent=intent,side=side,signal_id=pos.signal_id),
+                                          0, True, pos.remaining_qty)
             storage.upsert_position(pos, _connection=c)
         return {'ok': False, 'reason': result.reason}
     if side == 'BUY':
@@ -176,6 +188,8 @@ def apply_fill(pos, row, status):
             if sold[1]:
                 pos.exit_price = sold[0] / sold[1]
         storage.upsert_position(pos, _connection=c)
+        from . import stop_runtime
+        stop_runtime.confirm_fill(c,row,qty,terminal,pos.remaining_qty)
     original.__dict__.update(pos.__dict__)
     if delta:
         audit.log('execution_fill_confirmed', signal_id=pos.signal_id, side=row['side'],
@@ -230,4 +244,3 @@ def refresh(positions):
                            f"check broker order {status.order_id}",
                            key=f"pending-exit:{status.order_id}")
     return healthy
-

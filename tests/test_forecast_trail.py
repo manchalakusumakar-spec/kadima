@@ -60,6 +60,7 @@ class ExecutorIntegration(unittest.TestCase):
         cfg=SimpleNamespace(FORECAST_TRAIL_ENABLED=enabled,in_no_auto_exit_window=lambda:False)
         ns=dict(config=cfg,forecast_trail=forecast_trail,trade_policy=trade_policy,now_ist=lambda:NOW.replace(hour=hour),
                 celestial=SimpleNamespace(enabled=lambda:False),
+                stop_runtime=SimpleNamespace(bound=lambda *a:False,manual_cas=lambda *a:False),
                 _poll_ltp=lambda *a:{'T':ltp},EOD_FORCE_CLOSE_HHMM=(15,38),
                 exit_manager=SimpleNamespace(realized_pnl_today=lambda:-1000 if daily else 0),
                 DAILY_LOSS_LIMIT_INR=500,GIVEBACK_FLOOR_PCT=5,GIVEBACK_TRAIL_PCT=50,

@@ -23,7 +23,9 @@ UNITS = ('kadima.service', 'kadima-universe-scanner.service',
 SOURCE_FILES = ('kadima/engine.py', 'kadima/auto_executor.py', 'kadima/control_api.py',
                 'kadima/angel_orders.py', 'kadima/shield_confirmation.py',
                 'kadima/fast_momentum.py', 'kadima/cas_engine.py', 'kadima/cas_orders.py')
-FLAGS = {'KADIMA_CELESTIAL_ENABLED': 'celestial_rollout_env',
+STOP_FILES = ('kadima/stop_runtime.py','kadima/regime_stops.py','kadima/structure_guard.py',
+              'kadima/structure_levels.py','kadima/execution_ledger.py','kadima/config.py')
+FLAGS = {'KADIMA_REGIME_STOPS_ENABLED': 'regime_stops_requested','KADIMA_CELESTIAL_ENABLED': 'celestial_rollout_env',
          'KADIMA_FAST_MOMENTUM_LIVE': 'fast_momentum_live_requested',
          'KADIMA_CAS_LIVE': 'cas_live_requested'}
 
@@ -149,6 +151,8 @@ def report(target):
     independent=PACKAGE.resolve()!=target and bool(manifest)
     result['source_comparison']='separate_release_checkout' if independent else 'unavailable_inventory_only'
     if not manifest:manifest={name:[] for name in SOURCE_FILES}
+    for name in STOP_FILES:
+        manifest.setdefault(name,[])
     for name,allowed in manifest.items():
         actual,expected=blob(target/name),blob(PACKAGE/name) if independent else None
         result['source'][name]=dict(installed=actual,release=expected,

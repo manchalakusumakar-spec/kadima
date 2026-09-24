@@ -75,7 +75,7 @@ _validate_config()
 #         self.effective_stop = self.stoploss_price
 
 
-def update_stop(pos, ltp: float) -> tuple[float, bool]:
+def _legacy_update_stop(pos, ltp: float) -> tuple[float, bool]:
     """
     Update the position's peak and effective stop for the current price.
 
@@ -151,3 +151,20 @@ def update_stop(pos, ltp: float) -> tuple[float, bool]:
 # field is what tells you later whether 10% was too tight — if trades
 # keep exiting after giving back exactly ~10% and then continuing up,
 # the band is the problem, not the setups.
+
+
+# The original two-argument API remains unchanged for existing callers.
+# The draft API cannot become live by changing a configuration flag.
+from .regime_stops import (StopPlan, StopPosition, StopDecision, Reject,
+    initial_stop, thesis_check, open_position, save_state, load_state,
+    restore_missing_state, exit_limit, acknowledge_fill)
+from .regime_stops import update_stop as _regime_update_stop
+
+def update_stop(position, tick, market=None):
+    if isinstance(position, StopPosition):
+        if market is None:
+            raise ValueError('normalized_market_context_required')
+        return _regime_update_stop(position, tick, market)
+    if market is not None:
+        raise TypeError('draft_stop_position_required')
+    return _legacy_update_stop(position, tick)

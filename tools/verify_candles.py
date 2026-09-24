@@ -1,64 +1,126 @@
 #!/usr/bin/env python3
-"""
-Candle verification. Run this BEFORE trusting any indicator.
+"""Read-only validation of a completed 5m window, end exclusive.
 
-Prints your engine's 5-minute bars next to Angel One's own historical candles
-for the same window. Any difference in OHLC beyond rounding, or any difference
-in volume at all, is a bug you must fix before the indicator layer means
-anything.
-
-    python tools/verify_candles.py NIFTY 2026-08-05
+python tools/verify_candles.py NIFTY 2026-09-22 --start 09:15 --end 15:30
+Choose the actual historical session/window; no holiday/calendar inference.
 """
+import argparse
+from datetime import datetime, timedelta
+import json
+import math
+from pathlib import Path
+import sqlite3
 import sys
-from datetime import datetime
 
-sys.path.insert(0, ".")
-from kadima import storage                      # noqa: E402
-from kadima.config import INDICES, IST          # noqa: E402
-from kadima.session import SESSION              # noqa: E402
+sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
+from kadima.config import DB_PATH, INDICES, IST  # noqa: E402
 
 
-def main():
-    if len(sys.argv) < 3:
-        print(__doc__)
+def stamp(value):
+    value = datetime.fromisoformat(value) if isinstance(value, str) else value
+    if not isinstance(value, datetime) or value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError('timezone_required')
+    return value.astimezone(IST)
+
+
+def compare_candles(ours, response, start, end, *, now, tolerance=.05):
+    """Pure comparison; missing, duplicate, malformed and unclosed bars fail."""
+    start, end, now = map(stamp, (start, end, now))
+    if (not math.isfinite(tolerance) or tolerance < 0 or end <= start or end > now
+            or start.date() != end.date() or start.second or end.second
+            or start.microsecond or end.microsecond
+            or start.minute % 5 or end.minute % 5):
+        raise ValueError('completed_aligned_same_day_window_required')
+    expected = set()
+    at = start
+    while at < end:
+        expected.add(at)
+        at += timedelta(minutes=5)
+    issues = []
+    if (not isinstance(response, dict) or response.get('status') is not True
+            or not isinstance(response.get('data'), list)):
+        return dict(ok=False, expected_bars=len(expected), compared=0,
+                    issues=['broker_response_invalid'])
+
+    def index(rows, broker):
+        out = {}
+        label = 'broker' if broker else 'local'
+        for r in rows:
+            try:
+                t = stamp(r[0] if broker else r['start_ts'])
+                # The endpoint may include a bar opening exactly at end.
+                if t == end and broker:
+                    continue
+                if t not in expected:
+                    raise ValueError('outside_window_or_unaligned')
+                if not broker and r['closed'] != 1:
+                    raise ValueError('unclosed')
+                raw = r[1:6] if broker else [r[k] for k in ('open','high','low','close','volume')]
+                if len(raw) != 5 or any(isinstance(v, bool) or v is None for v in raw):
+                    raise ValueError('invalid_values')
+                o,h,l,c,v = values = tuple(float(v) for v in raw)
+                if (not all(math.isfinite(x) for x in values) or min(o,h,l,c) <= 0
+                        or not l <= min(o,c) <= max(o,c) <= h or v < 0 or not v.is_integer()):
+                    raise ValueError('invalid_ohlcv')
+                if t in out:
+                    raise ValueError('duplicate')
+                out[t] = values
+            except (ValueError, TypeError, KeyError, IndexError, OverflowError) as exc:
+                issues.append(f'{label}:invalid_row:{type(exc).__name__}')
+        for t in sorted(expected - out.keys()):
+            issues.append(f'{label}:missing:{t.isoformat()}')
+        return out
+
+    local, broker = index(ours, False), index(response['data'], True)
+    for t in sorted(local.keys() & broker.keys()):
+        for n,k in enumerate(('open','high','low','close','volume')):
+            allowed = tolerance + 1e-9 if k != 'volume' else 0
+            if abs(local[t][n] - broker[t][n]) > allowed:
+                issues.append(f'mismatch:{t.isoformat()}:{k}')
+    return dict(ok=not issues, expected_bars=len(expected),
+                compared=len(local.keys() & broker.keys()), issues=issues)
+
+
+def local_window(path, token, start, end):
+    # Never create or migrate the database during verification.
+    with sqlite3.connect(Path(path).resolve().as_uri() + '?mode=ro', uri=True) as db:
+        db.row_factory = sqlite3.Row
+        return [dict(r) for r in db.execute(
+            'SELECT * FROM candles WHERE token=? AND interval=5 '
+            'AND julianday(start_ts)>=julianday(?) AND julianday(start_ts)<julianday(?) '
+            'ORDER BY start_ts', (token, start.isoformat(), end.isoformat()))]
+
+
+def main(argv=None):
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('index', choices=sorted(INDICES))
+    parser.add_argument('day')
+    parser.add_argument('--start', default='09:15')
+    parser.add_argument('--end', default='15:30')
+    parser.add_argument('--db', default=DB_PATH)
+    args = parser.parse_args(argv)
+    try:
+        start = datetime.strptime(f'{args.day} {args.start}', '%Y-%m-%d %H:%M').replace(tzinfo=IST)
+        end = datetime.strptime(f'{args.day} {args.end}', '%Y-%m-%d %H:%M').replace(tzinfo=IST)
+        now = datetime.now(IST)
+        compare_candles([], {'status': True, 'data': []}, start, end, now=now)
+        idx = INDICES[args.index]
+        ours = local_window(args.db, idx.token, start, end)
+        from kadima.session import SESSION
+        SESSION.ensure()
+        response = SESSION.api.getCandleData({
+            'exchange': idx.exchange, 'symboltoken': idx.token, 'interval': 'FIVE_MINUTE',
+            'fromdate': start.strftime('%Y-%m-%d %H:%M'),
+            'todate': end.strftime('%Y-%m-%d %H:%M')})
+        report = compare_candles(ours, response, start, end, now=now)
+        report.update(index=args.index, start=start.isoformat(), end_exclusive=end.isoformat())
+        print(json.dumps(report))
+        return 0 if report['ok'] else 1
+    except Exception as exc:
+        # Never print broker exception strings, which may expose credentials.
+        print(json.dumps({'ok': False, 'error_type': type(exc).__name__}))
         return 1
-    name, day = sys.argv[1].upper(), sys.argv[2]
-    idx = INDICES[name]
-
-    ours = storage.recent_candles(idx.token, 5, limit=200)
-    ours = [r for r in ours if r["start_ts"].startswith(day)]
-
-    SESSION.ensure()
-    resp = SESSION.api.getCandleData({
-        "exchange": idx.exchange, "symboltoken": idx.token,
-        "interval": "FIVE_MINUTE",
-        "fromdate": f"{day} 09:15", "todate": f"{day} 15:30"})
-    theirs = {r[0][:16]: r for r in (resp.get("data") or [])}
-
-    print(f"{'time':<18}{'our O/H/L/C':<40}{'broker O/H/L/C':<40}{'vol diff'}")
-    print("-" * 110)
-    mismatches = 0
-    for r in ours:
-        key = r["start_ts"][:16]
-        t = theirs.get(key)
-        if not t:
-            print(f"{key:<18}{'MISSING FROM BROKER':<40}")
-            mismatches += 1
-            continue
-        o = f"{r['open']:.2f}/{r['high']:.2f}/{r['low']:.2f}/{r['close']:.2f}"
-        b = f"{t[1]:.2f}/{t[2]:.2f}/{t[3]:.2f}/{t[4]:.2f}"
-        vd = (r["volume"] or 0) - (t[5] or 0)
-        flag = "  <== MISMATCH" if (abs(r['close'] - t[4]) > 0.05 or vd) else ""
-        if flag:
-            mismatches += 1
-        print(f"{key:<18}{o:<40}{b:<40}{vd:>10}{flag}")
-
-    print("-" * 110)
-    print(f"{len(ours)} bars compared, {mismatches} mismatched.")
-    if mismatches:
-        print("\nDo not proceed to the indicator layer until this is zero.")
-    return 0
 
 
-if __name__ == "__main__":
+if __name__ == '__main__':
     sys.exit(main())

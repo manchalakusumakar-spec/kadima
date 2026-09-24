@@ -20,7 +20,7 @@ from typing import Optional
 from . import (alerts, audit, capital_guard, entry_quality, exit_manager,
               killswitch, risk_budget, storage, strike_selector)
 from . import angel_orders, forecast_trail, execution_ledger, trade_policy
-from . import celestial
+from . import celestial, stop_runtime
 from . import fast_momentum, gap_and_go
 from .config import (DAILY_LOSS_LIMIT_INR, IST, MAX_CONCURRENT_POSITIONS,
                      MAX_LOTS_PER_SIGNAL, ORDER_PLACEMENT_ENABLED)
@@ -149,6 +149,15 @@ def _poll_ltp(exchange: str, tokens: list[str]) -> dict[str, float]:
     if not tokens:
         return {}
     mode = 'FULL' if celestial.enabled() else 'LTP'
+    try:
+        runtime_depth = stop_runtime.enabled() or stop_runtime.bound()
+    except Exception:
+        audit.log('position_quote_state_unavailable')
+        return {}
+    if runtime_depth:
+        mode = 'FULL'
+    if runtime_depth and not QUOTE.wait_and_allow(timeout_sec=.2):
+        return {}
     payload = {"mode": mode, "exchangeTokens": {exchange: tokens}}
     try:
         SESSION.ensure()
@@ -172,7 +181,7 @@ def _poll_ltp(exchange: str, tokens: list[str]) -> dict[str, float]:
                 price = float(ltp)
                 if math.isfinite(price) and price > 0:
                     out[token] = price
-                    if celestial.enabled():
+                    if celestial.enabled() or runtime_depth:
                         from .celestial_exit import publish_quote
                         publish_quote(exchange, token, row)
             except (TypeError, ValueError):
@@ -238,6 +247,7 @@ class AutoExecutor:
         self._reconcile_blocked = True   # stays True until reconcile_on_startup() runs
         self._stop = threading.Event()
         self._profit_projections: dict[int, forecast_trail.Projection] = {}
+        self._regime_contexts = {}
         self.celestial_master = None
         self._celestial_contexts = {}
         self._celestial_verified = set()
@@ -248,6 +258,45 @@ class AutoExecutor:
         self._manual_carryforward_underlyings = set()
         self.fast_rows = {}
         self.entry_diagnostics = deque(maxlen=100)
+
+    @serialized
+    def bind_stop_plan(self, signal_id, plan):
+        """Internal adapter boundary; requires reconciled ownership/final fills."""
+        pos = self.state.positions.get(str(signal_id))
+        if (not self._positions_verified or self._reconcile_blocked or pos is None
+                or (celestial.enabled() and str(signal_id) not in self._celestial_verified)):
+            raise ValueError('verified_position_required')
+        return stop_runtime.bind(pos, plan, now=now_ist(),
+            tick_size=self._regime_contexts.get(signal_id,{}).get('tick_size'))
+
+    @serialized
+    def publish_stop_context(self, signal_id, context):
+        """Accept normalized as-of evidence from a trusted producer, no HTTP API."""
+        import copy
+        pos = self.state.positions.get(str(signal_id))
+        if pos is None or context.get('asset') != pos.index:
+            raise ValueError('stop_context_asset_mismatch')
+        self._regime_contexts[signal_id] = copy.deepcopy(context)
+
+    def _execute_regime_decision(self, pos, state, decision, now):
+        # State was persisted before transport; only fresh depth can price a sell.
+        pos.effective_stop = decision.stop
+        storage.upsert_position(pos)
+        pending = execution_ledger.pending(pos.signal_id)
+        if pending:
+            stop_runtime.cancel_partial_for_full(state,pending,now)
+        if decision.action not in ('EXIT', 'PARTIAL') or pending:
+            return {'ok': True, 'reason': decision.reason, 'pending': bool(pending)}
+        evidence = celestial.health('quote:' + pos.exchange + ':' + pos.token) or {}
+        quote = dict(evidence, token=pos.token, exchange=pos.exchange,
+                     tick_size=state.plan.params.get('execution_tick_size'))
+        limit = stop_runtime.stops.exit_limit(state, quote, now)
+        if isinstance(limit, stop_runtime.stops.Reject):
+            audit.log('regime_exit_waiting_for_depth',signal_id=pos.signal_id,reason=limit.reason)
+            return {'ok': False, 'reason': limit.reason}
+        if decision.action == 'EXIT':
+            pos.exit_reason = decision.reason
+        return execution_ledger.submit(pos,'SELL',decision.quantity,limit,stop_state=state)
 
     @serialized
     def prepare_celestial_context(self, name, chain, spot, snap, days):
@@ -291,11 +340,19 @@ class AutoExecutor:
         pos = self.state.positions.get(str(signal_id))
         if not pos or pos.status not in ('open','entry_pending') or pos.remaining_qty<=0:
             return {'ok':False,'reason':'owned_position_not_found'}
-        if not celestial.finite(price,.000001) or price < (pos.effective_stop or pos.structural_stop or 0):
+        state = stop_runtime.load(pos) if stop_runtime.bound(pos.signal_id) else None
+        if stop_runtime.manual_cas(pos,now_ist(),state.plan if state else None):
+            return {'ok':False,'reason':'manual_cas_has_no_strategy_stop'}
+        previous = state.active_stop if state else (pos.effective_stop or pos.structural_stop or 0)
+        if not celestial.finite(price,.000001) or price < previous:
             return {'ok':False,'reason':'stop_may_only_tighten'}
         ltp = _poll_ltp(pos.exchange,[pos.token]).get(pos.token)
         if ltp is None or price>=ltp:
             return {'ok':False,'reason':'fresh_quote_required_and_stop_must_be_below_ltp'}
+        if state is not None:
+            state.active_stop = price
+            state.protected_stop = max(state.protected_stop or 0,price)
+            stop_runtime.stops.save_state(state,storage.conn())
         pos.effective_stop = price
         storage.upsert_position(pos)
         return {'ok':True,'signal_id':signal_id,'effective_stop':price,'protection':'engine_managed_not_broker_hosted'}
@@ -462,7 +519,7 @@ class AutoExecutor:
         if not 0 <= time.monotonic() - getattr(chain, '_last_poll', 0) <= 30:
             return
         for pos in list(self.state.positions.values()):
-            if pos.index != index_name or pos.status != 'open':
+            if pos.index != index_name or pos.status != 'open' or stop_runtime.bound(pos.signal_id):
                 continue
             result = self._structure(chain, pos.direction, spot)
             quote = chain.quotes.get(pos.token)
@@ -757,7 +814,9 @@ class AutoExecutor:
             return
         with self._lock:
             open_positions = [p for p in self.state.positions.values()
-                              if p.status in ("open", "entry_pending") and p.remaining_qty > 0
+                              if (p.status in ("open", "entry_pending") or
+                                  (p.status == 'exit_pending' and stop_runtime.bound(p.signal_id)))
+                              and p.remaining_qty > 0
                               and (not celestial.enabled() or str(p.signal_id) in self._celestial_verified)]
         if not open_positions:
             return
@@ -785,6 +844,31 @@ class AutoExecutor:
             is_mcx = getattr(pos,'kind',None) == 'mcx_momentum'
             force_close = ((now.hour, now.minute) >= (23,25)) if is_mcx else equity_force_close
             ltp = ltp_by_contract.get((pos.exchange,pos.token))
+            try:
+                if stop_runtime.bound(pos.signal_id):
+                    no_stop = stop_runtime.manual_cas(pos, now,stop_runtime.load(pos).plan)
+                    emergency = ('mcx_session_exit' if is_mcx else 'eod_force_close') if force_close else (
+                        pos.exit_reason or ('daily_loss_limit_breached' if daily_loss_breached and not no_stop else None))
+                    evidence = celestial.health('quote:' + pos.exchange + ':' + pos.token) or {}
+                    tick = dict(evidence, token=pos.token, exchange=pos.exchange)
+                    if ltp is not None:
+                        if not stop_runtime.stops._fresh(evidence.get('ts'),now,5):
+                            tick.pop('bid',None)
+                            tick.pop('ask',None)
+                        tick.update(ltp=ltp,ts=now.isoformat())
+                    else:
+                        tick = {}
+                    state, decision = stop_runtime.decide(pos,tick,self._regime_contexts.get(pos.signal_id),now,emergency)
+                    self._execute_regime_decision(pos,state,decision,now)
+                    continue  # No legacy price/VWAP exit may contradict this plan.
+            except Exception as exc:
+                self._reconcile_blocked = True
+                audit.log('regime_position_blocked',signal_id=pos.signal_id,error=type(exc).__name__)
+                continue
+            if stop_runtime.manual_cas(pos, now) and not force_close and not pos.exit_reason:
+                # Explicit user manual policy, including legacy-adopted positions.
+                # Never clear a previously submitted/queued exit or change quantity.
+                continue
             if celestial.enabled() and ltp is not None:
                 self._celestial_quotes[pos.exchange+':'+pos.token] = dict(ltp=ltp,ts=now.isoformat())
             if ltp is None:
@@ -864,6 +948,9 @@ class AutoExecutor:
             return {'ok': False, 'reason': 'position_not_open_or_order_pending'}
         if execution_ledger.pending(pos.signal_id):
             return {'ok': False, 'reason': 'order_already_pending'}
+        if stop_runtime.bound(pos.signal_id):
+            state, decision = stop_runtime.decide(pos,{},None,now_ist(),reason)
+            return self._execute_regime_decision(pos,state,decision,now_ist())
         pos.exit_reason = reason
         limit_price = round(ltp * (1 - LIMIT_ORDER_BUFFER_PCT / 100.0), 1)
         result = execution_ledger.submit(pos, 'SELL', pos.remaining_qty, limit_price)
@@ -899,7 +986,8 @@ class AutoExecutor:
                 self.check_exits()
             except Exception as exc:                    # noqa: BLE001
                 audit.log("position_monitor_loop_error", error=str(exc))
-            self._stop.wait(max(0.1, POSITION_MONITOR_INTERVAL_SEC - (time.monotonic() - started)))
+            interval = min(1., POSITION_MONITOR_INTERVAL_SEC)  # Persisted deadlines survive quote/DB errors.
+            self._stop.wait(max(0.1, interval - (time.monotonic() - started)))
 
     def stop(self) -> None:
         self._stop.set()

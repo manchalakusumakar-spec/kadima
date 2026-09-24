@@ -13,12 +13,13 @@ session. Everything downstream inherits these numbers.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from datetime import datetime
+import math
 from typing import Callable
 
 from . import audit, storage
-from .config import CANDLE_INTERVALS_MIN
+from .config import CANDLE_INTERVALS_MIN, IST
 from .utils import candle_start
 
 
@@ -37,10 +38,12 @@ class Candle:
     pv: float = 0.0          # sum(price * vol) for VWAP
     vol_for_vwap: int = 0
     closed: bool = False
+    volume_valid: bool = True
 
     @property
-    def vwap(self) -> float:
-        return (self.pv / self.vol_for_vwap) if self.vol_for_vwap else self.close
+    def vwap(self) -> float | None:
+        return (self.pv / self.vol_for_vwap
+                if self.volume_valid and self.vol_for_vwap else None)
 
 
 class CandleBuilder:
@@ -55,47 +58,63 @@ class CandleBuilder:
         self._sess_pv = 0.0
         self._sess_vol = 0
         self._sess_day: str | None = None
+        self._last_ts: datetime | None = None
+        self._last_cum: int | None = None
+        self._volume_valid = True
 
     # ------------------------------------------------------------------ public
     def add_tick(self, ts: datetime, ltp: float, cum_volume: int | None) -> None:
-        if ltp is None:
+        if (not isinstance(ts, datetime) or ts.tzinfo is None
+                or ts.utcoffset() is None or isinstance(ltp, bool)
+                or not isinstance(ltp, (int, float))
+                or not math.isfinite(ltp) or ltp <= 0):
+            return
+        ts = ts.astimezone(IST)
+        # Check before daily reset: an old-session tick must not reset today.
+        if self._last_ts is not None and ts < self._last_ts:
             return
         self._roll_session(ts)
-
+        self._last_ts = ts
+        # Close every completed interval before adding the new tick to VWAP.
+        # Callbacks must see the prefix ending at the old candle's close.
         for interval in CANDLE_INTERVALS_MIN:
             start = candle_start(ts, interval)
             cur = self._live.get(interval)
-
-            if cur is None:
-                self._live[interval] = self._new(interval, start, ltp, cum_volume)
-                continue
-
-            if start > cur.start:
+            if cur is not None and start > cur.start:
                 self._close(cur)
+            if cur is None or start > cur.start:
                 self._live[interval] = self._new(interval, start, ltp, cum_volume)
-                continue
 
+        valid_volume = type(cum_volume) is int and cum_volume >= 0
+        delta = 0
+        if not valid_volume or (self._last_cum is not None and cum_volume < self._last_cum):
+            # A reset/gap is not negative trading volume. Rebaseline without
+            # inventing volume or assigning an unknown interval to this price.
+            self._volume_valid = False
+            for cur in self._live.values():
+                cur.volume_valid = False
+        elif self._last_cum is not None:
+            delta = cum_volume - self._last_cum
+        self._last_cum = cum_volume if valid_volume else None
+        self._sess_pv += ltp * delta
+        self._sess_vol += delta
+        for cur in self._live.values():
+            cur.volume_valid = cur.volume_valid and self._volume_valid
             cur.high = max(cur.high, ltp)
             cur.low = min(cur.low, ltp)
             cur.close = ltp
-            if cum_volume is not None:
-                if cur.cum_vol_start is None:
-                    cur.cum_vol_start = cum_volume
-                delta = max(0, cum_volume - (cur.cum_vol_last or cum_volume))
-                cur.cum_vol_last = cum_volume
-                cur.volume = max(0, cum_volume - cur.cum_vol_start)
-                if delta:
-                    cur.pv += ltp * delta
-                    cur.vol_for_vwap += delta
-                    self._sess_pv += ltp * delta
-                    self._sess_vol += delta
+            cur.cum_vol_last = self._last_cum
+            cur.volume += delta
+            cur.pv += ltp * delta
+            cur.vol_for_vwap += delta
             storage.upsert_candle(cur.token, cur.interval,
                                   cur.start.isoformat(), cur.open, cur.high,
                                   cur.low, cur.close, cur.volume, cur.vwap,
                                   False)
 
     def session_vwap(self) -> float | None:
-        return (self._sess_pv / self._sess_vol) if self._sess_vol else None
+        return (self._sess_pv / self._sess_vol
+                if self._volume_valid and self._sess_vol else None)
 
     def live(self, interval: int) -> Candle | None:
         return self._live.get(interval)
@@ -123,4 +142,6 @@ class CandleBuilder:
         day = ts.strftime("%Y-%m-%d")
         if self._sess_day != day:
             self._sess_day, self._sess_pv, self._sess_vol = day, 0.0, 0
+            self._last_cum = None
+            self._volume_valid = True
             self._live.clear()

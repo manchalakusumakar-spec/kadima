@@ -5,7 +5,7 @@
   "kadima/celestial_adoption.py": "68e66fca7baca0b42cc29b80cd41cff301ae4f57",
   "kadima/control_api.py": "dc2ec6f89de5b7bcfe40b67ba35e36a621d06965",
   "kadima/engine.py": "7f9ddb10bbc3a144a82d6de982c5ca934e2433d1",
-  "kadima/execution_ledger.py": "1fde45163927f6fceff4a6ae8573e4242ac4fb18",
+  "kadima/execution_ledger.py": "28d8c9583108645bbc1b35cce9ac9a70910ca8ea",
   "kadima/external_reconciliation.py": "c1eb8c7bb0e0b7f6842ff2aacbc7401f60f21ec9",
   "kadima/fast_momentum.py": "7eb165d7ae89be70133b0a8a4d4efeed964a7d70",
   "kadima/full_universe_scanner.py": "530c41a3fe4fe1e706dcfde3437f4c16e1a19b69",
@@ -26,5 +26,9 @@
   "kadima/commodity_watch.py": "2697a9b637ff4bd19f4a100fd3340a91facb216b",
   "kadima/instrument_master.py": "a04a6c3636d49081fb49d48ac745aea0adc73f1f",
   "kadima/celestial_universe.py": "0776824179727d22d5e250a3c8ae1ecf2322ce2f",
-  "kadima/mcx_live.py": "86928e87cca0fe6c085466f9c0b5c715d4ebb415"
+  "kadima/mcx_live.py": "86928e87cca0fe6c085466f9c0b5c715d4ebb415",
+  "kadima/stop_runtime.py": "4f836e77ccab71ff3c0457c25fc96b4d83bd13e7",
+  "kadima/regime_stops.py": "43493f14b83b0ad3ef302b17f3071e9bd6142baa",
+  "kadima/structure_guard.py": "aa30b4bf101edddffbf82757e200f8fb3f8702db",
+  "kadima/structure_levels.py": "99eb08330af4d10b63bcab4e0f96b139d67a65bf"
 }
