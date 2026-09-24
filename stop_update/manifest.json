@@ -1,0 +1,25 @@
+{
+  "installed": {
+    "kadima/auto_executor.py": "7cfe6cf21a520ba967d6a672b2f54a99bbe81321",
+    "kadima/execution_ledger.py": "1fde45163927f6fceff4a6ae8573e4242ac4fb18",
+    "kadima/config.py": "fb31412c01019a8875a2c9321d71b9b6c840024f",
+    "kadima/regime_stops.py": null,
+    "kadima/stop_runtime.py": null,
+    "kadima/structure_guard.py": null,
+    "kadima/structure_levels.py": null,
+    "kadima/candles.py": "a43d9c614c75b5e61c213f9d0087dfd966497ffe",
+    "kadima/stops.py": "a8815f4d91e8a87ef69f43d545f275d2dc640727"
+  },
+  "incoming": {
+    "kadima/auto_executor.py": "fc34bffc8755781c73cdb97ae5a933744e92842b",
+    "kadima/execution_ledger.py": "28d8c9583108645bbc1b35cce9ac9a70910ca8ea",
+    "kadima/regime_stops.py": "43493f14b83b0ad3ef302b17f3071e9bd6142baa",
+    "kadima/stop_runtime.py": "4f836e77ccab71ff3c0457c25fc96b4d83bd13e7",
+    "kadima/structure_guard.py": "aa30b4bf101edddffbf82757e200f8fb3f8702db",
+    "kadima/structure_levels.py": "99eb08330af4d10b63bcab4e0f96b139d67a65bf",
+    "kadima/candles.py": "50d8047f912dc98c6b1e1354aff75ba115ed38af",
+    "kadima/stops.py": "1143ce7c7f9e83c79f72cb7ad4c4a74987c046c6"
+  },
+  "config_additions": "3c36837b99d9ee1149c121f9ad4699c2728e9126",
+  "installer_helper": "00ac2c1ba6b5a68a21cd2bf532dd53e1440e6e35"
+}
