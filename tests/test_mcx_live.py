@@ -167,7 +167,13 @@ class MCXInstallerTests(unittest.TestCase):
         self.assertIn(module.DEPLOYED_GAP_EXECUTOR,
                       module.base.FILES['kadima/auto_executor.py'])
         manifest=json.loads(Path('tools/activation_source.json').read_text())
-        self.assertEqual(set(module.base.FILES),set(manifest))
+        # Recovery adds exact source pins without broadening this older MCX
+        # installer. The focused installer owns only its explicit new files.
+        recovery = {'kadima/stock_execution.py', 'kadima/preparation_diagnostics.py',
+            'kadima/move_capture.py', 'kadima/move_capture_service.py',
+            'kadima/move_capture_handoff.py', 'kadima/move_capture_execution.py',
+            'kadima/momentum_quote_watch.py'}
+        self.assertEqual(set(module.base.FILES) | recovery, set(manifest))
         raw=module.base.read_file(module.ROOT/'kadima/auto_executor.py')
         self.assertEqual(module.base.digest(raw),module.COMPOSED_EXECUTOR)
 

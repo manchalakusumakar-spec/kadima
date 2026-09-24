@@ -54,6 +54,8 @@ def register(control_api, worker):
             broker_order_permission=config.ORDER_PLACEMENT_ENABLED,
             celestial_rollout=celestial.enabled(), global_auto_requested=global_cfg['auto_trade_enabled'],
             kill_latched=global_cfg['kill_latched'], worker=celestial.health('stock_fast'),
+            move_capture_worker=celestial.health('move_capture_execution'),
+            move_capture_feed=celestial.health('move_capture_feed'),
             universe=celestial.health('stock_universe'), positions=positions,
             rows=rows[:20], total_observed_rows=len(rows), display_limit=20,
             warning='Live requested is not readiness, an order, a fill, or a profit guarantee.')

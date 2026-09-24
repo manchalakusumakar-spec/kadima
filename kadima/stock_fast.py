@@ -35,6 +35,9 @@ def _finite(value, minimum=0):
 def _public_reason(exc, fallback='stock_fast_invalid_inputs'):
     # Never surface provider bodies, credentials or arbitrary exception content.
     text = str(exc)
+    from .preparation_diagnostics import KNOWN_MESSAGES
+    if text in KNOWN_MESSAGES:
+        return KNOWN_MESSAGES[text]
     return text if type(exc) is ValueError and re.fullmatch(r'[a-z_][a-z0-9_]{0,99}', text) else fallback
 
 
@@ -354,6 +357,8 @@ class Worker:
         self.history_cache = OrderedDict()
         self.last_history = 0.0
         self.thread = None
+        self.preparation_stage = 'idle'
+        self.last_served = {}
 
     def history(self, index):
         from .session import SESSION
@@ -374,7 +379,10 @@ class Worker:
                 fromdate=now.strftime('%Y-%m-%d 09:15'), todate=now.strftime('%Y-%m-%d %H:%M')))
             if not isinstance(response, dict) or response.get('status') is not True:
                 raise ValueError('stock_fast_history_request_failed')
-            result[interval] = parse_candles(response.get('data'), interval, _now())
+            # A halt or missing opening bar must not poison the entire day.
+            # Restart indicator warmup after the latest gap; never fill gaps.
+            result[interval] = parse_candles(response.get('data'), interval, _now(),
+                                           recent_contiguous=True)
         self.history_cache[key] = (time.monotonic(), result)
         self.history_cache.move_to_end(key)
         while len(self.history_cache) > 32:
@@ -396,15 +404,21 @@ class Worker:
         from . import audit
         from .indicators import Snapshot
         name = data['index']['name']
+        self.preparation_stage = 'controls'
         cfg = controls()
+        self.preparation_stage = 'contract_restore'
         chain = self.helper.restore_chain(data)
+        self.preparation_stage = 'history'
         bars = self.history(chain.index)
+        self.preparation_stage = 'snapshot_revalidation'
         if not still_current(data):
             raise ValueError('stock_fast_snapshot_changed_during_history')
+        self.preparation_stage = 'planning'
         row = plan(data, chain, bars, cfg)
         if self.stop_event.is_set():
             row.update(eligible=False, blocked_reasons=row['blocked_reasons'] + ['stock_fast_worker_stopping'])
         if row['eligible']:
+            self.preparation_stage = 'policy_binding'
             sid = bind_policy(row)
             row['signal_id'] = sid
             def revalidate():
@@ -414,11 +428,13 @@ class Worker:
                 return plan(data, chain, bars, current)
             chain._entry_guard = lambda: (not self.stop_event.is_set() and still_current(data)
                 and controls()['revision'] == cfg['revision'])
+            self.preparation_stage = 'executor_dispatch'
             result = self.executor.evaluate_and_enter(name, row['direction'], chain,
                 data['spot'], Snapshot(), row['days'], 'fast_momentum', sid,
                 'EXPERIMENTAL', row['score'], fast_context=revalidate)
             row['dispatch'] = result
             audit.log('STOCK_FAST_DISPATCH_RESULT', signal_id=sid, index=name, **result)
+        self.preparation_stage = 'audit_result'
         self.executor.fast_rows[name] = row
         audit.log('STOCK_FAST_CANDIDATE', **row)
         return row
@@ -441,9 +457,11 @@ class Worker:
                     stage='WATCH', ts=now.isoformat(), quote_at=data['chain_at'], eligible=False,
                     direction=None, scenarios=[], blocked_reasons=[
                         'stock_fast_premium_acceleration_unconfirmed' if metrics else 'stock_fast_history_warmup'])
-        candidates.sort(key=lambda d: max(m['premium_move_pct']*min(m['volume_ratio'], 5)
-                                         for m in d['fast_metrics'].values() if accelerated(m)), reverse=True)
+        candidates.sort(key=lambda d: (self.last_served.get(d['index']['name'], 0),
+            -max(m['premium_move_pct']*min(m['volume_ratio'], 5)
+                 for m in d['fast_metrics'].values() if accelerated(m))))
         prepared = 0
+        failed = 0
         for data in candidates:
             name = data['index']['name']
             if self.stop_event.is_set() or prepared >= 4:
@@ -451,24 +469,31 @@ class Worker:
             if self.attempted.get(name) == data['chain_at']:
                 continue
             self.attempted[name] = data['chain_at']
+            self.last_served[name] = time.monotonic()
             prepared += 1
             try:
                 self.process(data)
             except Exception as exc:
+                from .preparation_diagnostics import describe
+                failed += 1
                 reason = _public_reason(exc, 'stock_fast_preparation_error')
+                diagnostic = describe(exc, self.preparation_stage, reason)
                 self.executor.fast_rows[name] = dict(underlying=name, strategy='fast_momentum', asset_scope='STOCK',
                     stage='BLOCKED', ts=_now().isoformat(), quote_at=data['chain_at'], eligible=False,
-                    scenarios=[], blocked_reasons=[reason])
-                audit.log('STOCK_FAST_PREPARATION_REJECTED', index=name, reason=reason)
+                    scenarios=[], blocked_reasons=[reason], **diagnostic)
+                audit.log('STOCK_FAST_PREPARATION_REJECTED', index=name,
+                          quote_at=data['chain_at'], **diagnostic)
         names = {d['index']['name'] for d in data_rows}
         self.attempted = {n: t for n, t in self.attempted.items() if n in names}
+        self.last_served = {n: t for n, t in self.last_served.items() if n in names}
         for name, row in list(self.executor.fast_rows.items()):
             if row.get('asset_scope') == 'STOCK' and str(row.get('quote_at', ''))[:10] != now.date().isoformat():
                 self.executor.fast_rows.pop(name, None)
             elif row.get('asset_scope') == 'STOCK' and not _fresh(row.get('quote_at'), _now()):
                 row.update(eligible=False, stage='STALE', blocked_reasons=['stock_fast_stale_snapshot'])
         cfg = controls()
-        celestial.health('stock_fast', dict(ok=True, live_requested=cfg['live_enabled'],
+        celestial.health('stock_fast', dict(ok=failed == 0, preparation_failures=failed,
+            live_requested=cfg['live_enabled'],
             holding_minutes=cfg['holding_minutes'], fresh_roots=len(data_rows), warmed_roots=warm,
             premium_candidates=len(candidates), prepared_this_cycle=prepared,
             preparation_pending=sum(self.attempted.get(d['index']['name']) != d['chain_at'] for d in candidates),

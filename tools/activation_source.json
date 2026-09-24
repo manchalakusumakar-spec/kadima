@@ -13,9 +13,9 @@
   "kadima/news_collector.py": "0cfb897286adb3c64f56f2b2f7d7e626cb46c3d4",
   "kadima/shield_confirmation.py": "88f8485c1f8845147db8074fb82b1dcda0bc90ef",
   "kadima/stock_universe_scanner.py": "1117df7df0825e918a5ae119e9abb00d0627df62",
-  "run.py": "cb701bb145a996635d689376a6b24ab2dac030e4",
-  "kadima/stock_fast.py": "e84932b645d584787df21e1bb94ce927d80b6cc3",
-  "kadima/stock_fast_api.py": "0d9b50418d6cc12752ebf96114e98504eaca455d",
+  "run.py": "3dd1a763faf472831b33db0bbf21d0d2acca16f7",
+  "kadima/stock_fast.py": "af0fd7dcac92a7bd56bfc4709cd98d29b4efcdd5",
+  "kadima/stock_fast_api.py": "57805126938637754e6fa22aa772fd132aa3a891",
   "kadima/feed.py": "8a9f8ea0aa5a708739c9297583badabc85fc2c2a",
   "kadima/rate_limiter.py": "9886d951be6997e0ddf8fdda640529f5f751a25c",
   "kadima/gap_and_go.py": "b49527a16984c306293b5b9874fb17ed88c6ee31",
@@ -26,5 +26,12 @@
   "kadima/commodity_watch.py": "2697a9b637ff4bd19f4a100fd3340a91facb216b",
   "kadima/instrument_master.py": "a04a6c3636d49081fb49d48ac745aea0adc73f1f",
   "kadima/celestial_universe.py": "0776824179727d22d5e250a3c8ae1ecf2322ce2f",
-  "kadima/mcx_live.py": "86928e87cca0fe6c085466f9c0b5c715d4ebb415"
+  "kadima/mcx_live.py": "86928e87cca0fe6c085466f9c0b5c715d4ebb415",
+  "kadima/stock_execution.py": "554e4d10542451237c3a2f542cc8a8d6514b69d4",
+  "kadima/preparation_diagnostics.py": "43a4ea613825e8b3dc7153c53dec1f6bc07eafbf",
+  "kadima/move_capture.py": "b27014acd121a34b015c4de0febe4c3646ab2953",
+  "kadima/move_capture_service.py": "ff4df3b2a06b110c1432977543716e919cc760c7",
+  "kadima/move_capture_handoff.py": "a880ba1a94d68ad8878a589dbc2985a2dff88e3d",
+  "kadima/move_capture_execution.py": "caf9dc36389186172514caad608e8cacd109b435",
+  "kadima/momentum_quote_watch.py": "92409bbd7fecd0d4bbd25e69a4cbda99f5628958"
 }
