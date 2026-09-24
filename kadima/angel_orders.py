@@ -1,55 +1,13 @@
-"""
-angel_orders.py — thin, rate-limited wrapper around Angel One SmartAPI's
-order placement and status endpoints.
+"""SmartAPI order transport; acceptance is distinct from confirmed execution.
 
-WHY THIS FILE EXISTS SEPARATELY FROM auto_executor.py:
-    Keeps "how to talk to the broker" isolated from "when to trade".
-    auto_executor.py never touches SESSION.api directly — everything
-    goes through here, so the rate limiting and compliance rules (limit
-    orders only, INTRADAY product type, no MARKET/IOC) are enforced in
-    exactly one place and cannot be accidentally bypassed by a shortcut
-    taken elsewhere.
-
-COMPLIANCE, NOT JUST CONVENTION:
-    Market and IOC orders are prohibited for algorithmic trading under
-    the SEBI retail algo framework (in force since Apr 2026). This module
-    hard-codes ordertype=LIMIT and duration=DAY — there is no parameter
-    to override this, on purpose. If a caller needs a different order
-    type, that's a deliberate decision that belongs in a new, explicit
-    function, not a flag on this one.
-
-    producttype=INTRADAY (again, as of 2026-08-23). Was briefly NRML
-    (2026-08-20 to 2026-08-23), specifically to hold positions through
-    the trader's observed 3:15-3:35 PM gamma-blast window without Angel
-    One's MIS auto-square-off cutting in at 3:20 PM. That reasoning was
-    sound, but empirical testing (test_order_pathway.py, 2026-08-23)
-    showed Angel One's live order API rejects NRML orders outright for
-    this account — confirmed with a real, unambiguous order ID placed,
-    confirmed in the order book, and cancelled under INTRADAY immediately
-    after, same code path, same day, only producttype changed. Root cause
-    of the NRML rejection was never identified (price, static IP, and F&O
-    segment activation were all separately ruled out first) and would
-    need Angel One's own support to diagnose further. Given live trading
-    needed to actually work, reverting to the known-working value took
-    priority over the late-window capability — see config.py's
-    GAMMA_SIGNAL_CUTOFF and auto_executor.py's EOD_FORCE_CLOSE_HHMM, both
-    retimed the same day around the resulting 3:20 PM hard cutoff.
-    Revisit NRML only after Angel One's support can explain the rejection.
-
-RESPONSE SHAPE — VERIFY BEFORE FIRST LIVE RUN:
-    Written against the standard smartapi-python SDK's documented
-    interface (SmartConnect.placeOrder / .modifyOrder / .cancelOrder /
-    .orderBook / .position). SDK response shapes have changed across
-    versions before; every parse below is defensive (checks for
-    expected keys rather than assuming them) and fails closed — an
-    unparseable response is treated as an unknown/failed order, never
-    as an assumed success. Confirm this against your installed
-    `smartapi-python` version's actual response structure before the
-    ORDER_PLACEMENT_ENABLED switch is ever flipped to True.
+LIMIT/DAY/INTRADAY defaults retain the deployment's existing order format.
+The execution ledger owns fill reconciliation and uncertain submission recovery.
+Broker reference: https://smartapi.angelone.in/docs/Instruments
 """
 
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Optional
 
@@ -65,6 +23,7 @@ class OrderResult:
     order_id: Optional[str]
     reason: str
     dry_run: bool = False
+    uncertain: bool = False
 
 
 @dataclass
@@ -79,7 +38,8 @@ class OrderStatus:
 # ---------------------------------------------------------------- place
 def place_limit_order(*, tradingsymbol: str, symboltoken: str, exchange: str,
                       transactiontype: str, quantity: int, price: float,
-                      producttype: str = "INTRADAY") -> OrderResult:
+                      producttype: str = "INTRADAY", ordertag: str | None = None,
+                      signal_id: int | None = None) -> OrderResult:
     """
     transactiontype: "BUY" (entry) or "SELL" (exit, squaring off a long).
     price: the limit price. Caller decides this — this function does not
@@ -103,7 +63,7 @@ def place_limit_order(*, tradingsymbol: str, symboltoken: str, exchange: str,
     """
     if quantity <= 0:
         return OrderResult(False, None, "invalid_quantity")
-    if price is None or price <= 0:
+    if price is None or not math.isfinite(price) or price <= 0:
         return OrderResult(False, None, "invalid_price")
     if transactiontype not in ("BUY", "SELL"):
         return OrderResult(False, None, "invalid_transactiontype")
@@ -123,28 +83,46 @@ def place_limit_order(*, tradingsymbol: str, symboltoken: str, exchange: str,
         "quantity": str(quantity),
     }
 
+    if ordertag:
+        orderparams["ordertag"] = ordertag
+
     if not ORDER_PLACEMENT_ENABLED:
         dry_id = f"DRYRUN-{tradingsymbol}-{transactiontype}-{int(price*100)}"
+        audit.log('ANGELONE_BLOCKED', signal_id=signal_id, intent=ordertag, reason='dry_run')
         audit.log("order_dry_run", dry_run_id=dry_id, **orderparams)
         return OrderResult(True, dry_id, "dry_run_not_sent", dry_run=True)
 
     if not ORDER_WRITE.allow():
+        audit.log('ANGELONE_BLOCKED', signal_id=signal_id, intent=ordertag, reason='rate_limited')
         audit.log("order_rejected_rate_limited", **orderparams)
         return OrderResult(False, None, "rate_limited")
 
+    request_started = False
     try:
         SESSION.ensure()
+        audit.log('ANGELONE_REQUEST', signal_id=signal_id, intent=ordertag,
+                  symbol=tradingsymbol, side=transactiontype, quantity=quantity, price=price)
+        request_started = True
         resp = SESSION.api.placeOrder(orderparams)
         order_id = _extract_order_id(resp)
+        code = str(resp.get('errorcode') or '') if isinstance(resp, dict) else ''
+        code = code if code.isalnum() and len(code) <= 16 else None
+        audit.log('ANGELONE_RESPONSE', signal_id=signal_id, intent=ordertag,
+                  order_id=order_id, accepted=order_id is not None, broker_code=code,
+                  reason='accepted_awaiting_fill' if order_id else 'unparseable_or_rejected')
         if order_id is None:
-            audit.log("order_place_unparseable_response", response=str(resp)[:500],
+            audit.log("order_place_unparseable_response", response_type=type(resp).__name__,
                       **orderparams)
-            return OrderResult(False, None, "unparseable_broker_response")
+            return OrderResult(False, None, "unparseable_broker_response", uncertain=True)
         audit.log("order_placed", order_id=order_id, **orderparams)
         return OrderResult(True, order_id, "ok")
     except Exception as exc:                       # noqa: BLE001
-        audit.log("order_place_exception", error=str(exc), **orderparams)
-        return OrderResult(False, None, f"exception:{exc}")
+        audit.log('ANGELONE_RESPONSE' if request_started else 'ANGELONE_BLOCKED',
+                  signal_id=signal_id, intent=ordertag, accepted=False,
+                  uncertain=request_started, error_type=type(exc).__name__)
+        audit.log("order_place_exception", error=type(exc).__name__, **orderparams)
+        return OrderResult(False, None, "submission_exception" if request_started else "session_unavailable",
+                           uncertain=request_started)
 
 
 def _extract_order_id(resp) -> Optional[str]:
@@ -154,6 +132,8 @@ def _extract_order_id(resp) -> Optional[str]:
     if isinstance(resp, str) and resp:
         return resp
     if isinstance(resp, dict):
+        if resp.get("status") is False:
+            return None
         data = resp.get("data")
         if isinstance(data, dict):
             for key in ("orderid", "orderId", "order_id"):
@@ -175,6 +155,8 @@ def cancel_order(order_id: str, variety: str = "NORMAL") -> OrderResult:
     try:
         SESSION.ensure()
         resp = SESSION.api.cancelOrder(order_id, variety)
+        if not isinstance(resp, dict) or resp.get("status") is not True:
+            return OrderResult(False, order_id, "cancel_not_confirmed", uncertain=True)
         audit.log("order_cancelled", order_id=order_id, response=str(resp)[:300])
         return OrderResult(True, order_id, "ok")
     except Exception as exc:                        # noqa: BLE001
@@ -212,6 +194,8 @@ def modify_order(order_id: str, *, price: float | None = None,
     try:
         SESSION.ensure()
         resp = SESSION.api.modifyOrder(modparams)
+        if not isinstance(resp, dict) or resp.get("status") is not True:
+            return OrderResult(False, order_id, "modify_not_confirmed", uncertain=True)
         audit.log("order_modified", order_id=order_id, response=str(resp)[:300], **modparams)
         return OrderResult(True, order_id, "ok")
     except Exception as exc:                       # noqa: BLE001
@@ -219,67 +203,44 @@ def modify_order(order_id: str, *, price: float | None = None,
         return OrderResult(False, order_id, f"exception:{exc}")
 
 
-def get_order_status(order_id: str) -> Optional[OrderStatus]:
-    """Reserved for periodic reconciliation, NOT the exit-monitoring hot
-    loop — this endpoint is capped at 1 req/sec. check_exits() in
-    auto_executor.py reads live premium from the WebSocket feed instead;
-    this is only for confirming an order actually filled, or diagnosing
-    a fill that didn't arrive as expected."""
+def fetch_order_book() -> Optional[list[OrderStatus]]:
+    """None means unavailable, distinct from a confirmed empty order book."""
     if not ORDER_STATUS.wait_and_allow(timeout_sec=3.0):
-        audit.log("order_status_rate_limited", order_id=order_id)
         return None
-
     try:
         SESSION.ensure()
         resp = SESSION.api.orderBook()
-        orders = (resp or {}).get("data") or []
-        for o in orders:
-            oid = o.get("orderid") or o.get("orderId")
-            if str(oid) == str(order_id):
-                return OrderStatus(
-                    order_id=order_id,
-                    status=o.get("status", "unknown"),
-                    filled_qty=int(o.get("filledshares") or o.get("filledQty") or 0),
-                    avg_price=float(o["averageprice"]) if o.get("averageprice") else None,
-                    raw=o,
-                )
-        audit.log("order_status_not_found", order_id=order_id)
+        if not isinstance(resp, dict) or resp.get("status") is not True:
+            return None
+        rows = resp.get("data")
+        if rows is None:
+            rows = []
+        if not isinstance(rows, list):
+            return None
+        result = []
+        for row in rows:
+            oid = row.get("orderid") or row.get("orderId")
+            if not oid:
+                return None
+            qty = float(row.get("filledshares") or row.get("filledQty") or 0)
+            avg = float(row.get("averageprice") or 0)
+            if not math.isfinite(qty) or qty < 0 or not qty.is_integer():
+                return None
+            if not math.isfinite(avg) or (qty > 0 and avg <= 0):
+                return None
+            result.append(OrderStatus(str(oid), str(row.get("orderstatus") or
+                row.get("status") or "unknown").lower(), int(qty), avg or None, row))
+        return result
+    except Exception as exc:
+        audit.log("order_book_unavailable", error=type(exc).__name__)
         return None
-    except Exception as exc:                        # noqa: BLE001
-        audit.log("order_status_exception", order_id=order_id, error=str(exc))
-        return None
-
 
 
 def get_order_book() -> list[OrderStatus]:
-    """Full order book, for a manual order-management UI. Uses the SAME
-    orderBook() fetch and rate limiter as get_order_status(). Returns an
-    empty list on any failure — treat that as 'could not confirm right now',
-    not 'no orders exist' (same fail-closed convention used elsewhere)."""
-    if not ORDER_STATUS.wait_and_allow(timeout_sec=3.0):
-        audit.log("order_book_rate_limited")
-        return []
+    # Compatibility for the existing read-only dashboard.
+    return fetch_order_book() or []
 
-    try:
-        SESSION.ensure()
-        resp = SESSION.api.orderBook()
-    except Exception as exc:                       # noqa: BLE001
-        audit.log("order_book_exception", error=str(exc))
-        return []
 
-    orders = (resp or {}).get("data") or []
-    result: list[OrderStatus] = []
-    for o in orders:
-        oid = o.get("orderid") or o.get("orderId")
-        if not oid:
-            continue
-        result.append(OrderStatus(
-            order_id=str(oid),
-            status=o.get("status", "unknown"),
-            filled_qty=int(o.get("filledshares") or o.get("filledQty") or 0),
-            avg_price=float(o["averageprice"]) if o.get("averageprice") else None,
-            raw=o,
-        ))
-    audit.log("order_book_fetched", count=len(result))
-    return result
-
+def get_order_status(order_id: str) -> Optional[OrderStatus]:
+    return next((o for o in (fetch_order_book() or [])
+                 if o.order_id == str(order_id)), None)

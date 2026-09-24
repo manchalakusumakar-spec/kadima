@@ -44,27 +44,24 @@ MEMORY-CONSCIOUS BY DESIGN, not just by hope:
     discipline comes from keeping stage 2's working set small, not from
     avoiding persistence altogether.
 
-OBSERVE-ONLY, NOT WIRED TO LIVE TRADING (2026-08-23):
-    Scores and logs CONFIRMED-tier gamma activity across the stock
-    universe. Does NOT call auto_executor.evaluate_and_enter() and does
-    NOT place any order — deliberately, on the trader's own agreed
-    sequencing: watch this behave sensibly against a real trading day
-    before connecting it to anything that touches capital. This matches
-    exactly how the original 4-index gamma scanner and the whole trading
-    pipeline were validated before ever being wired to real orders.
+CONFIRMED signals are now handed to the central engine through stock_handoff.
+This process never imports AutoExecutor or places orders. Central execution
+adds fresh candle/alignment, structural stop, liquidity and shared-slot gates.
 """
 
 from __future__ import annotations
 
 import json
+import math
 import os
 import threading
 import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, asdict
 from datetime import datetime, timedelta
 
 from . import alerts, audit, gamma_blast_scanner as gamma, killswitch, strike_selector
-from .config import IST
+from .config import IST, MARKET_CLOSE
+from . import stock_handoff
 from .instrument_master import stock_universe
 from .option_chain import OptionChain
 from .rate_limiter import QUOTE
@@ -96,12 +93,16 @@ class _TrackedStock:
     chain: OptionChain
     history: gamma.GammaHistory
     spot: float | None = None
-    days_to_expiry: float = 2.0
+    days_to_expiry: float = 0.0
+    spot_at: str | None = None
+    session_vwap: float | None = None
     last_seen_in_shortlist: datetime = field(default_factory=lambda: datetime.now(IST))
 
 
 class UniverseScanner:
     def __init__(self) -> None:
+        from .celestial_scanner import Radar
+        self.radar = Radar()
         self.scrips = ScripMaster.load()
         self.universe = stock_universe()
         audit.log("universe_scanner_loaded", stock_count=len(self.universe))
@@ -133,19 +134,8 @@ class UniverseScanner:
             for stock in batch:
                 by_exchange.setdefault(stock["spot_exchange"], []).append(stock["spot_token"])
 
-            if not QUOTE.wait_and_allow(timeout_sec=3.0):
-                audit.log("universe_stage1_rate_limited", batch_start=i)
-                continue
-
-            try:
-                SESSION.ensure()
-                resp = SESSION.api.getMarketData(mode="FULL", exchangeTokens=by_exchange)
-            except Exception as exc:                    # noqa: BLE001
-                audit.log("universe_stage1_poll_failed", error=str(exc), batch_start=i)
-                continue
-
-            if not resp or not resp.get("status"):
-                continue
+            # Retry only unresolved tokens with endpoint-specific spacing.
+            resp = self._fetch_screen_batch(by_exchange, i)
 
             by_token = {str(s["spot_token"]): s for s in batch}
             for row in resp.get("data", {}).get("fetched", []):
@@ -157,8 +147,11 @@ class UniverseScanner:
                 pct_change = row.get("percentChange")
                 if ltp is not None:
                     try:
+                        if not math.isfinite(float(ltp)) or float(ltp) <= 0:
+                            continue
                         quotes[stock["name"]] = {
                             "ltp": float(ltp),
+                            "received_at": row["_received_at"],
                             "pct_change": (float(pct_change) if pct_change is not None else None),
                         }
                     except (TypeError, ValueError):
@@ -170,10 +163,51 @@ class UniverseScanner:
                 except (TypeError, ValueError):
                     continue
 
-        if quotes:
-            self._last_universe_quotes = quotes
+        self._last_universe_quotes = quotes
         moves.sort(key=lambda m: m[0], reverse=True)
         return [stock for _, stock in moves[:MAX_SHORTLIST]]
+
+    def _fetch_screen_batch(self, by_exchange: dict, batch_start: int) -> dict:
+        pending = {ex: list(tokens) for ex, tokens in by_exchange.items()}
+        fetched = {}
+        for attempt in range(3):
+            # Other services may consume the account's allowance too.
+            if self._stop.wait((1.25, 2.5, 5.0)[attempt]):
+                break
+            if not QUOTE.wait_and_allow(timeout_sec=3.0):
+                continue
+            try:
+                SESSION.ensure()
+                response = SESSION.api.getMarketData(
+                    mode="FULL", exchangeTokens=pending)
+                rows = ((response or {}).get("data") or {}).get("fetched") or []
+                if not (response or {}).get("status"):
+                    rows = []
+                expected = {str(t) for tokens in pending.values() for t in tokens}
+                for row in rows:
+                    token = str(row.get("symbolToken"))
+                    try:
+                        price = float(row.get("ltp"))
+                    except (TypeError, ValueError):
+                        continue
+                    if token in expected and math.isfinite(price) and price > 0:
+                        fetched[token] = dict(row, _received_at=now_ist().isoformat())
+            except Exception:
+                # Do not write broker responses or credentials to logs.
+                audit.log("universe_stage1_request_failed",
+                          batch_start=batch_start, attempt=attempt + 1)
+            pending = {
+                ex: [t for t in tokens if str(t) not in fetched]
+                for ex, tokens in pending.items()
+            }
+            pending = {ex: tokens for ex, tokens in pending.items() if tokens}
+            if not pending:
+                break
+        missing = sum(map(len, pending.values()))
+        if missing:
+            audit.log("universe_stage1_incomplete", batch_start=batch_start,
+                      missing=missing, received=len(fetched))
+        return {"data": {"fetched": list(fetched.values())}}
 
     # ---------------------------------------------------------- promotion
     def _promote(self, stock: dict) -> None:
@@ -213,6 +247,7 @@ class UniverseScanner:
         stale = [name for name, t in self._tracked.items()
                 if t.last_seen_in_shortlist < cutoff]
         for name in stale:
+            stock_handoff.invalidate(name, end_episode=True)
             del self._tracked[name]
             self._last_score.pop(name, None)
             audit.log("universe_stock_demoted", name=name)
@@ -222,27 +257,50 @@ class UniverseScanner:
         for name, tracked in list(self._tracked.items()):
             spot_map_token = tracked.chain.index.token
             if not QUOTE.wait_and_allow(timeout_sec=2.0):
+                stock_handoff.invalidate(name)
                 continue
             try:
                 SESSION.ensure()
                 resp = SESSION.api.getMarketData(
-                    mode="LTP", exchangeTokens={tracked.chain.index.exchange: [spot_map_token]})
+                    mode="FULL", exchangeTokens={tracked.chain.index.exchange: [spot_map_token]})
                 fetched = (resp or {}).get("data", {}).get("fetched", [])
-                if fetched:
-                    tracked.spot = float(fetched[0]["ltp"])
+                matching = [x for x in fetched if str(x.get('symbolToken')) == str(spot_map_token)]
+                if not resp.get('status') or len(matching) != 1:
+                    raise ValueError('Missing underlying quote')
+                tracked.spot = float(matching[0]['ltp'])
+                if not math.isfinite(tracked.spot) or tracked.spot <= 0:
+                    raise ValueError('Invalid underlying quote')
+                tracked.spot_at = now_ist().isoformat()
+                avg = matching[0].get('avgPrice')
+                tracked.session_vwap = float(avg) if avg is not None else None
+                if tracked.session_vwap is not None and not math.isfinite(tracked.session_vwap):
+                    tracked.session_vwap = None
             except Exception as exc:                    # noqa: BLE001
-                audit.log("universe_spot_poll_failed", name=name, error=str(exc))
+                stock_handoff.invalidate(name)
+                audit.log("universe_spot_poll_failed", name=name, error=type(exc).__name__)
                 continue
 
             if not tracked.spot:
                 continue
 
+            try:
+                expiry = datetime.strptime(self.scrips.nearest_expiry(tracked.chain.index), '%d%b%Y')
+                expiry = expiry.replace(tzinfo=IST,hour=MARKET_CLOSE[0],minute=MARKET_CLOSE[1])
+                tracked.days_to_expiry = (expiry - now_ist()).total_seconds() / 86400
+                if tracked.days_to_expiry <= 0:
+                    raise ValueError('Expired contract')
+            except (TypeError, ValueError):
+                stock_handoff.invalidate(name)
+                continue
             tracked.chain.rebuild_ladder(tracked.spot)
             if not tracked.chain.poll():
+                stock_handoff.invalidate(name)
                 continue
+            chain_at = now_ist().isoformat()
 
             result = gamma.score(name, tracked.chain, tracked.history,
                                  tracked.spot, tracked.days_to_expiry)
+            self.radar.publish_chain(tracked.chain,tracked.spot,tracked.spot_at,result)
 
             audit.log("universe_gamma_score", name=name, tier=result.tier,
                       score=result.score, direction=result.direction,
@@ -254,6 +312,10 @@ class UniverseScanner:
                 "direction": result.direction,
                 "ts": now_ist().isoformat(),
             }
+            from .universe_display import selected_contract
+            contract,status=selected_contract(tracked.chain,result.direction,tracked.spot,
+                                              tracked.days_to_expiry,chain_at)
+            self._last_score[name].update(best_contract=contract,strike_status=status)
 
             if result.tier in ("ACTIVE", "CONFIRMED") and result.direction:
                 pick = strike_selector.best(tracked.chain, result.direction,
@@ -265,11 +327,17 @@ class UniverseScanner:
                                           pick.as_dict(), tracked.chain.pcr(),
                                           tracked.chain.max_pain())
 
-            if result.tier == "CONFIRMED":
-                audit.log("universe_gamma_confirmed", name=name, score=result.score,
-                          direction=result.direction, spot=tracked.spot,
-                          note="OBSERVE-ONLY -- not wired to auto_executor, "
-                               "see module docstring")
+            try:
+                sid = stock_handoff.publish(name,result.direction,result.tier,result.score,{
+                    'index': asdict(tracked.chain.index), 'spot': tracked.spot,
+                    'spot_at': tracked.spot_at, 'session_vwap': tracked.session_vwap,
+                    'chain_at': chain_at, 'days_to_expiry': tracked.days_to_expiry,
+                    'score': result.score, 'quotes': [asdict(q) for q in tracked.chain.quotes.values()]})
+                if sid is not None:
+                    audit.log('universe_gamma_handoff',name=name,signal_id=sid,score=result.score)
+            except (ValueError,TypeError):
+                stock_handoff.invalidate(name)
+                audit.log('universe_handoff_invalid',name=name)
 
     # ---------------------------------------------------------- snapshot
     def _save_snapshot(self) -> None:
@@ -279,6 +347,10 @@ class UniverseScanner:
         for every name in the universe stage 1 has seen a quote for,
         scored or not. control_api.py serves this file as-is to the
         dashboard via /universe_snapshot."""
+        from . import celestial
+        celestial.health('stock_universe',dict(expected=len(self.universe),priced=len(self._last_universe_quotes),
+            option_chains_tracked=len(self._tracked),option_chain_limit=MAX_SHORTLIST,
+            coverage='full_underlying_screen_rotating_option_shortlist'))
         rows = []
         for name, tracked in self._tracked.items():
             latest = self._last_score.get(name)
@@ -291,12 +363,22 @@ class UniverseScanner:
                 "score": latest["score"],
                 "direction": latest["direction"],
                 "last_updated": latest["ts"],
+                "best_contract": latest.get("best_contract"),
+                "strike_status": latest.get("strike_status","not_scanned"),
             })
         rows.sort(key=lambda r: r["score"], reverse=True)
         payload = {
             "ts": now_ist().isoformat(),
             "tracked": rows,
             "prices": self._last_universe_quotes,
+            "execution": "central_executor_gated",
+            "coverage": {
+                "expected": len(self.universe),
+                "priced": len(self._last_universe_quotes),
+                "missing": sorted({s["name"] for s in self.universe}
+                                  - set(self._last_universe_quotes)),
+                "gamma_limit": MAX_SHORTLIST,
+            },
         }
         try:
             with _SNAPSHOT_LOCK:
@@ -337,7 +419,12 @@ class UniverseScanner:
 
 def main() -> int:
     audit.log("universe_scanner_starting")
-    scanner = UniverseScanner()
+    from . import celestial
+    if celestial.enabled():
+        from .full_universe_scanner import FullUniverseScanner
+        scanner = FullUniverseScanner()
+    else:
+        scanner = UniverseScanner()
     try:
         scanner.run_forever()
     except KeyboardInterrupt:
@@ -348,4 +435,3 @@ def main() -> int:
 if __name__ == "__main__":
     import sys
     sys.exit(main())
-

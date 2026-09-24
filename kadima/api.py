@@ -6,7 +6,7 @@ Two read-only endpoints. Nothing here can write to config, place an order, or
 change engine behaviour. That is deliberate: an LLM reads this, and an LLM
 should not be able to reach anything consequential.
 
-    GET /state    current picture across four indices  (~40 lines of JSON)
+    GET /state    current picture across indices and the F&O stock shortlist
     GET /session  today's signals + 30-min outcomes
     GET /health   liveness, for the watchdog
 
@@ -30,11 +30,13 @@ from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
 from . import storage
 from .config import INDICES, IST
 from .utils import in_market_hours, now_ist
+from .universe_api import read_universe
+from .commodity_watch import read_snapshot as read_commodities
 
 API_TOKEN = os.environ.get("KADIMA_API_TOKEN", "")
 OUTCOME_HORIZON_MIN = int(os.environ.get("KADIMA_OUTCOME_MIN", "30"))
 
-app = FastAPI(title="KADIMA state API", version="0.1.0")
+app = FastAPI(title="KADIMA state API", version="0.2.0")
 _bearer = HTTPBearer(auto_error=True)
 
 # The engine sets this at startup so the API can read live in-memory state.
@@ -81,13 +83,21 @@ def state() -> dict:
         chain = st.chain
         walls = chain.walls(3) if chain else {"CE": [], "PE": []}
         gr = getattr(st, "gamma_result", None)
+        from .shield_confirmation import confirmation_checks, is_shield_confirmed
+        evidence = ENGINE._shield_context(st)
+        shield_tier = st.tier
+        if shield_tier == 'CONFIRMED' and not is_shield_confirmed(evidence, now_ist()):
+            shield_tier = 'ACTIVE'  # stale evidence must not remain visibly confirmed
+        checks = confirmation_checks(evidence, now_ist())
         out["indices"][name] = {
             "spot": st.spot,
             "live": st.is_live_tick,
             "last_updated": st.last_updated.isoformat() if st.last_updated else None,
-            "shield": {"tier": st.tier, "score": round(st.score, 1),
+            "shield": {"tier": shield_tier, "score": round(st.score, 1),
                        "direction": st.direction,
-                       "since": st.tier_since.isoformat() if st.tier_since else None},
+                       "since": st.tier_since.isoformat() if st.tier_since else None,
+                       "confirmation": checks, "signal_id": st.shield_signal_id,
+                       "components": st.components},
             "gamma": {"tier": gr.tier, "score": gr.score, "direction": gr.direction,
                       "components": gr.components.as_dict()} if gr else
                      {"tier": "NONE", "score": 0.0, "direction": None, "components": {}},
@@ -119,6 +129,8 @@ def state() -> dict:
         }
 
     out["global_context"] = getattr(ENGINE, "global_context", None)
+    out["fno_universe"] = read_universe(now=now_ist())
+    out["commodities"] = read_commodities(now=now_ist())
     return out
 
 
@@ -255,5 +267,3 @@ REVIEW_GUARDRAIL = (
     "Below that threshold the correct answer is 'insufficient sample'. "
     "Patterns found in 20-40 outcomes are almost always noise."
 )
-
-

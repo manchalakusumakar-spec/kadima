@@ -36,6 +36,8 @@ from .rate_limiter import QUOTE
 from .scrip_master import ScripMaster
 from .session import SESSION
 from .utils import in_market_hours, now_ist
+from .commodity_watch import CommodityWatch
+from .news_context import headline_context
 
 # Snapshot hand-off file -- see control_api.py's /macro_snapshot route.
 SNAPSHOT_PATH = os.path.expanduser("~/kadima-py/state/macro_snapshot.json")
@@ -47,6 +49,7 @@ FIIDII_POLL_SEC = 30 * 60     # NSE publishes this once/day; no need to hammer i
 NEWS_POLL_SEC = 30 * 60       # keeps us at ~48 Marketaux calls/day, well under
                               # the free tier's 100/day cap
 LOOP_TICK_SEC = 5
+COMMODITY_POLL_SEC = 30
 
 
 # ------------------------------------------------------------- economic calendar
@@ -81,7 +84,8 @@ def _upcoming_events(today: date, limit: int = 5) -> list[dict]:
         if end < today:
             continue
         start = datetime.strptime(ev["date"], "%Y-%m-%d").date()
-        out.append({**ev, "days_away": (start - today).days})
+        out.append({**ev, "days_away": max(0, (start - today).days),
+                    "calendar_verified_on": "2026-09-16"})
     out.sort(key=lambda e: e["date"])
     return out[:limit]
 
@@ -248,6 +252,8 @@ def _fetch_news() -> list[dict] | None:
                 "url": a.get("url"),
                 "source": a.get("source"),
                 "published_at": a.get("published_at"),
+                "received_at": now_ist().isoformat(),
+                "context": headline_context(title),
             })
         return out or None
     except Exception as exc:                            # noqa: BLE001
@@ -269,6 +275,8 @@ class MacroWatcher:
         self._last_vix: dict | None = None
         self._last_fiidii: dict | None = None
         self._last_news: list[dict] = []
+        self.commodities = CommodityWatch()
+        self._master_date = None
         self._stop = threading.Event()
 
     # ---------------------------------------------------------- India VIX
@@ -299,6 +307,7 @@ class MacroWatcher:
             "fii_dii": self._last_fiidii,
             "news": self._last_news,
             "economic_calendar": _upcoming_events(now_ist().date()),
+            "commodities": self.commodities.snapshot(),
         }
         try:
             with _SNAPSHOT_LOCK:
@@ -315,8 +324,36 @@ class MacroWatcher:
         last_vix = 0.0
         last_fiidii = 0.0
         last_news = 0.0
+        last_commodities = 0.0
         while not self._stop.is_set():
             now = time.monotonic()
+
+            if now - last_commodities >= COMMODITY_POLL_SEC:
+                from .commodity_watch import monitoring_window
+                stamp = now_ist()
+                if monitoring_window(stamp):
+                    try:
+                        from .scrip_master import CACHE
+                        from pathlib import Path
+                        cache = Path(CACHE)
+                        cache_age = stamp.timestamp() - cache.stat().st_mtime if cache.exists() else -1
+                        if self._master_date != stamp.date() or not 0 <= cache_age <= 12 * 3600:
+                            refreshed = ScripMaster.load()
+                            if not 0 <= stamp.timestamp() - cache.stat().st_mtime <= 12 * 3600:
+                                raise ValueError('stale_contract_master')
+                            self.scrips = refreshed
+                            self._master_date = stamp.date()
+                        def fetch(tokens):
+                            if not QUOTE.wait_and_allow(timeout_sec=3.0):
+                                raise RuntimeError('quote_rate_limited')
+                            SESSION.ensure()
+                            return SESSION.api.getMarketData('FULL', {'MCX': tokens})
+                        self.commodities.poll(self.scrips.rows, fetch, stamp)
+                    except Exception as exc:
+                        self.commodities.ok = False
+                        self.commodities.error = type(exc).__name__
+                last_commodities = now
+                self._save_snapshot()
 
             if in_market_hours() and now - last_vix >= VIX_POLL_SEC:
                 self._fetch_vix()
