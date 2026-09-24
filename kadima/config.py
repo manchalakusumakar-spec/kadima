@@ -246,7 +246,7 @@ SESSION_MODIFIERS = {
 
 # Proposed, not a claim about actual broker or exchange session times.
 CAS_HARD_EXIT = '15:18:30'
-STOP_ENGINE = dict(version=2, max_input_age_seconds=5,
+STOP_ENGINE = dict(version=3, max_input_age_seconds=5,
     thesis_max_age_seconds=30, min_spread_multiple=3.,
     reprice_seconds=2, max_reprices=3, broker_buffer_seconds=90,
     calibration_min_occurrences=30, mode='OFFLINE_DRAFT')
@@ -265,3 +265,8 @@ STRUCTURE_GUARD = dict(
 # Empty until recovery-before-exit probabilities have out-of-sample validation.
 # See docs/dynamic_stops_v1.md for the required validation record.
 STRUCTURE_GUARD_VALIDATIONS = {}
+
+# User instruction, 24 Sep 2026. Draft manual positions use Intraday until
+# the existing CAS start, then no strategy price/thesis stops. Deadlines and
+# pending broker intents remain binding. No live adoption is enabled here.
+MANUAL_STOP_POLICY = dict(version=1, cas_start='15:15:00', full_premium_risk=True)

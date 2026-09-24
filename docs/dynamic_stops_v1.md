@@ -29,7 +29,8 @@ Gamma scores, heat, price ranges, or the model's assertion that it is validated.
 1. A pending full exit stays binding. Session deadlines and confirmed thesis
    exits remain authoritative. Pending partial-order fill cursors are never
    overwritten by a later full exit.
-2. `StopPlan.hard_stop_premium` and `StopPosition.protected_stop` always bind.
+2. Outside the explicit manual CAS no-stop policy below,
+   `StopPlan.hard_stop_premium` and `StopPosition.protected_stop` always bind.
    Breakeven and explicit profit-lock ratchets raise the latter. ATR trailing
    remains a technical stop; it cannot reduce a previously locked floor.
 3. The nominal `active_stop` never decreases. An ACTIVE structure exception
@@ -59,8 +60,8 @@ Use the existing `initial_stop(signal, chain_row, market)` then
 must be the canonical underlying name, e.g. `NIFTY`, for structure eligibility.
 All timestamps must contain a timezone. Prices and per-unit costs are rupees.
 Signal and contract inputs, regime-specific ATR, expiry, and verified session
-deadlines are required by the base draft. Manual/adopted positions are not
-silently assigned a scanner regime.
+deadlines are required by the base draft. Known manual sources follow the
+explicit manual policy below; unknown sources remain rejected.
 
 Each `update_stop` call includes a matching token/exchange quote with `ltp`,
 `bid`, `ask`, `ts`, plus market `now`, `ts`, `asset`, `spot`, and `atr_spot_5m`.
@@ -192,9 +193,107 @@ only the count of avoided stop-outs. Overlapping forecasts are not independent.
 - Integrate qualified zones, pivots, fresh option Greeks and dense quote history.
 - Connect executor/ledger persistence, timer calls and stop precedence so legacy
   raw VWAP/premium exits cannot contradict the new policy for opted-in trades.
-- Resolve explicit manual-position ownership/regime assignment, CAS risk sleeve
+- Integrate verified manual-position ownership and the approved manual policy;
+  resolve the automated CAS risk sleeve
   and pre-expiry Gamma regime ambiguity from the source draft.
 - Validate shorter-regime/instrument settings; do not assume NIFTY's points apply
   across all indices or that a long-horizon forecast is usable for CAS.
 - Build a source-matched deployment preserving installed AWS session/portfolio
   overlays. This patch neither verifies nor activates an AWS installation.
+
+## Source attribution and manual CAS policy (24 September 2026)
+
+`signal.source` identifies the originating scanner, not the market's subsequent
+behaviour. `StopPlan.source` and `StopPlan.regime` are saved with the exact
+contract and position state. Execution integration must bind them to the actual
+entry intent/order and resolve conflicting scanner claims before adoption.
+
+| Source | Initial stop regime |
+| --- | --- |
+| `gamma_blast`, `gamma_pre_entry` | GAMMA |
+| `scalp`, `index_scalp`, `fast_momentum` | SCALP |
+| `cas_blast` | CAS |
+| `bull_shield`, `bear_shield`, `sniper` | INTRADAY |
+| `manual`, `manual_adopted`, `MANUAL_ADOPTED` | INTRADAY with manual CAS policy |
+| Unknown / absent | Reject |
+
+The existing pre-expiry modifier can assign automated Intraday signals below
+90 to Scalp at entry. Gamma below 90 on that day still requires an explicit
+configured choice. Manual positions are exempt from that modifier. Gamma
+Pre-Entry can graduate to Confirmed; arbitrary later signals cannot reclassify
+an existing position.
+
+User-approved manual rule: before **15:15 IST**, use Intraday protection. From
+15:15 until the position's verified hard exit, return `manual_cas_no_stop` with
+`StopDecision.stop=None`. This disables technical, premium, trailing, earned
+profit-floor, structure-forecast and thesis-driven strategy exits for manual
+positions during CAS. No new automatic profit partial is generated in this
+hold mode. Session exit, user/operator exits and already-submitted intents
+remain authoritative. A pre-CAS pending exit is never silently cancelled.
+The existing repository CAS start is daily, not gated to the option's expiry.
+It is a strategy boundary, not a claim about exchange auction/session hours.
+
+Full remaining premium can be lost during this no-stop window. Draft planning
+therefore reserves full premium plus the configured per-unit cost before
+sizing a manual plan. `initial_stop` is not a broker adoption method: an actual
+manual position still needs verified ownership, fill price/quantity and a
+deliberate execution-layer binding. It never resizes an existing broker trade.
+An earlier broker/product deadline still exits earlier, even at/before 15:15.
+Manual CAS uses that verified deadline, not the automatic CAS draft's separate
+15:18:30 cap. Broker square-off, margin liquidation and user exits are outside
+the stop engine's control.
+
+State schema version 3 persists source and the manual clock/policy snapshot.
+Versions 1 and 2 remain readable without granting manual CAS permission to
+old unattributed positions. Deployment must reconcile/cancel old broker stops
+explicitly where appropriate; this offline patch does not do so.
+
+## Candle quality and Fibonacci candidates
+
+`candles.py` counts each cumulative-volume increment once per token for session
+VWAP, then gives that increment to each active timeframe including a new bar.
+Callbacks observe the previous candle's data before the next tick's volume.
+The first sample establishes a baseline; a mid-session start cannot reconstruct
+earlier trades. Session VWAP is an observed-tick estimate, not a certified
+exchange VWAP. Missing/decreasing volume invalidates VWAP until the next daily
+reset; absent volume returns `None`, never a close-price stand-in. Older ticks
+cannot alter later candles or reset a newer session. Timestamps normalize to IST.
+The feed currently records receipt timestamps; this change does not recover
+missing exchange timestamps or invent candles for gaps/unsampled close times.
+
+`tools/verify_candles.py` opens an existing SQLite database read-only, selects
+the requested historical window directly, and compares every OHLCV field.
+Both feeds must cover every expected five-minute slot. Empty data, duplicates,
+unclosed/malformed bars, broker errors and any mismatch return nonzero. End is
+exclusive; supply the actual historical session/window, including special hours.
+Defaults are 09:15–15:30, not an assertion that all dates/products use that close.
+The verifier does not overwrite history. Repair requires a backed-up,
+source-attributed rebuild from trustworthy ticks or broker candles.
+
+`structure_levels.py` accepts normalized or SQLite closed five-minute bars,
+an aware `now`, asset, spot and ATR. `fibonacci_levels` returns unqualified
+23.6%, 38.2%, 50%, 61.8% and 78.6% retracements of the last three confirmed
+alternating swing legs. The 50% midpoint is conventional, not Fibonacci-derived.
+Each two-left/two-right swing becomes available only when the second right bar
+closes. Future/forming bars are ignored; duplicate, unordered, gapped, invalid
+or stale current-session history is rejected. No historical day/week pivots or
+volume proxy for a cash index are fabricated.
+
+`build_zones` creates zones around confirmed pivots, with half-width
+`max(1 point, 0.1 * ATR)` as an **unvalidated research default**. Fibonacci
+overlap is corroboration only; a Fib line cannot qualify a zone alone. A
+completed rejection must occur after every contributing reference was available;
+consecutive touching bars count once. A later close beyond the zone invalidates
+it. Output includes stable identity, formation time, actual source-bar close,
+last reaction, reference provenance and `experimental=True`. The guard's
+existing proximity/breach buffers and independent forecast-validation gate
+remain unchanged. This pure builder is not yet connected to the live executor.
+
+Custom candidates are preserved exactly: 18, 33, 44, 55, 66, 77, 88, 103, 108,
+122, 133, 135, 155. They are disabled; units/anchor and held-out evidence are
+required before interpreting them as premium prices, index offsets or periods.
+Compare them against round-number and shifted-level controls, with spread,
+costs, expiry and volatility segmentation. No historical edge is established.
+The available year-long CSV could not be materialized/read; a single older
+option-chain snapshot cannot validate intraday reversal paths or 60-second
+forecast probabilities.

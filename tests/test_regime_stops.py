@@ -107,8 +107,8 @@ class RegimeStops(unittest.TestCase):
         self.assertEqual(stops.initial_stop(self.signal, self.row, self.market).reason, 'stale_stop_inputs')
         self.assertIsInstance(stops.initial_stop({}, {}, {}), stops.Reject)
 
-    def test_manual_regime_is_never_guessed(self):
-        self.signal['source'] = 'MANUAL_ADOPTED'
+    def test_unknown_regime_is_never_guessed(self):
+        self.signal['source'] = 'unknown_external'
         self.assertEqual(stops.initial_stop(self.signal, self.row, self.market).reason,
                          'explicit_supported_signal_regime_required')
 

@@ -46,6 +46,8 @@ class StopPlan:
     recovery: bool = False
     asset: str = ''
     hard_stop_premium: float | None = None
+    source: str = ''
+    manual_cas_start: str | None = None
 
 
 @dataclass
@@ -81,7 +83,7 @@ class StopPosition:
 class StopDecision:
     action: str
     reason: str
-    stop: float
+    stop: float | None
     quantity: int = 0
     fraction: float = 0.
 
@@ -124,10 +126,15 @@ def _reject(reason):
     return Reject(reason)
 
 
+MANUAL_SOURCES = ('manual', 'manual_adopted', 'MANUAL_ADOPTED')
+
+
 def assign_regime(signal, market, modifiers=None):
-    """No implicit regime for manual/adopted or unknown strategy positions."""
+    """Explicit source attribution; manual positions keep Intraday before CAS."""
     modifiers = modifiers or config.SESSION_MODIFIERS
     source = signal.get('source')
+    if source in MANUAL_SOURCES:
+        return 'INTRADAY'  # User policy overrides the pre-expiry Scalp modifier.
     if source in ('cas_blast',):
         regime = 'CAS'
     elif source in ('gamma_blast', 'gamma_pre_entry'):
@@ -287,6 +294,15 @@ def _initial_stop(signal, row, market, regimes, modifiers):
             risk_distance = entry - hard_stop + signal['costs_per_unit']
     elif 'hard_stop_premium' in signal:
         return _reject('cas_hard_stop_override_unsupported')
+    manual_start = None
+    if signal.get('source') in MANUAL_SOURCES:
+        # Persist the existing CAS boundary in IST, not in the caller's offset.
+        local = now.astimezone(config.IST)
+        p['manual_policy'] = copy.deepcopy(config.MANUAL_STOP_POLICY)
+        manual_start = _clock(local, p['manual_policy']['cas_start'])
+        # No-stop permission requires reserving full premium, even before CAS.
+        # This planner never adopts or resizes an already-open broker position.
+        risk_distance = entry + signal['costs_per_unit']
     max_lots, capital = signal['max_lots'], signal['available_capital_inr']
     if type(max_lots) is not int or max_lots <= 0 or not _number(capital, 0):
         return _reject('invalid_capital_or_lot_limit')
@@ -298,7 +314,8 @@ def _initial_stop(signal, row, market, regimes, modifiers):
                     entry - stop, lots, lot, spread, invalidation, now.isoformat(),
                     hard_exit.isoformat(), expiry.isoformat(), p, session, signal['score'],
                     signal['costs_per_unit'], pre, signal.get('source') == 'sniper',
-                    bool(signal.get('recovery_session')), str(signal.get('asset', '')), hard_stop)
+                    bool(signal.get('recovery_session')), str(signal.get('asset', '')), hard_stop,
+                    signal.get('source', ''), manual_start.isoformat() if manual_start else None)
     _event('stop_initial', regime=regime, phase='INITIAL', R=plan.r_value,
            premium=entry, spot=market.get('spot'), stop=stop, reason='draft_plan', lots=lots)
     return plan
@@ -391,6 +408,19 @@ def _partial(state, reason, fraction, stop=None):
     return _decision(state, 'PARTIAL', reason, fraction)
 
 
+def _manual_cas_decision(state, now):
+    if (state.plan.source not in MANUAL_SOURCES or state.plan.manual_cas_start is None
+            or now < _stamp(state.plan.manual_cas_start)):
+        return None
+    if state.structure_guard.get('status') in ('ARMED', 'ACTIVE'):
+        structure_guard.finish(state, 'manual_cas_no_stop')
+    # Do not cancel or forget an order already in flight.
+    pending = _pending(state)
+    if pending:
+        return pending
+    return StopDecision('HOLD', 'manual_cas_no_stop', None)
+
+
 def update_stop(state, tick, market):
     """Ratchet a draft state and return a decision; never submit an order.
 
@@ -405,6 +435,9 @@ def update_stop(state, tick, market):
         return _decision(state, 'EXIT', 'cas_hard_exit' if state.regime == 'CAS' else 'session_hard_exit')
     if state.pending and state.pending['action'] == 'EXIT':
         return _pending(state)
+    manual = _manual_cas_decision(state, now)
+    if manual:
+        return manual
     guard_active = state.structure_guard.get('status') == 'ACTIVE'
     if guard_active and now >= _stamp(state.structure_guard['deadline']):
         return _decision(state, 'EXIT', 'structure_grace_expired')
@@ -550,8 +583,13 @@ def thesis_check(state, signals):
     now = _stamp(signals['now'])
     if state.remaining_qty <= 0:
         return _decision(state, 'HOLD', 'position_closed')
+    if now >= _stamp(state.plan.hard_exit):
+        return _decision(state, 'EXIT', 'session_hard_exit')
     if state.pending and state.pending['action'] == 'EXIT':
         return _pending(state)
+    manual = _manual_cas_decision(state, now)
+    if manual:
+        return manual
     if not _fresh(signals.get('ts'), now, config.STOP_ENGINE['thesis_max_age_seconds']):
         return _pending(state) or _decision(state, 'HOLD', 'stale_thesis')
     p, e = state.plan.params, state.plan.entry_price
@@ -684,7 +722,7 @@ def load_state(signal_id, connection):
     if row is None:
         return None
     payload = json.loads(row[0])
-    if payload['version'] not in (1, config.STOP_ENGINE['version']):
+    if payload['version'] not in (1, 2, config.STOP_ENGINE['version']):
         raise ValueError('unsupported_stop_state_version')
     data = payload['state']
     if payload['version'] == 1:
@@ -693,6 +731,16 @@ def load_state(signal_id, connection):
         data['structure_guard'] = dict(status='SPENT', used=True, end_reason='legacy_state')
     data['plan'] = StopPlan(**data['plan'])
     state = StopPosition(**data)
+    if state.plan.source in MANUAL_SOURCES:
+        entry = _stamp(state.plan.entry_ts).astimezone(config.IST)
+        start = _stamp(state.plan.manual_cas_start).astimezone(config.IST)
+        policy = state.plan.params.get('manual_policy', {})
+        if (policy.get('version') != 1 or policy.get('full_premium_risk') is not True
+                or start != _clock(entry, policy.get('cas_start'))
+                or state.plan.regime != 'INTRADAY'):
+            raise ValueError('invalid_persisted_manual_policy')
+    elif state.plan.manual_cas_start is not None:
+        raise ValueError('manual_policy_requires_manual_source')
     if (state.signal_id != signal_id or state.phase not in ('INITIAL', 'BREAKEVEN', 'TRAIL', 'LOCK')
             or not _number(state.active_stop, state.plan.initial_stop)
             or not _number(state.peak_premium, state.plan.entry_price)
