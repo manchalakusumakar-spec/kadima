@@ -13,7 +13,7 @@ from .session import SESSION
 from .utils import now_ist, in_market_hours
 
 
-def parse_candles(rows, interval, now):
+def parse_candles(rows, interval, now, *, recent_contiguous=False):
     if not isinstance(rows, list) or len(rows) > 5000:
         raise ValueError('Invalid historical data')
     output = []
@@ -40,9 +40,13 @@ def parse_candles(rows, interval, now):
     if not 0 <= age <= interval * 60 + 60:
         raise ValueError('Stale historical candles')
     today = [r for r in output if datetime.fromisoformat(r['start_ts']).date() == now.date()]
-    if any((datetime.fromisoformat(b['start_ts'])-datetime.fromisoformat(a['start_ts'])).total_seconds()
-           != interval * 60 for a,b in zip(today,today[1:])):
-        raise ValueError('Missing session candles')
+    gaps = [i for i in range(1, len(today))
+            if (datetime.fromisoformat(today[i]['start_ts']) -
+                datetime.fromisoformat(today[i-1]['start_ts'])).total_seconds() != interval*60]
+    if gaps:
+        if not recent_contiguous:
+            raise ValueError('Missing session candles')
+        output = today[gaps[-1]:]
     return output[-300:]
 
 

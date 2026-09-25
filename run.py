@@ -15,8 +15,15 @@ def main():
     stock_fast_worker = stock_fast.Worker(auto_executor.EXECUTOR, engine.scrips)
     gap_worker = gap_live.Worker(auto_executor.EXECUTOR, engine.scrips)
     mcx_worker = mcx_live.Worker(auto_executor.EXECUTOR, engine.scrips)
+    from kadima.move_capture_execution import MoveCaptureExecutionWorker, live_requested
+    from kadima.move_capture_service import MoveCaptureService
+    move_worker = MoveCaptureExecutionWorker(auto_executor.EXECUTOR, engine.scrips)
+    move_service = None
 
     def stop_all():
+        if move_service is not None:
+            move_service.stop()
+        move_worker.stop()
         mcx_worker.stop()
         gap_worker.stop()
         stock_fast_worker.stop()
@@ -62,6 +69,16 @@ def main():
     stock_fast_worker.start()
     gap_worker.start()
     mcx_worker.start()
+    if live_requested():
+        try:
+            move_service = MoveCaptureService()
+            move_service.start()
+            move_worker.start()
+        except Exception as exc:
+            # Feed discovery failure must not stop protection of existing trades.
+            audit.log('MOVE_CAPTURE_START_FAILED', error_type=type(exc).__name__)
+            from kadima import celestial
+            celestial.health('move_capture_feed', dict(ok=False, reason='startup_failed'))
 
     try:
         while True:

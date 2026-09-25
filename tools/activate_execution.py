@@ -6,6 +6,7 @@ release. Checks exposure before and after stopping, then uses the authenticated
 resume endpoint. Never edits broker credentials, scores, stops or kill latches.
 """
 import argparse
+from datetime import datetime, timezone
 import fcntl
 import importlib.util
 import json
@@ -135,7 +136,7 @@ def preflight(installer,context):
         raise Blocked('flat_account_preflight_unconfirmed')
 
 
-def planned_files(fast,gap,mcx=False,mcx_capital=None):
+def planned_files(fast,gap,mcx=False,mcx_capital=None,move=False):
     existing=set()
     existing_cap=None
     if ENVFILE.exists():
@@ -152,7 +153,7 @@ def planned_files(fast,gap,mcx=False,mcx_capital=None):
                 if not existing_cap>0:raise Blocked('existing_activation_file_differs:'+ENVFILE.name)
                 continue
             if line not in {'KADIMA_CELESTIAL_ENABLED=1','KADIMA_FAST_MOMENTUM_LIVE=1',
-                            'KADIMA_GAP_LIVE=1','KADIMA_MCX_LIVE=1'}:
+                            'KADIMA_GAP_LIVE=1','KADIMA_MCX_LIVE=1','KADIMA_MOVE_CAPTURE_LIVE=1'}:
                 raise Blocked('existing_activation_file_differs:'+ENVFILE.name)
             existing.add(line)
         if 'KADIMA_CELESTIAL_ENABLED=1' not in existing:
@@ -167,8 +168,10 @@ def planned_files(fast,gap,mcx=False,mcx_capital=None):
     elif existing_cap is not None:
         mcx_capital=existing_cap
     lines=['KADIMA_CELESTIAL_ENABLED=1']
-    if fast or 'KADIMA_FAST_MOMENTUM_LIVE=1' in existing:
+    if fast or move or 'KADIMA_FAST_MOMENTUM_LIVE=1' in existing:
         lines.append('KADIMA_FAST_MOMENTUM_LIVE=1')
+    if move or 'KADIMA_MOVE_CAPTURE_LIVE=1' in existing:
+        lines.append('KADIMA_MOVE_CAPTURE_LIVE=1')
     if gap or 'KADIMA_GAP_LIVE=1' in existing:
         lines.append('KADIMA_GAP_LIVE=1')
     if mcx or 'KADIMA_MCX_LIVE=1' in existing:
@@ -228,7 +231,7 @@ def activate_services(installer,context,files):
         raise
 
 
-def check_runtime_flags(fast,gap,mcx=False,mcx_capital=None):
+def check_runtime_flags(fast,gap,mcx=False,mcx_capital=None,move=False):
     for unit in UNITS:
         pid=command(['systemctl','show',unit,'-p','MainPID','--value']).stdout.strip()
         if not pid.isdigit() or int(pid)<=0:raise Blocked('restarted_service_unavailable')
@@ -236,6 +239,9 @@ def check_runtime_flags(fast,gap,mcx=False,mcx_capital=None):
         if env.get(b'KADIMA_CELESTIAL_ENABLED')!=b'1':raise Blocked('rollout_environment_overridden')
         if fast and unit==UNITS[0] and env.get(b'KADIMA_FAST_MOMENTUM_LIVE')!=b'1':
             raise Blocked('fast_environment_overridden')
+        if move and unit==UNITS[0] and (env.get(b'KADIMA_MOVE_CAPTURE_LIVE')!=b'1'
+                or env.get(b'KADIMA_FAST_MOMENTUM_LIVE')!=b'1'):
+            raise Blocked('move_capture_environment_overridden')
         if gap and unit==UNITS[0] and env.get(b'KADIMA_GAP_LIVE')!=b'1':
             raise Blocked('gap_environment_overridden')
         if mcx and unit==UNITS[0]:
@@ -266,7 +272,35 @@ def resume(token,reporter):
         raise Blocked('resume_not_confirmed')
 
 
-def run_activation(fast,gap,mcx=False,mcx_capital=None):
+def arm_stock_intent(token, reporter):
+    state = reporter.local_json('http://127.0.0.1:8081/api/kadima/stock-fast', token)
+    for key in ('move_capture_feed', 'move_capture_worker'):
+        health = state.get(key) or {}
+        try:
+            stamp = datetime.fromisoformat(health['ts'])
+            age = (datetime.now(timezone.utc)-stamp).total_seconds()
+            ready = health.get('ok') is True and stamp.tzinfo is not None and 0 <= age <= 15
+        except (KeyError, ValueError, TypeError):
+            ready = False
+        if not ready:
+            raise Blocked(key+'_not_ready_auto_remains_paused')
+    controls = state.get('controls') or {}
+    if controls.get('live_enabled') is True:
+        return
+    revision = controls.get('revision')
+    if type(revision) is not int:
+        raise Blocked('stock_control_revision_unknown')
+    req = urllib.request.Request('http://127.0.0.1:8081/api/kadima/stock-fast/config',
+        data=json.dumps({'patch': {'live_enabled': True}, 'expected_revision': revision}).encode(),
+        headers={'Authorization': 'Bearer '+token, 'Content-Type': 'application/json'}, method='POST')
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), reporter.NoRedirect())
+    with opener.open(req, timeout=8) as response:
+        result = json.loads(response.read(10000))
+    if result.get('live_enabled') is not True:
+        raise Blocked('stock_live_intent_unconfirmed')
+
+
+def run_activation(fast,gap,mcx=False,mcx_capital=None,move=False):
     installer=load_module('activation_installer','executor_fix/install.py')
     reporter=load_module('activation_reporter','tools/deployment_report.py')
     source_check(installer)
@@ -280,16 +314,16 @@ def run_activation(fast,gap,mcx=False,mcx_capital=None):
     already_loaded=False
     if cfg.get('rollout_enabled') is True:
         try:
-            check_runtime_flags(fast,gap,mcx,mcx_capital)
+            check_runtime_flags(fast,gap,mcx,mcx_capital,move)
             already_loaded=True
         except Blocked:pass
     if already_loaded:
         # Retrying a news warm-up failure must not restart the collector again.
         preflight(installer,context)
     else:
-        files=planned_files(fast,gap,mcx,mcx_capital)
+        files=planned_files(fast,gap,mcx,mcx_capital,move)
         activate_services(installer,context,files)
-        check_runtime_flags(fast,gap,mcx,mcx_capital)
+        check_runtime_flags(fast,gap,mcx,mcx_capital,move)
     # Startup/news collection may take several requests. Never invent success.
     deadline=time.monotonic()+60
     while True:
@@ -303,6 +337,10 @@ def run_activation(fast,gap,mcx=False,mcx_capital=None):
         except (urllib.error.URLError,TimeoutError):pass
         if time.monotonic()>=deadline:raise Blocked('startup_health_not_ready_auto_remains_paused')
         time.sleep(2)
+    if move:
+        # Intent is set while global auto remains paused. Resume still enforces
+        # fresh broker/news health. The worker rechecks all controls per entry.
+        arm_stock_intent(token,reporter)
     resume(token,reporter)
     result=reporter.report(REPO)
     if result.get('checks',{}).get('auto_trade_enabled') is not True:
@@ -312,6 +350,11 @@ def run_activation(fast,gap,mcx=False,mcx_capital=None):
     covered=news.get('covered_symbols') or []
     result['index_news_coverage_missing']=[name for name in INDICES if name not in covered]
     result['activation']='AUTO_ENABLED_SUBJECT_TO_EXISTING_ENTRY_GATES'
+    if move:
+        state=reporter.local_json(url+'stock-fast',token)
+        result['move_capture']={key:state.get(key) for key in
+            ('controls','move_capture_feed','move_capture_worker')}
+        result['move_capture_note']='Live requested; feed warmup, option confirmation and existing risk gates still apply.'
     result['warning']='Index entries remain blocked wherever index news coverage is missing. CAS is not installed by this helper.'
     print(json.dumps(result,indent=2))
 
@@ -322,6 +365,7 @@ def main():
     parser.add_argument('--enable-fast',action='store_true')
     parser.add_argument('--enable-gap',action='store_true')
     parser.add_argument('--enable-mcx',action='store_true')
+    parser.add_argument('--enable-move-capture',action='store_true')
     parser.add_argument('--mcx-capital',type=float)
     args=parser.parse_args()
     if not args.apply:raise SystemExit('Use --apply to change service rollout flags and request guarded auto resume.')
@@ -329,7 +373,7 @@ def main():
     with open('/run/lock/kadima-activation.lock','w') as lock:
         try:fcntl.flock(lock,fcntl.LOCK_EX|fcntl.LOCK_NB)
         except BlockingIOError:raise SystemExit('Another activation is running.')
-        try:run_activation(args.enable_fast,args.enable_gap,args.enable_mcx,args.mcx_capital)
+        try:run_activation(args.enable_fast,args.enable_gap,args.enable_mcx,args.mcx_capital,args.enable_move_capture)
         except Exception as exc:
             detail=str(exc) if isinstance(exc,Blocked) else type(exc).__name__
             print(json.dumps({'activation':'BLOCKED_OR_UNCONFIRMED','reason':detail,
