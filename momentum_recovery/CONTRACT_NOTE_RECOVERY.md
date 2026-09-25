@@ -2,7 +2,9 @@
 
 `reconcile_contract_note.py` repairs one narrowly verified prior-day expired
 BFO option position from operator-reviewed contract-note evidence. It does not
-send any orders, change live flags, clear a kill, install source, or auto-resume.
+send any orders, clear a kill, install source, or auto-resume. On apply it pauses
+stock live intent through the existing revision-checked API for installation;
+global Auto Trade must already be paused and stays paused.
 It is not a general bypass for an unresolved submission or an open position.
 
 Supply `--evidence /path/to/reviewed.json`. Without `--apply` this checks source,

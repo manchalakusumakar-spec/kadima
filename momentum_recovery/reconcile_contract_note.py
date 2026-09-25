@@ -21,6 +21,7 @@ import shutil
 import sqlite3
 import subprocess
 import time
+import urllib.request
 from zoneinfo import ZoneInfo
 
 IST = ZoneInfo('Asia/Kolkata')
@@ -102,6 +103,23 @@ def repair(c, e, expected, broker_receipt, now):
     except BaseException:
         c.rollback()
         raise
+
+
+def pause_stock(base, token):
+    """Pause stock intent through its revision-checked API for the next install."""
+    state = base.local_api('/api/kadima/stock-fast', token)
+    controls = state.get('controls') or {}
+    require(type(controls.get('live_enabled')) is bool and type(controls.get('revision')) is int, 'stock_controls_unknown')
+    if controls['live_enabled'] is False:
+        return
+    request = urllib.request.Request('http://127.0.0.1:8081/api/kadima/stock-fast/config',
+        data=json.dumps({'patch':{'live_enabled':False},'expected_revision':controls['revision']}).encode(),
+        headers={'Authorization':'Bearer '+token,'Content-Type':'application/json'}, method='POST')
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), base.NoRedirect())
+    with opener.open(request, timeout=10) as response:
+        result = json.loads(response.read(10000))
+    require(isinstance(result,dict) and result.get('live_enabled') is False, 'stock_pause_unconfirmed')
+    print('Stock live intent paused for source installation; global Auto Trade remains paused.', flush=True)
 
 
 BROKER_READ = r'''
@@ -193,6 +211,7 @@ def main():
         require(0 <= (datetime.now(IST)-started).total_seconds() <= 30, 'broker_check_too_old')
         return receipt
     first = flat()
+    pause_stock(base, token)
     base.check_fingerprints(fingerprints)
     require(base.process(base.ENGINE, ROOT, user.pw_uid)[0] == pid, 'engine_changed')
     require(status()['positions'] == s['positions'], 'api_state_changed')

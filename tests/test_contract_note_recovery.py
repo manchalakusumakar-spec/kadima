@@ -9,7 +9,7 @@ import contextlib
 import io
 import sys
 import types
-from unittest.mock import patch
+from unittest.mock import patch, Mock
 
 spec = importlib.util.spec_from_file_location('note_repair', Path(__file__).resolve().parents[1]/'momentum_recovery/reconcile_contract_note.py')
 module = importlib.util.module_from_spec(spec)
@@ -152,6 +152,27 @@ class Recovery(unittest.TestCase):
     def test_broker_closed_positions_and_terminal_orders(self):
         self.assertTrue(self.broker({'status':True,'data':[{'netqty':'0'}]},
                                    {'status':True,'data':[{'status':'complete'}]})['flat'])
+
+    def test_stock_pause_noop_if_already_paused(self):
+        base=types.SimpleNamespace(local_api=lambda *a:{'controls':{'live_enabled':False,'revision':2}})
+        with patch.object(module.urllib.request,'build_opener') as build:
+            module.pause_stock(base,'not-a-real-token')
+            build.assert_not_called()
+
+    def test_stock_pause_uses_current_revision_and_only_disables(self):
+        base=types.SimpleNamespace(local_api=lambda *a:{'controls':{'live_enabled':True,'revision':7}},
+                                   NoRedirect=module.urllib.request.HTTPRedirectHandler)
+        opener=Mock()
+        opener.open.return_value=io.BytesIO(b'{"live_enabled":false}')
+        with patch.object(module.urllib.request,'build_opener',return_value=opener),contextlib.redirect_stdout(io.StringIO()):
+            module.pause_stock(base,'not-a-real-token')
+        req=opener.open.call_args.args[0]
+        self.assertEqual(req.get_method(),'POST')
+        self.assertEqual(json.loads(req.data),{'patch':{'live_enabled':False},'expected_revision':7})
+
+    def test_stock_pause_unknown_state_refused(self):
+        base=types.SimpleNamespace(local_api=lambda *a:{'controls':{'live_enabled':'true','revision':7}})
+        with self.assertRaises(ValueError): module.pause_stock(base,'not-a-real-token')
 
 
 if __name__ == '__main__': unittest.main()
