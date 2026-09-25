@@ -52,8 +52,15 @@ throughput on the 908MB host still require measurement during rollout.
 
 Use a separate checkout of this release. Do not copy the repository's raw
 auto_executor.py over the installed MCX/session overlay. The focused installer
-checks that overlay and its dependencies, but only changes ten listed files.
+checks that overlay and its dependencies, but only changes eleven listed files.
 Unknown source, exposure, controls or process identity fail closed.
+
+The AWS news collector blob `98c0e36ef614da41096df686fa49d6333d62114b`
+is a reviewed predecessor of release blob
+`0cfb897286adb3c64f56f2b2f7d7e626cb46c3d4`. Its only functional upgrade is
+canonicalising trusted NSE relative/protocol-relative RSS document links to
+HTTPS. Existing mapping, event expiry, scoring and source validation survive.
+The installer upgrades this exact predecessor; unknown news source still blocks.
 
 Plan only (no broker call or service restart):
 

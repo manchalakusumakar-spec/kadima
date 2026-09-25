@@ -32,6 +32,10 @@ base.FILES = {
     'kadima/stock_fast.py': 'e84932b645d584787df21e1bb94ce927d80b6cc3',
     'kadima/stock_execution.py': '880c29cf2e9a7ca78c094c84d76320b1b8fa3625',
     'kadima/stock_fast_api.py': '0d9b50418d6cc12752ebf96114e98504eaca455d',
+    # Verified AWS blob: same collector before trusted NSE relative-link support.
+    # Upgrade this exact predecessor to the release's pinned collector; arbitrary
+    # local versions still fail closed. No global dependency bypass is added.
+    'kadima/news_collector.py': '98c0e36ef614da41096df686fa49d6333d62114b',
     'kadima/preparation_diagnostics.py': None,
     'kadima/move_capture.py': None,
     'kadima/move_capture_service.py': None,

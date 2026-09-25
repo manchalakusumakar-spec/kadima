@@ -21,6 +21,32 @@ def load(name, relative):
 
 
 class DeploymentTests(unittest.TestCase):
+    def test_exact_aws_news_predecessor_upgrades_without_overwriting_executor(self):
+        installer = load('recovery_news_upgrade_test', 'momentum_recovery/install.py')
+        base = installer.base
+        original = (ROOT/'tests/fixtures/news_collector_98c0e36.py').read_bytes()
+        self.assertEqual(base.digest(original), '98c0e36ef614da41096df686fa49d6333d62114b')
+        with tempfile.TemporaryDirectory() as temporary:
+            target = Path(temporary).resolve()
+            shutil.copytree(ROOT/'kadima', target/'kadima')
+            shutil.copy(ROOT/'run.py', target/'run.py')
+            executor = target/'kadima/auto_executor.py'
+            shutil.copy(ROOT/'mcx_live_update/auto_executor.py', executor)
+            protected = executor.read_bytes()
+            news = target/'kadima/news_collector.py'
+            news.write_bytes(original)
+            changes, _ = base.backend_plan(ROOT, target, (os.getuid(), os.getgid()))
+            self.assertEqual([item.path for item in changes], [news])
+            self.assertEqual(base.digest(changes[0].replacement),
+                             '0cfb897286adb3c64f56f2b2f7d7e626cb46c3d4')
+            self.assertEqual(news.read_bytes(), original)  # Planning never writes.
+            news.write_bytes(changes[0].replacement)
+            self.assertEqual(base.backend_plan(ROOT, target, (os.getuid(), os.getgid()))[0], [])
+            self.assertEqual(executor.read_bytes(), protected)
+            news.write_bytes(original+b'\n# unreviewed change\n')
+            with self.assertRaisesRegex(base.Blocked, 'unreviewed_target:kadima/news_collector.py'):
+                base.backend_plan(ROOT, target, (os.getuid(), os.getgid()))
+
     def test_focused_plan_preserves_composed_executor_and_refuses_unknown_dependency(self):
         installer = load('recovery_plan_test', 'momentum_recovery/install.py')
         base = installer.base
