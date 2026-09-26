@@ -310,51 +310,165 @@ def pause_stock(base, token):
 BROKER_READ = r'''
 import hashlib, hmac, json, math, os, re
 from datetime import datetime, timezone
-stage='login'
+stage='imports'
+reason='imports_failed'
+broker_code=None
 try:
     from kadima.session import SESSION
     expected_account = os.environ.get('KADIMA_NOTE_ACCOUNT_SHA256')
     if expected_account:
         stage='account'
+        reason='account_check_failed'
         from kadima.config import ANGEL_CLIENT_ID
         actual = hashlib.sha256(ANGEL_CLIENT_ID.strip().upper().encode()).hexdigest()
         if not hmac.compare_digest(actual, expected_account):
+            reason='account_mismatch'
             raise ValueError('reviewed_account_mismatch')
-        stage='login'
+    stage='login'
+    reason='login_failed'
     SESSION.ensure()
     result={'started_at':datetime.now(timezone.utc).isoformat()}
     for method in ('position','orderBook'):
         stage=method
+        reason='broker_read_failed'
         response=getattr(SESSION.api,method)()
-        if not isinstance(response,dict) or response.get('status') is not True or 'data' not in response:
+        if not isinstance(response,dict):
+            reason='response_schema_invalid'
+            raise ValueError('broker_response_invalid')
+        if response.get('status') is not True:
+            reason='response_unsuccessful'
+            candidate=response.get('errorcode') or response.get('errorCode')
+            if isinstance(candidate,str) and candidate in {'AG8001','AG8002','AG8003','AB8050','AB8051',
+                    'AB1000','AB1004','AB1006','AB1007','AB1010','AB1011'}:
+                broker_code=candidate
             raise ValueError('broker_read_unsuccessful')
+        if 'data' not in response:
+            reason='response_schema_invalid'
+            raise ValueError('broker_response_invalid')
         rows=response['data']
         if rows is None: rows=[]
-        if not isinstance(rows,list): raise ValueError('invalid_book')
+        if not isinstance(rows,list):
+            reason='book_schema_invalid'
+            raise ValueError('invalid_book')
         for row in rows:
-            if not isinstance(row,dict): raise ValueError('invalid_row')
+            if not isinstance(row,dict):
+                reason='row_schema_invalid'
+                raise ValueError('invalid_row')
             if method=='position':
+                reason='position_quantity_invalid'
                 qty=row.get('netqty')
-                if qty is None or isinstance(qty,bool) or not math.isfinite(float(qty)) or float(qty)!=0:
+                if qty is None or isinstance(qty,bool) or not math.isfinite(float(qty)):
+                    raise ValueError('invalid_position_quantity')
+                if float(qty)!=0:
+                    reason='position_nonzero'
                     raise ValueError('broker_not_flat')
             elif str(row.get('orderstatus') or row.get('status') or '').lower() not in ('complete','completed','filled','cancelled','canceled','rejected'):
+                reason='order_unresolved'
                 raise ValueError('unresolved_broker_order')
         result[method+'_rows']=len(rows)
     result['verified_at']=datetime.now(timezone.utc).isoformat()
     result['flat']=True
     print('NOTE_BROKER '+json.dumps(result))
-except Exception:
-    print('NOTE_BROKER '+json.dumps({'flat':False,'stage':stage}))
+except Exception as exc:
+    error=type(exc).__name__
+    if error not in {'ModuleNotFoundError','ImportError','PermissionError','FileNotFoundError',
+                     'ValueError','TypeError','AttributeError','KeyError','IndexError','RuntimeError',
+                     'TimeoutError','ConnectionError','OSError','RequestException','ConnectTimeout',
+                     'ReadTimeout','HTTPError','JSONDecodeError','DataException','TokenException',
+                     'NetworkException','GeneralException','InputException','OrderException'}:
+        error='OtherError'
+    diagnostic={'flat':False,'stage':stage,'reason':reason,'error':error}
+    if broker_code is not None: diagnostic['broker_code']=broker_code
+    print('NOTE_BROKER '+json.dumps(diagnostic))
 '''
 
 
-def main():
+BROKER_STAGES = frozenset(('imports','account','login','position','orderBook','transport'))
+BROKER_REASONS = frozenset(('imports_failed','account_check_failed','account_mismatch','login_failed',
+    'broker_read_failed','response_schema_invalid','response_unsuccessful','book_schema_invalid',
+    'row_schema_invalid','position_quantity_invalid','position_nonzero','order_unresolved',
+    'child_failed','child_timeout','child_unavailable','diagnostic_invalid','receipt_invalid','receipt_stale'))
+BROKER_ERROR_TYPES = frozenset(('ModuleNotFoundError','ImportError','PermissionError','FileNotFoundError',
+    'ValueError','TypeError','AttributeError','KeyError','IndexError','RuntimeError','TimeoutError',
+    'ConnectionError','OSError','RequestException','ConnectTimeout','ReadTimeout','HTTPError',
+    'JSONDecodeError','DataException','TokenException','NetworkException','GeneralException',
+    'InputException','OrderException','TimeoutExpired','ChildProcessError','OtherError'))
+BROKER_CODES = frozenset(('AG8001','AG8002','AG8003','AB8050','AB8051','AB1000','AB1004',
+                         'AB1006','AB1007','AB1010','AB1011'))
+BROKER_CHECKPOINTS = frozenset(('check_only','before_stop','after_stop','before_commit','after_restart'))
+
+
+def broker_failure(stage, reason, error, broker_code=None, checkpoint=None):
+    """Only authored enumerations reach the terminal; never provider messages."""
+    def safe(value, allowed, fallback):
+        return value if isinstance(value, str) and value in allowed else fallback
+    diagnostic = dict(stage=safe(stage, BROKER_STAGES, 'transport'),
+                      reason=safe(reason, BROKER_REASONS, 'diagnostic_invalid'),
+                      error=safe(error, BROKER_ERROR_TYPES, 'OtherError'))
+    if checkpoint is not None:
+        diagnostic['checkpoint'] = safe(checkpoint, BROKER_CHECKPOINTS, 'unknown')
+    if (diagnostic['stage'] in ('position','orderBook') and diagnostic['reason']=='response_unsuccessful'
+            and isinstance(broker_code, str) and broker_code in BROKER_CODES):
+        diagnostic['broker_code'] = broker_code
+    print('NOTE_BROKER_DIAGNOSTIC '+json.dumps(diagnostic), flush=True)
+    raise ValueError('fresh_broker_flat_check_failed')
+
+
+def broker_receipt(result, now, checkpoint=None):
+    """Parse the child's narrow receipt without exposing its captured output."""
+    def fail(stage, reason, error, broker_code=None):
+        broker_failure(stage, reason, error, broker_code, checkpoint)
+    if result.returncode != 0:
+        fail('transport', 'child_failed', 'ChildProcessError')
+    lines = [line[len('NOTE_BROKER '):] for line in result.stdout.splitlines() if line.startswith('NOTE_BROKER ')]
+    if len(lines) != 1:
+        fail('transport', 'diagnostic_invalid', 'ValueError')
+    try:
+        receipt = json.loads(lines[0])
+    except (TypeError, ValueError):
+        fail('transport', 'diagnostic_invalid', 'ValueError')
+    if not isinstance(receipt, dict):
+        fail('transport', 'diagnostic_invalid', 'ValueError')
+    if receipt.get('flat') is not True:
+        fail(receipt.get('stage'), receipt.get('reason'), receipt.get('error'), receipt.get('broker_code'))
+    try:
+        started = datetime.fromisoformat(receipt['started_at'])
+        require(started.tzinfo is not None, 'receipt_invalid')
+        age = (now-started).total_seconds()
+    except (KeyError, TypeError, ValueError):
+        fail('transport', 'receipt_invalid', 'ValueError')
+    if not 0 <= age <= 30:
+        fail('transport', 'receipt_stale', 'ValueError')
+    return receipt
+
+
+def initial_broker_check(apply, check_only, read):
+    """The only path from admission to mutation requires explicit apply."""
+    require(not (apply and check_only), 'mutually_exclusive_broker_modes')
+    if not apply and not check_only:
+        print('PLAN ONLY: no broker login, database write, restart or activation.')
+        return None
+    receipt = read()
+    if check_only:
+        print('BROKER CHECK ONLY: fresh position/order books passed; no control pause, database repair, service change or activation.')
+        return None
+    return receipt
+
+
+def parse_arguments(argv=None):
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--evidence', type=Path, required=True)
-    parser.add_argument('--apply', action='store_true')
+    mode = parser.add_mutually_exclusive_group()
+    mode.add_argument('--apply', action='store_true')
+    mode.add_argument('--broker-check-only', action='store_true',
+                      help='After local admission, perform one fresh broker read and exit without repair')
     parser.add_argument('--off-session-unrestored', action='store_true',
                         help='Reviewed same-day weekend startup only; requires account-bound evidence')
-    args = parser.parse_args()
+    return parser.parse_args(argv)
+
+
+def main():
+    args = parse_arguments()
     require(os.geteuid() == 0, 'sudo_required')
     e = evidence(json.loads(args.evidence.read_text()), datetime.now(IST),
                  account_required=args.off_session_unrestored)
@@ -405,26 +519,25 @@ def main():
     print('PLAN: reconcile one expired historical position from reviewed contract-note fills; preserve original rows and unknown-order history.', flush=True)
     if args.off_session_unrestored:
         print('WEEKEND PLAN: account-bound evidence and pinned pre-restoration startup verified; empty API is not broker-flat proof.', flush=True)
-    if not args.apply:
-        print('PLAN ONLY: no broker login, database write, restart or activation.')
-        return
     child_env = dict(env, PYTHONDONTWRITEBYTECODE='1', ORDER_PLACEMENT_ENABLED='0', KADIMA_FAST_MOMENTUM_LIVE='0', KADIMA_CAS_LIVE='0')
     if args.off_session_unrestored:
         child_env['KADIMA_NOTE_ACCOUNT_SHA256'] = e['account_sha256']
     else:
         child_env.pop('KADIMA_NOTE_ACCOUNT_SHA256', None)
-    def flat():
-        r = subprocess.run([python, '-B', '-c', BROKER_READ], cwd=ROOT, env=child_env,
-                           user=user.pw_uid, group=user.pw_gid, extra_groups=[],
-                           capture_output=True, text=True, timeout=60)
-        lines = [line[len('NOTE_BROKER '):] for line in r.stdout.splitlines() if line.startswith('NOTE_BROKER ')]
-        require(r.returncode == 0 and len(lines) == 1, 'broker_read_unavailable')
-        receipt = json.loads(lines[0])
-        require(receipt.get('flat') is True, 'fresh_broker_flat_check_failed')
-        started = datetime.fromisoformat(receipt['started_at'])
-        require(0 <= (datetime.now(IST)-started).total_seconds() <= 30, 'broker_check_too_old')
-        return receipt
-    first = flat()
+    def flat(checkpoint):
+        try:
+            result = subprocess.run([python, '-B', '-c', BROKER_READ], cwd=ROOT, env=child_env,
+                                    user=user.pw_uid, group=user.pw_gid, extra_groups=[],
+                                    capture_output=True, text=True, timeout=60)
+        except subprocess.TimeoutExpired:
+            broker_failure('transport', 'child_timeout', 'TimeoutExpired', checkpoint=checkpoint)
+        except OSError as exc:
+            broker_failure('transport', 'child_unavailable', type(exc).__name__, checkpoint=checkpoint)
+        return broker_receipt(result, datetime.now(IST), checkpoint)
+    first = initial_broker_check(args.apply, args.broker_check_only,
+        lambda: flat('check_only' if args.broker_check_only else 'before_stop'))
+    if first is None:
+        return
     pause_stock(base, token)
     base.check_fingerprints(fingerprints)
     require(base.process(base.ENGINE, ROOT, user.pw_uid)[0] == pid, 'engine_changed')
@@ -441,7 +554,7 @@ def main():
         unit = base.unit_state(base.ENGINE)
         require(unit.get('ActiveState') == 'inactive' and unit.get('MainPID') == '0', 'engine_not_stopped')
         base.check_fingerprints(fingerprints)
-        second = flat()
+        second = flat('after_stop')
         require(shutil.disk_usage('/var/backups').free > db.stat().st_size*1.2 + 100_000_000, 'backup_space_required')
         backup = Path('/var/backups')/('kadima-note-'+datetime.now(IST).strftime('%Y%m%dT%H%M%S'))
         backup.mkdir(mode=0o700)
@@ -454,7 +567,7 @@ def main():
             with sqlite3.connect(backup/'before.db') as b:
                 c.backup(b, pages=1024, progress=progress)
             # Backup can take time: renew the broker proof before committing.
-            third = flat()
+            third = flat('before_commit')
             require(base.unit_state(base.ENGINE).get('ActiveState') == 'inactive', 'engine_restarted_during_repair')
             base.check_fingerprints(fingerprints)
             guard = None
@@ -493,7 +606,7 @@ def main():
                     'engine_database_changed')
             base.check_fingerprints(fingerprints)
             off_session_wait(e, post_env, post_status, post_identity, datetime.now(IST))
-            flat()  # Fourth successful account-bound read, after restart.
+            flat('after_restart')  # Fourth successful account-bound read.
             current_pid, _, current_env = base.process(base.ENGINE, ROOT, user.pw_uid)
             off_session_wait(e, current_env, status(), process_identity(current_pid),
                              datetime.now(IST), post_identity)

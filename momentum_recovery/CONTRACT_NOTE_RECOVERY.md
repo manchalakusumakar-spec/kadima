@@ -9,10 +9,25 @@ It is not a general bypass for an unresolved submission or an open position.
 
 Supply `--evidence /path/to/reviewed.json`. Without `--apply` this checks source,
 process identity, paused API controls and the read-only local ledger only.
+The optional `--broker-check-only` mode completes those same admission checks,
+then performs one fresh broker login and reads position/order books before
+returning. It does not pause controls, stop/restart services, repair the database,
+or place/modify/cancel orders. It is mutually exclusive with `--apply`. It can
+be combined with `--off-session-unrestored` when that mode's admission checks pass.
 `--apply` performs a fresh broker login/read before stopping the engine, repeats
 the read after stopping, makes a SQLite backup, and repeats the broker check
 before the transaction. The scanner remains running. Fresh unsuccessful or
 unreadable responses, nonzero broker quantities and pending orders all block.
+
+Broker failures now print a sanitized `NOTE_BROKER_DIAGNOSTIC` with the authored
+stage (`imports`, `account`, `login`, `position`, `orderBook`, or `transport`),
+criterion that failed, and an allowlisted exception type. Checkpoints identify
+`check_only`, `before_stop`, `after_stop`, `before_commit`, or `after_restart`.
+An unsuccessful broker response may include an exact recognized AB/AG code;
+unknown codes, provider messages, raw responses, exception messages, tokens and
+captured SDK logs are never echoed. No login retry or forced-session behavior
+is added. An existing generic flat-check failure alone does not show whether the
+failure happened before or after stopping the service.
 
 Evidence keys are `document_sha256`, `signal_id`, `quantity`, `symbol`, `token`,
 `exchange`, `trade_date`, `expiry`, `entry_at`, `intent_at`, `exit_at`,
@@ -113,6 +128,10 @@ Example, after preparing and reviewing a private evidence JSON file:
 sudo -n python3 /path/to/maintenance-release/momentum_recovery/reconcile_contract_note.py \
   --evidence /private/path/reviewed.json --off-session-unrestored
 ```
+
+To diagnose broker readiness without applying the repair, add
+`--broker-check-only` to that command. A successful check is only an observation;
+the later apply still repeats every admission and fresh broker check.
 
 The default remains a local read-only plan. Adding `--apply` retains all existing
 locks, exact position/unknown-intent checks, revision-checked stock pause,

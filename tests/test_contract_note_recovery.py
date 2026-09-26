@@ -401,7 +401,7 @@ class WeekendRecovery(unittest.TestCase):
             exec(module.BROKER_READ, {})
         session.ensure.assert_not_called()
         result = json.loads(output.getvalue().split('NOTE_BROKER ')[-1])
-        self.assertEqual(result, {'flat':False,'stage':'account'})
+        self.assertEqual(result, {'flat':False,'stage':'account','reason':'account_mismatch','error':'ValueError'})
 
     def test_broker_child_fresh_login_with_matching_account(self):
         session = types.SimpleNamespace(ensure=Mock(), api=types.SimpleNamespace(
@@ -416,6 +416,176 @@ class WeekendRecovery(unittest.TestCase):
         session.ensure.assert_called_once_with()
         result = json.loads(output.getvalue().split('NOTE_BROKER ')[-1])
         self.assertTrue(result['flat'])
+
+
+class BrokerDiagnostics(unittest.TestCase):
+    setUp = Recovery.setUp
+    tearDown = Recovery.tearDown
+
+    def child(self, position=None, orders=None, login_error=None, import_failure=False):
+        session = types.SimpleNamespace(ensure=Mock(side_effect=login_error), api=types.SimpleNamespace(
+            position=Mock(return_value=position if position is not None else {'status':True,'data':[]}),
+            orderBook=Mock(return_value=orders if orders is not None else {'status':True,'data':[]})))
+        fake = types.ModuleType('kadima.session')
+        if not import_failure: fake.SESSION = session
+        output = io.StringIO()
+        with patch.dict(sys.modules, {'kadima.session':fake}), \
+             patch.dict(module.os.environ, {'KADIMA_NOTE_ACCOUNT_SHA256':''}), \
+             contextlib.redirect_stdout(output):
+            exec(module.BROKER_READ, {})
+        self.assertNotIn('SECRET', output.getvalue())
+        return json.loads(output.getvalue().split('NOTE_BROKER ')[-1])
+
+    def test_child_distinguishes_import_login_response_schema_quantity_and_orders(self):
+        cases = [({'import_failure':True}, 'imports', 'imports_failed'),
+                 ({'login_error':RuntimeError('SECRET_LOGIN_TOKEN')}, 'login', 'login_failed'),
+                 ({'position':{'status':False,'message':'SECRET_PROVIDER'}}, 'position', 'response_unsuccessful'),
+                 ({'position':{'status':True}}, 'position', 'response_schema_invalid'),
+                 ({'position':{'status':True,'data':{}}}, 'position', 'book_schema_invalid'),
+                 ({'position':{'status':True,'data':['SECRET_ROW']}}, 'position', 'row_schema_invalid'),
+                 ({'position':{'status':True,'data':[{'netqty':'SECRET_QUANTITY'}]}}, 'position', 'position_quantity_invalid'),
+                 ({'position':{'status':True,'data':[{'netqty':60}]}}, 'position', 'position_nonzero'),
+                 ({'orders':{'status':False}}, 'orderBook', 'response_unsuccessful'),
+                 ({'orders':{'status':True,'data':[{'status':'SECRET_ORDER'}]}}, 'orderBook', 'order_unresolved')]
+        for args, stage, reason in cases:
+            with self.subTest(stage=stage, reason=reason):
+                result = self.child(**args)
+                self.assertFalse(result['flat'])
+                self.assertEqual((result['stage'], result['reason']), (stage, reason))
+                self.assertIn(result['error'], module.BROKER_ERROR_TYPES)
+
+    def test_provider_defined_exception_name_and_message_are_not_printed(self):
+        secret_type = type('SECRET_PROVIDER_CLASS', (Exception,), {})
+        result = self.child(login_error=secret_type('SECRET_PASSWORD'))
+        self.assertEqual(result['error'], 'OtherError')
+
+    def test_known_broker_codes_only_and_null_data_semantics_preserved(self):
+        for key in ('errorcode','errorCode'):
+            for code in ('AB1010','AG8001','AB1004'):
+                with self.subTest(key=key, code=code):
+                    result = self.child(position={'status':False,key:code,'message':'SECRET_MESSAGE'})
+                    self.assertEqual(result['broker_code'], code)
+        for code in ('AB9999','SECRET_CODE',['AB1010'], {'value':'AB1010'}):
+            with self.subTest(code=code):
+                result = self.child(position={'status':False,'errorcode':code})
+                self.assertNotIn('broker_code', result)
+        self.assertTrue(self.child(position={'status':True,'data':None}, orders={'status':True,'data':None})['flat'])
+
+    def test_parent_resanitizes_failure_fields_and_never_echoes_captured_output(self):
+        receipt = dict(flat=False, stage='SECRET_STAGE', reason='SECRET_REASON', error='SECRET_ERROR',
+                       broker_code='SECRET_CODE', message='SECRET_MESSAGE', token='SECRET_TOKEN')
+        result = types.SimpleNamespace(returncode=0, stdout='SECRET_LOG\nNOTE_BROKER '+json.dumps(receipt),
+                                       stderr='SECRET_STDERR')
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output), self.assertRaisesRegex(ValueError, 'fresh_broker_flat_check_failed'):
+            module.broker_receipt(result, NOW)
+        self.assertNotIn('SECRET', output.getvalue())
+        diagnostic = json.loads(output.getvalue().split('NOTE_BROKER_DIAGNOSTIC ')[-1])
+        self.assertEqual(diagnostic, dict(stage='transport', reason='diagnostic_invalid', error='OtherError'))
+        for code in ('AB1010', 'SECRET_CODE'):
+            receipt.update(stage='position', reason='response_unsuccessful', error='ValueError', broker_code=code)
+            result.stdout = 'NOTE_BROKER '+json.dumps(receipt)
+            output = io.StringIO()
+            with contextlib.redirect_stdout(output), self.assertRaises(ValueError):
+                module.broker_receipt(result, NOW)
+            self.assertNotIn('SECRET', output.getvalue())
+            self.assertEqual('broker_code' in json.loads(output.getvalue().split('NOTE_BROKER_DIAGNOSTIC ')[-1]),
+                             code == 'AB1010')
+
+    def test_invalid_child_receipts_and_failure_exit_remain_blocked(self):
+        for output, returncode in (('SECRET_NO_RECEIPT',0), ('NOTE_BROKER SECRET_JSON',0),
+                                  ('NOTE_BROKER []',0), ('NOTE_BROKER {}\nNOTE_BROKER {}',0),
+                                  ('NOTE_BROKER {"flat":true}',0), ('SECRET_FAILURE',1)):
+            result = types.SimpleNamespace(stdout=output, returncode=returncode)
+            captured = io.StringIO()
+            with self.subTest(output=output), contextlib.redirect_stdout(captured), self.assertRaises(ValueError):
+                module.broker_receipt(result, NOW)
+            self.assertNotIn('SECRET', captured.getvalue())
+
+    def test_modes_are_mutually_exclusive_and_local_plan_never_reads_broker(self):
+        with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
+            module.parse_arguments(['--evidence','synthetic.json','--apply','--broker-check-only'])
+        read = Mock(return_value={'flat':True})
+        with contextlib.redirect_stdout(io.StringIO()):
+            self.assertIsNone(module.initial_broker_check(False, False, read))
+            read.assert_not_called()
+            self.assertIsNone(module.initial_broker_check(False, True, read))
+            read.assert_called_once_with()
+            self.assertEqual(module.initial_broker_check(True, False, read), {'flat':True})
+
+    def test_failure_checkpoint_is_explicit_and_sanitized(self):
+        result = types.SimpleNamespace(returncode=0, stdout='NOTE_BROKER '+json.dumps(
+            dict(flat=False,stage='login',reason='login_failed',error='RuntimeError')))
+        for checkpoint in (*module.BROKER_CHECKPOINTS, 'SECRET_CHECKPOINT'):
+            output = io.StringIO()
+            with self.subTest(checkpoint=checkpoint), contextlib.redirect_stdout(output), self.assertRaises(ValueError):
+                module.broker_receipt(result, NOW, checkpoint)
+            self.assertNotIn('SECRET', output.getvalue())
+            diagnostic = json.loads(output.getvalue().split('NOTE_BROKER_DIAGNOSTIC ')[-1])
+            self.assertEqual(diagnostic['checkpoint'], checkpoint if checkpoint in module.BROKER_CHECKPOINTS else 'unknown')
+
+    def test_main_check_only_and_first_failure_return_before_any_repair_mutation(self):
+        with tempfile.TemporaryDirectory() as directory, tempfile.TemporaryFile() as lock:
+            root = Path(directory)
+            evidence_path = root/'synthetic.json'
+            evidence_path.write_text(json.dumps(self.e))
+            db = sqlite3.connect(root/'kadima.db')
+            self.c.backup(db); db.close()
+            base = types.SimpleNamespace(ENGINE='synthetic-engine', HELPER='synthetic', TOKEN_FILE=root/'token',
+                backend_plan=Mock(return_value=([],{})),
+                process=Mock(return_value=('321',[],{'KADIMA_DATA_DIR':directory})),
+                load_helper=Mock(return_value=types.SimpleNamespace(engine_interpreter=lambda *args:'/synthetic/python')),
+                read_file=Mock(return_value=b'{"api_token":"SECRET_TOKEN"}'),
+                local_api=Mock(return_value=dict(ts=NOW.isoformat(),positions=[{'signal_id':1}],
+                                config={'auto_trade_enabled':False,'kill_latched':False})),
+                check_fingerprints=Mock(), command=Mock())
+            loader = types.SimpleNamespace(exec_module=Mock())
+            spec = types.SimpleNamespace(loader=loader)
+            original_connect = sqlite3.connect
+            original_fdopen = module.os.fdopen
+            opened_locks = []
+            def tracked_fdopen(*args, **kwargs):
+                handle = original_fdopen(*args, **kwargs)
+                opened_locks.append(handle)
+                return handle
+            for apply, check_only, success in ((False,True,True),(False,True,False),(True,False,False)):
+                receipt = (dict(flat=True,started_at=NOW.isoformat(),verified_at=NOW.isoformat(),
+                                position_rows=0,orderBook_rows=0) if success else
+                           dict(flat=False,stage='login',reason='login_failed',error='RuntimeError'))
+                process_result = types.SimpleNamespace(returncode=0,
+                    stdout='SECRET_SDK_LOG\nNOTE_BROKER '+json.dumps(receipt),stderr='SECRET_STDERR')
+                args = types.SimpleNamespace(evidence=evidence_path, apply=apply,
+                    broker_check_only=check_only, off_session_unrestored=False)
+                captured = io.StringIO()
+                with self.subTest(apply=apply, check_only=check_only, success=success), \
+                     patch.object(module,'parse_arguments',return_value=args), \
+                     patch.object(module.os,'geteuid',return_value=0), \
+                     patch.object(module.os,'open',side_effect=lambda *args,**kwargs:module.os.dup(lock.fileno())), \
+                     patch.object(module.os,'fdopen',side_effect=tracked_fdopen), \
+                     patch.object(module.fcntl,'flock'), \
+                     patch.object(module.pwd,'getpwnam',return_value=types.SimpleNamespace(pw_uid=123,pw_gid=123)), \
+                     patch.object(module.importlib.util,'spec_from_file_location',return_value=spec), \
+                     patch.object(module.importlib.util,'module_from_spec',return_value=types.SimpleNamespace(base=base)), \
+                     patch.object(module,'datetime',wraps=datetime) as clock, \
+                     patch.object(module.subprocess,'run',return_value=process_result) as run, \
+                     patch.object(module,'pause_stock') as pause, patch.object(module,'repair') as repair, \
+                     patch.object(module.sqlite3,'connect',wraps=original_connect) as connect, \
+                     contextlib.redirect_stdout(captured):
+                    clock.now.return_value=NOW
+                    if success:
+                        module.main()
+                    else:
+                        with self.assertRaisesRegex(ValueError,'fresh_broker_flat_check_failed'): module.main()
+                    run.assert_called_once()
+                    pause.assert_not_called(); repair.assert_not_called(); base.command.assert_not_called()
+                    base.check_fingerprints.assert_not_called()
+                    self.assertTrue(all('?mode=ro' in call.args[0] for call in connect.call_args_list))
+                for handle in opened_locks: handle.close()
+                opened_locks.clear()
+                self.assertNotIn('SECRET', captured.getvalue())
+                with original_connect(root/'kadima.db') as persisted:
+                    self.assertEqual(persisted.execute('SELECT status FROM positions').fetchone()[0], 'exit_pending')
+                    self.assertEqual(persisted.execute('SELECT state FROM execution_orders').fetchone()[0], 'unknown')
 
 
 if __name__ == '__main__': unittest.main()
