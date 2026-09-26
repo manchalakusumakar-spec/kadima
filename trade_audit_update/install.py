@@ -10,6 +10,7 @@ import os
 from pathlib import Path
 import sys
 from types import SimpleNamespace
+import urllib.request
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -71,16 +72,30 @@ def load_helper(path, expected):
     return _original_load_helper(path, expected)
 
 
+def audit_local_api(path, token):
+    """Read only the two new health routes without widening the pinned helper."""
+    if path not in ('/api/kadima/audit?limit=1', '/api/kadima/prices?limit=1'):
+        raise base.Blocked('unknown_audit_local_endpoint')
+    request = urllib.request.Request('http://127.0.0.1:8081'+path,
+                                     headers={'Authorization': 'Bearer '+token}, method='GET')
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), base.NoRedirect())
+    with opener.open(request, timeout=8) as response:
+        raw = response.read(2_000_001)
+    if len(raw) > 2_000_000:
+        raise base.Blocked('oversize_api_response')
+    return json.loads(raw)
+
+
 def install_transaction(changes, units, backup, flat_check, source_check, import_check, post_check, **kwargs):
     def audit_post_check():
         post_check()
         token = json.loads(base.read_file(base.TOKEN_FILE))['api_token']
-        data = base.local_api('/api/kadima/audit?limit=1', token)
+        data = audit_local_api('/api/kadima/audit?limit=1', token)
         if (not isinstance(data, dict) or not isinstance(data.get('rows'), list)
                 or type(data.get('total')) is not int):
             raise base.Blocked('post_install_audit_api_invalid')
         print('AUDIT API: authenticated HTTP 200; plans and fills are separate.')
-        prices = base.local_api('/api/kadima/prices?limit=1', token)
+        prices = audit_local_api('/api/kadima/prices?limit=1', token)
         if (not isinstance(prices, dict) or not isinstance(prices.get('rows'), list)
                 or type(prices.get('total')) is not int):
             raise base.Blocked('post_install_price_history_api_invalid')

@@ -5,6 +5,7 @@ from pathlib import Path
 import shutil
 import tempfile
 import unittest
+from unittest.mock import MagicMock, patch
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -63,6 +64,59 @@ class AuditInstall(unittest.TestCase):
         manifest = json.loads((ROOT/'tools/activation_source.json').read_text())
         for path in ('kadima/trade_audit.py', 'kadima/price_history.py', 'kadima/option_chain.py', 'kadima/cas_blast_scanner.py'):
             self.assertEqual(manifest[path], self.installer.digest((ROOT/path).read_bytes()))
+
+    def test_transaction_post_check_reaches_new_routes_without_widening_base_allowlist(self):
+        payloads = [dict(rows=[], total=0), dict(rows=[], total=0, capture_enabled=True)]
+        responses = []
+        for payload in payloads:
+            response = MagicMock()
+            response.__enter__.return_value = response
+            response.read.return_value = json.dumps(payload).encode()
+            responses.append(response)
+        opener = MagicMock()
+        opener.open.side_effect = responses
+        original_post_check = MagicMock()
+
+        def transaction(*args, **kwargs):
+            args[6]()  # Run the actual wrapper's post-check with only HTTP mocked.
+
+        with patch.object(self.installer, '_original_transaction', side_effect=transaction), \
+                patch.object(self.base, 'read_file', return_value=b'{"api_token":"test-token"}'), \
+                patch.object(self.installer.urllib.request, 'build_opener', return_value=opener) as build:
+            self.installer.install_transaction([], [], None, None, None, None, original_post_check)
+            original_post_check.assert_called_once_with()
+            self.assertEqual(opener.open.call_count, 2)
+            for call, path in zip(opener.open.call_args_list,
+                                  ('/api/kadima/audit?limit=1', '/api/kadima/prices?limit=1')):
+                request = call.args[0]
+                self.assertEqual(request.full_url, 'http://127.0.0.1:8081'+path)
+                self.assertEqual(request.get_method(), 'GET')
+                self.assertIsNone(request.data)
+                self.assertEqual(request.get_header('Authorization'), 'Bearer test-token')
+                self.assertEqual(call.kwargs, {'timeout': 8})
+                with self.assertRaisesRegex(self.base.Blocked, 'unknown_local_endpoint'):
+                    self.base.local_api(path, 'test-token')
+            for response in responses:
+                response.read.assert_called_once_with(2_000_001)
+            for call in build.call_args_list:
+                self.assertEqual(call.args[0].proxies, {})
+                self.assertIsInstance(call.args[1], self.base.NoRedirect)
+                self.assertIsNone(call.args[1].redirect_request(
+                    None, None, 302, 'Found', {}, 'https://example.invalid/'))
+
+    def test_audit_health_reader_rejects_other_routes_and_oversize_responses(self):
+        with patch.object(self.installer.urllib.request, 'build_opener') as build:
+            for path in ('/api/kadima/resume', '/api/kadima/audit',
+                         '/api/kadima/prices?limit=2', '/api/kadima/prices?limit=1&extra=1',
+                         'https://example.invalid/api/kadima/prices?limit=1'):
+                with self.subTest(path=path), self.assertRaisesRegex(
+                        self.base.Blocked, 'unknown_audit_local_endpoint'):
+                    self.installer.audit_local_api(path, 'test-token')
+            build.assert_not_called()
+            response = build.return_value.open.return_value.__enter__.return_value
+            response.read.return_value = b' ' * 2_000_001
+            with self.assertRaisesRegex(self.base.Blocked, 'oversize_api_response'):
+                self.installer.audit_local_api('/api/kadima/prices?limit=1', 'test-token')
 
 
 if __name__ == '__main__':
