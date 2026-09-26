@@ -426,6 +426,7 @@ class BrokerDiagnostics(unittest.TestCase):
         session = types.SimpleNamespace(ensure=Mock(side_effect=login_error), api=types.SimpleNamespace(
             position=Mock(return_value=position if position is not None else {'status':True,'data':[]}),
             orderBook=Mock(return_value=orders if orders is not None else {'status':True,'data':[]})))
+        self.last_session = session
         fake = types.ModuleType('kadima.session')
         if not import_failure: fake.SESSION = session
         output = io.StringIO()
@@ -458,6 +459,59 @@ class BrokerDiagnostics(unittest.TestCase):
         secret_type = type('SECRET_PROVIDER_CLASS', (Exception,), {})
         result = self.child(login_error=secret_type('SECRET_PASSWORD'))
         self.assertEqual(result['error'], 'OtherError')
+
+    def test_nonzero_position_shows_only_first_blocker_identity_and_quantity(self):
+        row = dict(exchange='NFO', producttype='CARRYFORWARD', tradingsymbol='NIFTY26OCT25000CE',
+                   symboltoken='123456', netqty='75', clientcode='SECRET_CLIENT', orderid='SECRET_ORDER',
+                   buyavgprice=120, pnl=555, daybuyqty=150, cfbuyqty=75, message='SECRET_MESSAGE')
+        result = self.child(position={'status':True,'data':[{'netqty':'0'}, row,
+                            dict(row, tradingsymbol='SECOND26OCT100CE')]})
+        self.assertEqual(result['reason'], 'position_nonzero')
+        self.assertEqual(result['position_scope'], 'first_nonzero_blocker')
+        self.assertEqual(result['position'], dict(exchange='NFO', producttype='CARRYFORWARD',
+                         tradingsymbol='NIFTY26OCT25000CE', symboltoken='123456', netqty=75))
+        self.last_session.api.orderBook.assert_not_called()
+        self.assertNotIn('SECOND', json.dumps(result))
+        self.assertEqual(result['position'], module.safe_position(row))
+
+    def test_position_filters_reject_malformed_sensitive_and_unbounded_fields(self):
+        valid = dict(exchange='BFO', producttype='INTRADAY', tradingsymbol='INDEX26OCT100PE',
+                     symboltoken='12345', netqty=-60)
+        for field, values in {
+            'exchange':['SECRET_EXCHANGE',{},None], 'producttype':['SECRET_PRODUCT',[],None],
+            'tradingsymbol':['<SECRET>', 'SECRET\nVALUE', 'X'*81, '日本株'],
+            'symboltoken':['SECRET_TOKEN', '1'*17, True, -1],
+            'netqty':[True,float('nan'),float('inf'),1_000_000_001,'9'*33,{},None],
+        }.items():
+            for value in values:
+                row = dict(valid, **{field:value})
+                with self.subTest(field=field,value=value):
+                    filtered = module.safe_position(row)
+                    self.assertNotIn(field, filtered)
+                    if field != 'netqty':
+                        child = self.child(position={'status':True,'data':[row]})
+                        self.assertEqual(child['position'], filtered)
+        self.assertEqual(module.safe_position(['SECRET_ROW']), {})
+
+    def test_parent_position_resanitization_is_limited_to_nonzero_position_failure(self):
+        receipt = dict(flat=False, stage='position', reason='position_nonzero', error='ValueError',
+            position=dict(exchange='MCX',producttype='CARRYFORWARD',tradingsymbol='GOLD26OCTFUT',
+                          symboltoken='123',netqty=1,clientcode='SECRET_CLIENT',price=100000),
+            position_scope='SECRET_SCOPE')
+        for stage, reason, allowed in (('position','position_nonzero',True),
+                                      ('position','position_quantity_invalid',False),
+                                      ('orderBook','order_unresolved',False),('login','login_failed',False)):
+            receipt.update(stage=stage, reason=reason)
+            result = types.SimpleNamespace(returncode=0,stdout='NOTE_BROKER '+json.dumps(receipt))
+            output = io.StringIO()
+            with self.subTest(stage=stage,reason=reason), contextlib.redirect_stdout(output), self.assertRaises(ValueError):
+                module.broker_receipt(result, NOW, 'check_only')
+            self.assertNotIn('SECRET', output.getvalue())
+            diagnostic = json.loads(output.getvalue().split('NOTE_BROKER_DIAGNOSTIC ')[-1])
+            self.assertEqual('position' in diagnostic, allowed)
+            if allowed:
+                self.assertEqual(diagnostic['position'], module.safe_position(receipt['position']))
+                self.assertEqual(diagnostic['position_scope'], 'first_nonzero_blocker')
 
     def test_known_broker_codes_only_and_null_data_semantics_preserved(self):
         for key in ('errorcode','errorCode'):

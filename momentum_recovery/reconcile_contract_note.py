@@ -310,9 +310,33 @@ def pause_stock(base, token):
 BROKER_READ = r'''
 import hashlib, hmac, json, math, os, re
 from datetime import datetime, timezone
+def safe_position(row):
+    if not isinstance(row,dict): return {}
+    out={}
+    for key,allowed in (
+        ('exchange',{'NSE','NFO','BSE','BFO','MCX','NCDEX'}),
+        ('producttype',{'INTRADAY','CARRYFORWARD','DELIVERY','MARGIN','BO','CO'})):
+        value=row.get(key)
+        if isinstance(value,str) and value in allowed: out[key]=value
+    value=row.get('tradingsymbol')
+    if isinstance(value,str) and re.fullmatch(r'[A-Z0-9][A-Z0-9&_.+\-]{0,79}',value):
+        out['tradingsymbol']=value
+    value=row.get('symboltoken')
+    if type(value) is int: value=str(value)
+    if isinstance(value,str) and re.fullmatch(r'[0-9]{1,16}',value): out['symboltoken']=value
+    for key in ('netqty',):
+        value=row.get(key)
+        if type(value) not in (int,float,str) or (isinstance(value,str) and len(value)>32): continue
+        try:
+            quantity=float(value)
+            if math.isfinite(quantity) and abs(quantity)<=1_000_000_000:
+                out[key]=int(quantity) if quantity.is_integer() else quantity
+        except (ValueError,TypeError,OverflowError): pass
+    return out
 stage='imports'
 reason='imports_failed'
 broker_code=None
+blocked_position=None
 try:
     from kadima.session import SESSION
     expected_account = os.environ.get('KADIMA_NOTE_ACCOUNT_SHA256')
@@ -361,6 +385,7 @@ try:
                     raise ValueError('invalid_position_quantity')
                 if float(qty)!=0:
                     reason='position_nonzero'
+                    blocked_position=safe_position(row)
                     raise ValueError('broker_not_flat')
             elif str(row.get('orderstatus') or row.get('status') or '').lower() not in ('complete','completed','filled','cancelled','canceled','rejected'):
                 reason='order_unresolved'
@@ -379,6 +404,9 @@ except Exception as exc:
         error='OtherError'
     diagnostic={'flat':False,'stage':stage,'reason':reason,'error':error}
     if broker_code is not None: diagnostic['broker_code']=broker_code
+    if stage=='position' and reason=='position_nonzero' and blocked_position:
+        diagnostic['position']=blocked_position
+        diagnostic['position_scope']='first_nonzero_blocker'
     print('NOTE_BROKER '+json.dumps(diagnostic))
 '''
 
@@ -398,8 +426,40 @@ BROKER_CODES = frozenset(('AG8001','AG8002','AG8003','AB8050','AB8051','AB1000',
 BROKER_CHECKPOINTS = frozenset(('check_only','before_stop','after_stop','before_commit','after_restart'))
 
 
-def broker_failure(stage, reason, error, broker_code=None, checkpoint=None):
-    """Only authored enumerations reach the terminal; never provider messages."""
+def safe_position(row):
+    """Bounded contract/quantity evidence only, independently checked by parent."""
+    if not isinstance(row, dict):
+        return {}
+    out = {}
+    for key, allowed in (
+            ('exchange', {'NSE','NFO','BSE','BFO','MCX','NCDEX'}),
+            ('producttype', {'INTRADAY','CARRYFORWARD','DELIVERY','MARGIN','BO','CO'})):
+        value = row.get(key)
+        if isinstance(value, str) and value in allowed:
+            out[key] = value
+    value = row.get('tradingsymbol')
+    if isinstance(value, str) and re.fullmatch(r'[A-Z0-9][A-Z0-9&_.+\-]{0,79}', value):
+        out['tradingsymbol'] = value
+    value = row.get('symboltoken')
+    if type(value) is int:
+        value = str(value)
+    if isinstance(value, str) and re.fullmatch(r'[0-9]{1,16}', value):
+        out['symboltoken'] = value
+    for key in ('netqty',):
+        value = row.get(key)
+        if type(value) not in (int, float, str) or (isinstance(value, str) and len(value) > 32):
+            continue
+        try:
+            quantity = float(value)
+            if math.isfinite(quantity) and abs(quantity) <= 1_000_000_000:
+                out[key] = int(quantity) if quantity.is_integer() else quantity
+        except (ValueError, TypeError, OverflowError):
+            pass
+    return out
+
+
+def broker_failure(stage, reason, error, broker_code=None, checkpoint=None, position=None):
+    """Only allowlisted diagnostics reach the terminal; never provider messages."""
     def safe(value, allowed, fallback):
         return value if isinstance(value, str) and value in allowed else fallback
     diagnostic = dict(stage=safe(stage, BROKER_STAGES, 'transport'),
@@ -410,14 +470,19 @@ def broker_failure(stage, reason, error, broker_code=None, checkpoint=None):
     if (diagnostic['stage'] in ('position','orderBook') and diagnostic['reason']=='response_unsuccessful'
             and isinstance(broker_code, str) and broker_code in BROKER_CODES):
         diagnostic['broker_code'] = broker_code
+    if diagnostic['stage']=='position' and diagnostic['reason']=='position_nonzero':
+        filtered = safe_position(position)
+        if filtered:
+            diagnostic['position'] = filtered
+            diagnostic['position_scope'] = 'first_nonzero_blocker'
     print('NOTE_BROKER_DIAGNOSTIC '+json.dumps(diagnostic), flush=True)
     raise ValueError('fresh_broker_flat_check_failed')
 
 
 def broker_receipt(result, now, checkpoint=None):
     """Parse the child's narrow receipt without exposing its captured output."""
-    def fail(stage, reason, error, broker_code=None):
-        broker_failure(stage, reason, error, broker_code, checkpoint)
+    def fail(stage, reason, error, broker_code=None, position=None):
+        broker_failure(stage, reason, error, broker_code, checkpoint, position)
     if result.returncode != 0:
         fail('transport', 'child_failed', 'ChildProcessError')
     lines = [line[len('NOTE_BROKER '):] for line in result.stdout.splitlines() if line.startswith('NOTE_BROKER ')]
@@ -430,7 +495,8 @@ def broker_receipt(result, now, checkpoint=None):
     if not isinstance(receipt, dict):
         fail('transport', 'diagnostic_invalid', 'ValueError')
     if receipt.get('flat') is not True:
-        fail(receipt.get('stage'), receipt.get('reason'), receipt.get('error'), receipt.get('broker_code'))
+        fail(receipt.get('stage'), receipt.get('reason'), receipt.get('error'), receipt.get('broker_code'),
+             receipt.get('position'))
     try:
         started = datetime.fromisoformat(receipt['started_at'])
         require(started.tzinfo is not None, 'receipt_invalid')

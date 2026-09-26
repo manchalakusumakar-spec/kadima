@@ -29,6 +29,14 @@ captured SDK logs are never echoed. No login retry or forced-session behavior
 is added. An existing generic flat-check failure alone does not show whether the
 failure happened before or after stopping the service.
 
+For a nonzero-position failure only, diagnostics identify the **first blocking
+row**, not the complete book. Both child and parent restrict this to recognized
+exchange/product type, bounded ASCII instrument symbol, numeric instrument token
+and finite net quantity within ±1 billion. Unknown or malformed values are
+omitted. Account IDs, order IDs, prices, P&L, extra quantity fields and raw rows
+are not included. This does not relax the flat-account requirement or continue
+past the first blocker; the order book has not been checked in this failure case.
+
 Evidence keys are `document_sha256`, `signal_id`, `quantity`, `symbol`, `token`,
 `exchange`, `trade_date`, `expiry`, `entry_at`, `intent_at`, `exit_at`,
 `entry_price`, `exit_price`, `expected_entry_price`, `exchange_order_id`,
