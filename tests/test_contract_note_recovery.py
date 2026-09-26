@@ -19,6 +19,19 @@ spec.loader.exec_module(module)
 NOW = datetime.fromisoformat('2026-09-25T14:00:00+05:30')
 
 
+def reviewed_source_fixture():
+    raw = b'# synthetic reviewed source\n'
+    digest = hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()
+    pins = {name:{digest} for name in module.REVIEWED_RUNTIME_SOURCES}
+    originals = {module.ROOT/name:raw for name in pins}
+    originals[module.ROOT/'kadima/config.py'] = (
+        b'import os\nfrom zoneinfo import ZoneInfo\nIST = ZoneInfo("Asia/Kolkata")\n'
+        b'ANGEL_CLIENT_ID = os.environ.get("ANGEL_CLIENT_ID", "")\n'
+        b'DATA_DIR = os.environ.get("KADIMA_DATA_DIR", "/var/lib/kadima")\n'
+        b'DB_PATH = os.path.join(DATA_DIR, "kadima.db")\n')
+    return pins, originals
+
+
 class Recovery(unittest.TestCase):
     def setUp(self):
         self.e = dict(document_sha256='a'*64, signal_id=1, quantity=60,
@@ -26,6 +39,7 @@ class Recovery(unittest.TestCase):
                       expiry='2026-09-24', entry_at='2026-09-24T09:32:00+05:30',
                       intent_at='2026-09-24T09:33:00+05:30', exit_at='2026-09-24T09:39:00+05:30',
                       entry_price=100, exit_price=120, expected_entry_price=105,
+                      account_sha256=hashlib.sha256(b'TESTACCOUNT').hexdigest(),
                       exchange_order_id='987', trade_id='654', intent='Ktest', day_buy_qty=90, day_sell_qty=90)
         self.c = sqlite3.connect(':memory:')
         self.c.row_factory = sqlite3.Row
@@ -127,7 +141,10 @@ class Recovery(unittest.TestCase):
             position=lambda:positions,orderBook=lambda:orders))
         output=io.StringIO()
         fake=types.ModuleType('kadima.session'); fake.SESSION=session
-        with patch.dict(sys.modules,{'kadima.session':fake}),contextlib.redirect_stdout(output):
+        config=types.ModuleType('kadima.config'); config.ANGEL_CLIENT_ID='TESTACCOUNT'
+        with patch.dict(sys.modules,{'kadima.session':fake,'kadima.config':config}), \
+             patch.dict(module.os.environ,{'KADIMA_NOTE_ACCOUNT_SHA256':self.e['account_sha256']}), \
+             contextlib.redirect_stdout(output):
             exec(module.BROKER_READ,{})
         return json.loads(output.getvalue().split('NOTE_BROKER ')[-1])
 
@@ -209,16 +226,16 @@ class WeekendRecovery(unittest.TestCase):
         module.repair(self.c, self.e, original, receipts, self.now, guard)
         return original
 
-    def test_account_bound_evidence_required_only_for_explicit_mode(self):
+    def test_account_bound_evidence_required_on_weekdays_and_weekends(self):
         original = dict(self.e)
         original.pop('account_sha256')
-        module.evidence(original, self.now)
-        with self.assertRaisesRegex(ValueError, 'reviewed_account_digest_required'):
-            module.evidence(original, self.now, account_required=True)
-        for value in ('bad', None, 123):
-            with self.subTest(value=value), self.assertRaises(ValueError):
-                module.evidence(dict(self.e, account_sha256=value), self.now, account_required=True)
-        module.evidence(self.e, self.now, account_required=True)
+        for now in (NOW, self.now):
+            with self.subTest(now=now), self.assertRaisesRegex(ValueError, 'reviewed_account_digest_required'):
+                module.evidence(original, now)
+            for value in ('bad', None, 123):
+                with self.subTest(now=now,value=value), self.assertRaises(ValueError):
+                    module.evidence(dict(self.e, account_sha256=value), now)
+            module.evidence(self.e, now)
 
     def test_weekend_unrestored_account_is_normalized(self):
         self.wait()
@@ -263,49 +280,41 @@ class WeekendRecovery(unittest.TestCase):
                 self.wait(status=dict(self.status, system=dict(reconciliation=health)))
 
     def test_source_pins_and_direct_environment_account_binding_required(self):
-        raw = b'# synthetic reviewed source\n'
-        digest = hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest()
-        pins = {name:{digest} for name in module.OFF_SESSION_SOURCES}
-        originals = {module.ROOT/name:raw for name in pins}
-        originals[module.ROOT/'kadima/config.py'] = (
-            b'import os\nfrom zoneinfo import ZoneInfo\nIST = ZoneInfo("Asia/Kolkata")\n'
-            b'ANGEL_CLIENT_ID = os.environ.get("ANGEL_CLIENT_ID", "")\n'
-            b'DATA_DIR = os.environ.get("KADIMA_DATA_DIR", "/var/lib/kadima")\n'
-            b'DB_PATH = os.path.join(DATA_DIR, "kadima.db")\n')
-        with patch.object(module, 'OFF_SESSION_SOURCES', pins):
-            module.off_session_sources(originals)
+        pins, originals = reviewed_source_fixture()
+        with patch.object(module, 'REVIEWED_RUNTIME_SOURCES', pins):
+            module.reviewed_sources(originals)
             for name in pins:
                 with self.subTest(name=name), self.assertRaisesRegex(ValueError, 'source_unreviewed'):
-                    module.off_session_sources(originals | {module.ROOT/name:b'changed'})
+                    module.reviewed_sources(originals | {module.ROOT/name:b'changed'})
             for raw in (b'ANGEL_CLIENT_ID = "other"', b'import os\nANGEL_CLIENT_ID = os.environ.get("OTHER", "")',
                         originals[module.ROOT/'kadima/config.py']+b'ANGEL_CLIENT_ID = "second"\n'):
                 with self.subTest(raw=raw), self.assertRaises(ValueError):
-                    module.off_session_sources(originals | {module.ROOT/'kadima/config.py':raw})
+                    module.reviewed_sources(originals | {module.ROOT/'kadima/config.py':raw})
 
             config = originals[module.ROOT/'kadima/config.py']
             for raw in (config.replace(b'Asia/Kolkata', b'UTC'),
                         config+b'IST = ZoneInfo("UTC")\n',
                         config.replace(b'IST = ZoneInfo("Asia/Kolkata")\n', b'')):
                 with self.subTest(raw=raw), self.assertRaisesRegex(ValueError, 'timezone_unreviewed'):
-                    module.off_session_sources(originals | {module.ROOT/'kadima/config.py':raw})
+                    module.reviewed_sources(originals | {module.ROOT/'kadima/config.py':raw})
 
             for raw in (config.replace(b'/var/lib/kadima', b'/another/database'),
                         config.replace(b'"kadima.db"', b'"different.db"'),
                         config+b'DATA_DIR = "/other"\n', config+b'DB_PATH = "/other"\n'):
                 with self.subTest(raw=raw), self.assertRaisesRegex(ValueError, 'database_config_unreviewed'):
-                    module.off_session_sources(originals | {module.ROOT/'kadima/config.py':raw})
+                    module.reviewed_sources(originals | {module.ROOT/'kadima/config.py':raw})
 
             for name in ('IST', 'ANGEL_CLIENT_ID', 'DATA_DIR', 'DB_PATH', 'ZoneInfo', 'os'):
                 for extra in (f'from other import {name}\n', f'import other as {name}\n',
                               f'def {name}(): pass\n', f'class {name}: pass\n',
                               f'def callback({name}): pass\n'):
                     with self.subTest(name=name, extra=extra), self.assertRaises(ValueError):
-                        module.off_session_sources(originals | {module.ROOT/'kadima/config.py':config+extra.encode()})
+                        module.reviewed_sources(originals | {module.ROOT/'kadima/config.py':config+extra.encode()})
             for raw in (config.replace(b'from zoneinfo import ZoneInfo', b'from other import ZoneInfo'),
                         config.replace(b'from zoneinfo import ZoneInfo', b''),
                         config+b'from other import *\n'):
                 with self.subTest(raw=raw), self.assertRaises(ValueError):
-                    module.off_session_sources(originals | {module.ROOT/'kadima/config.py':raw})
+                    module.reviewed_sources(originals | {module.ROOT/'kadima/config.py':raw})
 
     def test_process_identity_tracks_start_ticks_and_handles_comm_parentheses(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -417,6 +426,26 @@ class WeekendRecovery(unittest.TestCase):
         result = json.loads(output.getvalue().split('NOTE_BROKER ')[-1])
         self.assertTrue(result['flat'])
 
+    def test_broker_child_missing_digest_or_account_never_logs_in(self):
+        session = types.SimpleNamespace(ensure=Mock(), api=types.SimpleNamespace(
+            position=Mock(), orderBook=Mock()))
+        fake_session = types.ModuleType('kadima.session'); fake_session.SESSION = session
+        fake_config = types.ModuleType('kadima.config')
+        for digest, account in ((None,'TESTACCOUNT'), ('','TESTACCOUNT'), ('bad','TESTACCOUNT'),
+                                (self.e['account_sha256'],None), (self.e['account_sha256'],'  ')):
+            output=io.StringIO()
+            fake_config.ANGEL_CLIENT_ID=account
+            env={} if digest is None else {'KADIMA_NOTE_ACCOUNT_SHA256':digest}
+            with self.subTest(digest=digest,account=account), \
+                 patch.dict(module.os.environ,env,clear=True), \
+                 patch.dict(sys.modules,{'kadima.session':fake_session,'kadima.config':fake_config}), \
+                 contextlib.redirect_stdout(output):
+                exec(module.BROKER_READ,{})
+            session.ensure.assert_not_called()
+            session.api.position.assert_not_called()
+            result=json.loads(output.getvalue().split('NOTE_BROKER ')[-1])
+            self.assertEqual(result,{'flat':False,'stage':'account','reason':'account_check_failed','error':'ValueError'})
+
 
 class BrokerDiagnostics(unittest.TestCase):
     setUp = Recovery.setUp
@@ -430,8 +459,9 @@ class BrokerDiagnostics(unittest.TestCase):
         fake = types.ModuleType('kadima.session')
         if not import_failure: fake.SESSION = session
         output = io.StringIO()
-        with patch.dict(sys.modules, {'kadima.session':fake}), \
-             patch.dict(module.os.environ, {'KADIMA_NOTE_ACCOUNT_SHA256':''}), \
+        config=types.ModuleType('kadima.config'); config.ANGEL_CLIENT_ID='TESTACCOUNT'
+        with patch.dict(sys.modules, {'kadima.session':fake,'kadima.config':config}), \
+             patch.dict(module.os.environ, {'KADIMA_NOTE_ACCOUNT_SHA256':self.e['account_sha256']}), \
              contextlib.redirect_stdout(output):
             exec(module.BROKER_READ, {})
         self.assertNotIn('SECRET', output.getvalue())
@@ -585,9 +615,10 @@ class BrokerDiagnostics(unittest.TestCase):
             evidence_path.write_text(json.dumps(self.e))
             db = sqlite3.connect(root/'kadima.db')
             self.c.backup(db); db.close()
+            pins, fingerprints = reviewed_source_fixture()
             base = types.SimpleNamespace(ENGINE='synthetic-engine', HELPER='synthetic', TOKEN_FILE=root/'token',
                 backend_plan=Mock(return_value=([],{})),
-                process=Mock(return_value=('321',[],{'KADIMA_DATA_DIR':directory})),
+                process=Mock(),
                 load_helper=Mock(return_value=types.SimpleNamespace(engine_interpreter=lambda *args:'/synthetic/python')),
                 read_file=Mock(return_value=b'{"api_token":"SECRET_TOKEN"}'),
                 local_api=Mock(return_value=dict(ts=NOW.isoformat(),positions=[{'signal_id':1}],
@@ -602,7 +633,31 @@ class BrokerDiagnostics(unittest.TestCase):
                 handle = original_fdopen(*args, **kwargs)
                 opened_locks.append(handle)
                 return handle
-            for apply, check_only, success in ((False,True,True),(False,True,False),(True,False,False)):
+            cases=[(False,False,True,None),(False,True,True,None),
+                   (False,True,False,None),(True,False,False,None)]
+            for apply,check_only in ((False,False),(False,True),(True,False)):
+                cases.extend((apply,check_only,False,failure) for failure in
+                             ('missing_digest','wrong_account','missing_account','config_binding','source_binding'))
+            for apply, check_only, success, admission_failure in cases:
+                reviewed=dict(self.e)
+                env={'KADIMA_DATA_DIR':directory,'ANGEL_CLIENT_ID':'TESTACCOUNT'}
+                sources=dict(fingerprints)
+                reason=None
+                if admission_failure=='missing_digest':
+                    reviewed.pop('account_sha256'); reason='reviewed_account_digest_required'
+                elif admission_failure=='wrong_account':
+                    env['ANGEL_CLIENT_ID']='OTHERACCOUNT'; reason='reviewed_account_mismatch'
+                elif admission_failure=='missing_account':
+                    env.pop('ANGEL_CLIENT_ID'); reason='configured_account_required'
+                elif admission_failure=='config_binding':
+                    sources[module.ROOT/'kadima/config.py'] += b'ANGEL_CLIENT_ID = "OTHERACCOUNT"\n'
+                    reason='account_config_unreviewed'
+                elif admission_failure=='source_binding':
+                    sources[module.ROOT/'kadima/engine.py'] = b'# unreviewed\n'
+                    reason='runtime_source_unreviewed'
+                evidence_path.write_text(json.dumps(reviewed))
+                base.backend_plan.return_value=([],sources)
+                base.process.return_value=('321',[],env)
                 receipt = (dict(flat=True,started_at=NOW.isoformat(),verified_at=NOW.isoformat(),
                                 position_rows=0,orderBook_rows=0) if success else
                            dict(flat=False,stage='login',reason='login_failed',error='RuntimeError'))
@@ -611,8 +666,9 @@ class BrokerDiagnostics(unittest.TestCase):
                 args = types.SimpleNamespace(evidence=evidence_path, apply=apply,
                     broker_check_only=check_only, off_session_unrestored=False)
                 captured = io.StringIO()
-                with self.subTest(apply=apply, check_only=check_only, success=success), \
+                with self.subTest(apply=apply, check_only=check_only, success=success,admission_failure=admission_failure), \
                      patch.object(module,'parse_arguments',return_value=args), \
+                     patch.object(module,'REVIEWED_RUNTIME_SOURCES',pins), \
                      patch.object(module.os,'geteuid',return_value=0), \
                      patch.object(module.os,'open',side_effect=lambda *args,**kwargs:module.os.dup(lock.fileno())), \
                      patch.object(module.os,'fdopen',side_effect=tracked_fdopen), \
@@ -626,11 +682,17 @@ class BrokerDiagnostics(unittest.TestCase):
                      patch.object(module.sqlite3,'connect',wraps=original_connect) as connect, \
                      contextlib.redirect_stdout(captured):
                     clock.now.return_value=NOW
-                    if success:
+                    if reason:
+                        with self.assertRaisesRegex(ValueError,reason): module.main()
+                    elif success:
                         module.main()
                     else:
                         with self.assertRaisesRegex(ValueError,'fresh_broker_flat_check_failed'): module.main()
-                    run.assert_called_once()
+                    if reason or not (apply or check_only):
+                        run.assert_not_called()
+                    else:
+                        run.assert_called_once()
+                        self.assertEqual(run.call_args.kwargs['env']['KADIMA_NOTE_ACCOUNT_SHA256'],self.e['account_sha256'])
                     pause.assert_not_called(); repair.assert_not_called(); base.command.assert_not_called()
                     base.check_fingerprints.assert_not_called()
                     self.assertTrue(all('?mode=ro' in call.args[0] for call in connect.call_args_list))

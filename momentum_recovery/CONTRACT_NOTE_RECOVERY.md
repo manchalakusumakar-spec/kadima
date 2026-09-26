@@ -37,13 +37,20 @@ omitted. Account IDs, order IDs, prices, P&L, extra quantity fields and raw rows
 are not included. This does not relax the flat-account requirement or continue
 past the first blocker; the order book has not been checked in this failure case.
 
-Evidence keys are `document_sha256`, `signal_id`, `quantity`, `symbol`, `token`,
+Evidence keys are `document_sha256`, `account_sha256`, `signal_id`, `quantity`, `symbol`, `token`,
 `exchange`, `trade_date`, `expiry`, `entry_at`, `intent_at`, `exit_at`,
 `entry_price`, `exit_price`, `expected_entry_price`, `exchange_order_id`,
 `trade_id`, `intent`, `day_buy_qty`, and `day_sell_qty`. The document digest
 identifies the reviewed document, not a digital-signature verification. The
 operator must review the actual fills and confirm the evidence belongs to the
 installed account. Never put document passwords or account credentials in it.
+
+Every mode requires the reviewed account digest, including the ordinary weekday
+plan, broker check and repair. The running engine's account environment and the
+broker child's imported client ID must independently match before login. The
+reviewed runtime source and unique config bindings are checked in every mode;
+changing the startup mode does not remove the account check. This also applies
+to the separately scheduled deployment described in `SCHEDULED_DEPLOY.md`.
 
 `entry_at` is the time at which the complete reviewed entry quantity was
 filled. For two partial buys forming that quantity, use the second fill's time

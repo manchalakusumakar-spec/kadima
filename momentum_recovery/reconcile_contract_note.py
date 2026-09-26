@@ -30,10 +30,10 @@ IST = ZoneInfo('Asia/Kolkata')
 ROOT = Path('/home/ubuntu/kadima-py')
 PACKAGE = Path(__file__).resolve().parents[1]
 
-# Additional admission checks for the explicit weekend maintenance mode. These
-# are the reviewed PR19 runtime and its accepted API-first run.py predecessor;
-# the ordinary backend_plan dependency/source checks still run independently.
-OFF_SESSION_SOURCES = {
+# Account-bound admission applies to every mode. These are the reviewed PR19
+# runtime and its accepted API-first run.py predecessor; ordinary backend_plan
+# dependency/source checks still run independently.
+REVIEWED_RUNTIME_SOURCES = {
     'run.py': {'cb701bb145a996635d689376a6b24ab2dac030e4',
                '3dd1a763faf472831b33db0bbf21d0d2acca16f7'},
     'kadima/utils.py': {'4781fd73993d899aa0c6c606521147f49cab895d'},
@@ -50,7 +50,7 @@ def require(ok, reason):
         raise ValueError(reason)
 
 
-def evidence(raw, now, account_required=False):
+def evidence(raw, now):
     e = dict(raw)
     require(re.fullmatch(r'[0-9a-f]{64}', e['document_sha256']) is not None, 'document_digest_required')
     require(type(e['signal_id']) is int and e['signal_id'] > 0, 'invalid_signal')
@@ -67,10 +67,9 @@ def evidence(raw, now, account_required=False):
         require(Decimal(str(e[name])).is_finite() and Decimal(str(e[name])) > 0, 'invalid_price')
     require(str(e['exchange_order_id']).isdigit() and str(e['trade_id']).isdigit(), 'exchange_execution_reference_required')
     require(type(e['day_buy_qty']) is int and type(e['day_sell_qty']) is int and e['day_buy_qty'] == e['day_sell_qty'] and e['day_buy_qty'] >= e['quantity'], 'note_not_balanced')
-    if account_required:
-        require(isinstance(e.get('account_sha256'), str) and
-                re.fullmatch(r'[0-9a-f]{64}', e['account_sha256']) is not None,
-                'reviewed_account_digest_required')
+    require(isinstance(e.get('account_sha256'), str) and
+            re.fullmatch(r'[0-9a-f]{64}', e['account_sha256']) is not None,
+            'reviewed_account_digest_required')
     return e
 
 
@@ -108,33 +107,33 @@ def identifier_bindings(tree, name):
     return found
 
 
-def off_session_sources(fingerprints, root=ROOT):
-    for name, allowed in OFF_SESSION_SOURCES.items():
+def reviewed_sources(fingerprints, root=ROOT):
+    for name, allowed in REVIEWED_RUNTIME_SOURCES.items():
         raw = fingerprints.get(root/name)
         require(isinstance(raw, bytes) and
                 hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest() in allowed,
-                'off_session_source_unreviewed')
+                'runtime_source_unreviewed')
     # config.py is host-specific in backend_plan. Confirm the account binding is
     # its reviewed direct environment assignment; the broker child independently
     # checks the imported value before calling ensure(). No live import here.
     raw = fingerprints.get(root/'kadima/config.py')
-    require(isinstance(raw, bytes), 'off_session_account_config_unreviewed')
+    require(isinstance(raw, bytes), 'account_config_unreviewed')
     tree = ast.parse(raw)
     for name, source, reason in (
-            ('ZoneInfo', 'from zoneinfo import ZoneInfo', 'off_session_timezone_unreviewed'),
-            ('os', 'import os', 'off_session_environment_binding_unreviewed')):
+            ('ZoneInfo', 'from zoneinfo import ZoneInfo', 'timezone_unreviewed'),
+            ('os', 'import os', 'environment_binding_unreviewed')):
         bindings = identifier_bindings(tree, name)
         expected = ast.dump(ast.parse(source).body[0], include_attributes=False)
         require(len(bindings) == 1 and bindings[0] in tree.body
                 and ast.dump(bindings[0], include_attributes=False) == expected, reason)
     for name, source, reason in (
             ('ANGEL_CLIENT_ID', 'ANGEL_CLIENT_ID = os.environ.get("ANGEL_CLIENT_ID", "")',
-             'off_session_account_config_unreviewed'),
-            ('IST', 'IST = ZoneInfo("Asia/Kolkata")', 'off_session_timezone_unreviewed'),
+             'account_config_unreviewed'),
+            ('IST', 'IST = ZoneInfo("Asia/Kolkata")', 'timezone_unreviewed'),
             ('DATA_DIR', 'DATA_DIR = os.environ.get("KADIMA_DATA_DIR", "/var/lib/kadima")',
-             'off_session_database_config_unreviewed'),
+             'database_config_unreviewed'),
             ('DB_PATH', 'DB_PATH = os.path.join(DATA_DIR, "kadima.db")',
-             'off_session_database_config_unreviewed')):
+             'database_config_unreviewed')):
         expected = ast.parse(source).body[0]
         bindings = identifier_bindings(tree, name)
         assignments = [node for node in tree.body if isinstance(node, ast.Assign)
@@ -338,16 +337,21 @@ reason='imports_failed'
 broker_code=None
 blocked_position=None
 try:
-    from kadima.session import SESSION
+    stage='account'
+    reason='account_check_failed'
     expected_account = os.environ.get('KADIMA_NOTE_ACCOUNT_SHA256')
-    if expected_account:
-        stage='account'
-        reason='account_check_failed'
-        from kadima.config import ANGEL_CLIENT_ID
-        actual = hashlib.sha256(ANGEL_CLIENT_ID.strip().upper().encode()).hexdigest()
-        if not hmac.compare_digest(actual, expected_account):
-            reason='account_mismatch'
-            raise ValueError('reviewed_account_mismatch')
+    if not isinstance(expected_account,str) or re.fullmatch(r'[0-9a-f]{64}',expected_account) is None:
+        raise ValueError('reviewed_account_digest_required')
+    from kadima.config import ANGEL_CLIENT_ID
+    if not isinstance(ANGEL_CLIENT_ID,str) or not ANGEL_CLIENT_ID.strip():
+        raise ValueError('configured_account_required')
+    actual = hashlib.sha256(ANGEL_CLIENT_ID.strip().upper().encode()).hexdigest()
+    if not hmac.compare_digest(actual, expected_account):
+        reason='account_mismatch'
+        raise ValueError('reviewed_account_mismatch')
+    stage='imports'
+    reason='imports_failed'
+    from kadima.session import SESSION
     stage='login'
     reason='login_failed'
     SESSION.ensure()
@@ -536,8 +540,7 @@ def parse_arguments(argv=None):
 def main():
     args = parse_arguments()
     require(os.geteuid() == 0, 'sudo_required')
-    e = evidence(json.loads(args.evidence.read_text()), datetime.now(IST),
-                 account_required=args.off_session_unrestored)
+    e = evidence(json.loads(args.evidence.read_text()), datetime.now(IST))
     raw = (PACKAGE/'momentum_recovery/install.py').read_bytes()
     require(hashlib.sha1(b'blob '+str(len(raw)).encode()+b'\0'+raw).hexdigest() == '1a01595195c4440732b1a277fe75a2ecc7f058ea', 'reviewed_helper_required')
     spec = importlib.util.spec_from_file_location('_note_install', PACKAGE/'momentum_recovery/install.py')
@@ -554,6 +557,8 @@ def main():
         fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
     _, fingerprints = base.backend_plan(PACKAGE, ROOT, (user.pw_uid, user.pw_gid))
     pid, argv, env = base.process(base.ENGINE, ROOT, user.pw_uid)
+    account_matches(e, env)
+    reviewed_sources(fingerprints)
     helper = base.load_helper(PACKAGE/'executor_fix/install.py', base.HELPER)
     python = helper.engine_interpreter(Path('/proc')/pid, ROOT)
     token = json.loads(base.read_file(base.TOKEN_FILE))['api_token']
@@ -568,7 +573,6 @@ def main():
     s = status()
     identity = None
     if args.off_session_unrestored:
-        off_session_sources(fingerprints)
         identity = process_identity(pid)
         off_session_wait(e, env, s, identity, datetime.now(IST))
         require(base.process(base.ENGINE, ROOT, user.pw_uid)[0] == pid
@@ -586,10 +590,7 @@ def main():
     if args.off_session_unrestored:
         print('WEEKEND PLAN: account-bound evidence and pinned pre-restoration startup verified; empty API is not broker-flat proof.', flush=True)
     child_env = dict(env, PYTHONDONTWRITEBYTECODE='1', ORDER_PLACEMENT_ENABLED='0', KADIMA_FAST_MOMENTUM_LIVE='0', KADIMA_CAS_LIVE='0')
-    if args.off_session_unrestored:
-        child_env['KADIMA_NOTE_ACCOUNT_SHA256'] = e['account_sha256']
-    else:
-        child_env.pop('KADIMA_NOTE_ACCOUNT_SHA256', None)
+    child_env['KADIMA_NOTE_ACCOUNT_SHA256'] = e['account_sha256']
     def flat(checkpoint):
         try:
             result = subprocess.run([python, '-B', '-c', BROKER_READ], cwd=ROOT, env=child_env,
