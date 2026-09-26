@@ -140,6 +140,10 @@ def record(row, strategy=None, producer='engine', signal_id=None, origin='SUGGES
     if sid is not None and (type(sid) is not int or sid <= 0):
         raise ValueError('audit_invalid_signal')
     entry = number(row.get('entry'), .000001)
+    if strategy == 'SCALP' and origin == 'SUGGESTION' and entry is None:
+        # Warm-up rows may identify a contract before a plan exists. Freezing
+        # those would permanently hide the first complete plan for the episode.
+        return None
     reference = number(row.get('option_ltp') if 'option_ltp' in row else row.get('ltp'), .000001)
     hold = number(row.get('holding_minutes'), .000001)
     plan = dict(entry=entry, entry_reference=reference,
@@ -231,7 +235,7 @@ def observe(exchange, quotes, quote_at, now=None):
                 r = dict(saved)
                 previous = stamp(r['quote_at'])
                 start = stamp(r['suggested_at'])
-                if at < start or (previous and at <= previous):
+                if previous and at <= previous:
                     continue
                 price = quotes[r['token']]
                 p = json.loads(r['plan'])
@@ -239,12 +243,12 @@ def observe(exchange, quotes, quote_at, now=None):
                 deadline = stamp(p['session_exit']) or start.replace(hour=23, minute=59, second=59)
                 if p['holding_minutes'] is not None:
                     deadline = min(deadline, start+timedelta(minutes=p['holding_minutes']))
-                active = at <= deadline and r['sl_at'] is None and r['t2_at'] is None
+                active = start <= at <= deadline and r['sl_at'] is None and r['t2_at'] is None
                 t1 = r['t1_at'] or (at.isoformat() if active and p['t1'] and price >= p['t1'] else None)
                 t2 = r['t2_at'] or (at.isoformat() if active and p['t2'] and price >= p['t2'] else None)
                 sl = r['sl_at'] or (at.isoformat() if active and p['stop'] and price <= p['stop'] else None)
                 c.execute('''UPDATE trade_audit_plans SET ltp=?,quote_at=?,high_ltp=?,t1_at=?,t2_at=?,sl_at=?
-                             WHERE audit_id=?''', (price, at.isoformat(), max(r['high_ltp'] or price, price),
+                             WHERE audit_id=?''', (price, at.isoformat(), max(r['high_ltp'] or price, price) if at >= start else r['high_ltp'],
                              t1, t2, sl, r['audit_id']))
 
 

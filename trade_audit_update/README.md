@@ -9,7 +9,7 @@ Publishing this source does not deploy it to AWS or enable trading.
 - Each first selected contract/strategy/episode/IST day freezes its original
   source plan in `trade_audit_plans`. Repeated polls update observations and
   blockers, not the original plan. Rows survive shortlist removal and restart.
-- Capture covers Gamma's ranked Top 20, selected stock/index scalp contracts,
+- Capture covers Gamma's ranked Top 20, the first stock/index scalp entry plans,
   confirmed Shield signals, Move Capture contracts after option confirmation,
   selected Gap-and-Go and MCX contracts, and alerts from the existing CAS scanner
   when that scanner runs. This change does not start inactive scanners.

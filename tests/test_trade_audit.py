@@ -75,11 +75,23 @@ class TradeAudit(unittest.TestCase):
         self.assertEqual(self.rows(), [])
 
     def test_nonfinite_or_inverted_barriers_do_not_become_targets(self):
-        a.record(proposal(entry=True, stop=float('nan'), t1=99, t2=float('inf')))
+        a.record(proposal(entry=True, stop=float('nan'), t1=99, t2=float('inf')), 'GAMMA')
         p = self.rows()[0]['plan']
         for key in ('entry', 'stop', 't1', 't2'):
             self.assertIsNone(p[key])
         self.assertEqual(p['entry_basis'], 'LTP_REFERENCE')
+
+    def test_scalp_warmup_does_not_freeze_an_incomplete_plan(self):
+        self.assertIsNone(a.record(proposal(entry=None, stop=None, t1=None, t2=None)))
+        a.record(proposal())
+        self.assertEqual(self.rows()[0]['plan']['entry'], 100)
+
+    def test_recent_quote_before_suggestion_is_fresh_but_not_a_target_hit(self):
+        a.record(proposal(quote_at=(f.NOW-timedelta(seconds=5)).isoformat(), ltp=125))
+        row = self.rows()[0]
+        self.assertEqual(row['freshness'], 'RECENT_POLL')
+        self.assertEqual(row['ltp'], 125)
+        self.assertIsNone(row['t1_at'])
 
     def test_new_contract_episode_and_ist_date_are_distinct(self):
         for overrides in ({}, {'token': 'T2'}, {'episode': 'episode-2'},

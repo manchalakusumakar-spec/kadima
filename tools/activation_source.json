@@ -34,7 +34,7 @@
   "kadima/move_capture_handoff.py": "a880ba1a94d68ad8878a589dbc2985a2dff88e3d",
   "kadima/move_capture_execution.py": "4567a2cd2c018b7c689f25044ff67c576a9a6085",
   "kadima/momentum_quote_watch.py": "92409bbd7fecd0d4bbd25e69a4cbda99f5628958",
-  "kadima/trade_audit.py": "91846694425485f0b05a8369a8307564fa592ebe",
+  "kadima/trade_audit.py": "446c8ed53a19c7360e59e264e10c2b3361ce3f66",
   "kadima/option_chain.py": "cbf3b30cb74caae957df9eef894e2935bde04295",
   "kadima/cas_blast_scanner.py": "f554ceae4189a185b158b3514f5da48ac2036493"
 }
