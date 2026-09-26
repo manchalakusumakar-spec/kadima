@@ -22,6 +22,12 @@ identifies the reviewed document, not a digital-signature verification. The
 operator must review the actual fills and confirm the evidence belongs to the
 installed account. Never put document passwords or account credentials in it.
 
+`entry_at` is the time at which the complete reviewed entry quantity was
+filled. For two partial buys forming that quantity, use the second fill's time
+and their quantity-weighted entry price. This is execution evidence, distinct
+from the engine's later manual-adoption time. The existing `positions.entry_ts`
+is preserved; the archive retains the reviewed completed-entry time.
+
 The eligible case is exactly one manual-adopted `exit_pending` position and
 exactly one matching unknown SELL intent, with no order ID, no accounted fills,
 no previous external fills, and no partial remainder. The contract-note day
@@ -57,3 +63,73 @@ Offline tests cover evidence rejection, changed local state, existing orders or
 fills, atomic rollback, duplicate prevention, historical P&L attribution, and
 broker-read failures versus actual empty books. These do not validate the AWS
 host or real broker responses.
+
+## Weekend startup before position restoration
+
+The explicit `--off-session-unrestored` option is for a narrower maintenance
+case: the reviewed PR19 `run.py` starts its APIs before waiting for a trading
+session. On a weekend restart with force-start disabled, `engine.start()` has
+not run, so persisted positions have not been restored into memory. An empty
+API position list and a fresh response timestamp do not prove a flat account.
+
+Use this helper from a separate maintenance release based on PR19, retaining
+the original installer, runtime and dependency files. The ordinary source graph
+checks remain authoritative. Additional exact source pins cover the startup
+sequence, clock/session helpers, executor, engine, control API and health store.
+The host-specific config must retain the unique direct `IST =
+ZoneInfo("Asia/Kolkata")`, environment account and database-path assignments.
+Imports, functions, classes, arguments and other ordinary bindings cannot replace
+those names or the normal `os`/`ZoneInfo` imports. This ensures the checked
+calendar and database are the ones used by the reviewed runtime. Unknown source
+versions are refused. No source file or health record is changed by the repair.
+
+The option requires all of the following in both plan and apply:
+
+- The verified engine process started on the same IST calendar day, which is a
+  Saturday or Sunday; no operation starts or commits at or after 23:55 IST.
+- `KADIMA_FORCE_START` is absent or `0`; Celestial is enabled; global Auto Trade
+  is paused and kill is clear. API positions must be empty. Reconciliation health
+  must be absent or strictly older than the current process, with a one-second
+  margin for the kernel boot-time clock resolution.
+- Process identity includes PID, boot time and process start ticks. A reused
+  or changed PID cannot satisfy a same-process check. The effective database,
+interpreter and pinned sources must remain consistent.
+- Evidence includes `account_sha256`: SHA-256 of the installed broker client ID
+  after trimming whitespace and uppercasing. The digest must be derived from the
+  account independently verified on the reviewed note. Never obtain the digest
+  from the installed account merely to make an unverified document match.
+  The configured environment and each fresh broker child's imported client ID
+  must match it before login or business-state changes. Raw account IDs are not
+  printed or stored in evidence.
+- The local plan requires the persisted global and stock control rows and checks
+  stored reconciliation health. An absent stock row cannot be treated as the
+  API's default paused state. An existing stock intent may be enabled during the
+  plan; apply pauses it before stopping the engine and requires it paused inside
+  the repair transaction.
+
+Example, after preparing and reviewing a private evidence JSON file:
+
+```bash
+sudo -n python3 /path/to/maintenance-release/momentum_recovery/reconcile_contract_note.py \
+  --evidence /private/path/reviewed.json --off-session-unrestored
+```
+
+The default remains a local read-only plan. Adding `--apply` retains all existing
+locks, exact position/unknown-intent checks, revision-checked stock pause,
+broker-flat checks, source rechecks, engine stop verification, SQLite backup and
+atomic comparison. The paused controls and old reconciliation health are checked
+again inside the database transaction. The option never authorizes an unresolved
+position to be discarded or an unknown request to be treated as a broker fill.
+
+After restart, the helper makes a fourth fresh broker-flat check and verifies the
+exact closed position, unchanged request fill accounting, archived originals and
+evidence, one external historical fill, and absence of any unresolved local
+positions or intents. Global Auto Trade and stock live intent stay paused. The
+success message explicitly says **live startup reconciliation remains pending**:
+the restarted process is still waiting for the next session. It does not write a
+healthy flag, invoke resume, or claim the live monitor has started. A failed
+postcheck reports that the repair committed and must not be repeated blindly.
+
+The default mode still requires the matching position in the API and healthy
+reconciliation after restart. The weekend option does not weaken that default,
+the broker-flat proof, or the subsequent source installer's exposure checks.
