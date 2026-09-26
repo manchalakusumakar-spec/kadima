@@ -305,6 +305,8 @@ const tradeAudit=(()=>{
  function freshness(){for(const node of body.querySelectorAll('[data-audit-quote]')){const age=Date.now()-Date.parse(node.dataset.auditQuote);node.textContent=connected&&age>=0&&age<=30000?'RECENT POLL':'STALE';}}
  function render(data){
   if(!Array.isArray(data.rows)||!Number.isInteger(data.total))throw Error('Invalid audit response');
+  if(data.total>0&&offset>=data.total){offset=Math.floor((data.total-1)/50)*50;revision++;return}
+  if(data.total===0)offset=0;
   body.replaceChildren();
   for(const r of data.rows){
    const p=r.plan||{},tr=document.createElement('tr');tr.dataset.auditId=r.audit_id;

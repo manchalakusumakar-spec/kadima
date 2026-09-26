@@ -5,7 +5,7 @@ const fs=require('fs'),path=require('path'),assert=require('assert');
  const browser=await chromium.launch({headless:true,args:['--no-sandbox']});
  const page=await browser.newPage({viewport:{width:1440,height:1050}});
  const errors=[],writes=[],queries=[];page.on('pageerror',e=>errors.push(e.message));
- let unavailable=false,unauthorized=false,quoteAt=new Date().toISOString();
+ let unavailable=false,unauthorized=false,total=53,quoteAt=new Date().toISOString();
  const row=(i,outcome)=>({audit_id:'audit-'+i,symbol:i===0?'<img src=x onerror=alert(1)>':'TEST'+i+'CE',
   strategy:'SCALP',strategy_label:'Scalping',suggested_at:quoteAt,quote_at:quoteAt,score:80,execution_status:'CLOSED',
   plan:{entry:100,entry_reference:99,exit:null,stop:90,t1:110,t2:120,holding_minutes:15,expiry:'2026-09-29'},
@@ -28,8 +28,9 @@ const fs=require('fs'),path=require('path'),assert=require('assert');
    if(unavailable)return route.fulfill({status:503,json:{detail:'audit_unavailable'}});
    const empty=url.searchParams.get('symbol')==='MISSING';
    const next=url.searchParams.get('offset')==='50';
-   return route.fulfill({json:{ts:new Date().toISOString(),total:empty?0:53,has_more:!next&&!empty,capture:{failures:0},
-    rows:empty?[]:[row(next?50:0,'T1_OBSERVED'),row(1,'T2_OBSERVED'),row(2,'SL_OBSERVED')]}});
+   const count=empty?0:Math.min(3,Math.max(0,total-Number(url.searchParams.get('offset')||0)));
+   return route.fulfill({json:{ts:new Date().toISOString(),total:empty?0:total,has_more:total>50&&!next&&!empty,capture:{failures:0},
+    rows:[row(next?50:0,'T1_OBSERVED'),row(1,'T2_OBSERVED'),row(2,'SL_OBSERVED')].slice(0,count)}});
   }
   if(url.pathname==='/dashboard-api/celestial')return route.fulfill({json:{ts:quoteAt,
    config:{rollout_enabled:false,auto_trade_enabled:false,kill_latched:false,broker_orders_enabled:false,score_threshold:65},
@@ -52,6 +53,12 @@ const fs=require('fs'),path=require('path'),assert=require('assert');
  assert.ok(queries.some(q=>q.day==='2026-09-14'&&q.strategy==='SCALP'&&q.status==='CLOSED'&&q.symbol==='TEST & CO'));
  await page.click('#auditNext');await page.waitForSelector('[data-audit-id="audit-50"]');
  assert.strictEqual(queries.at(-1).offset,'50');
+ total=2;await page.evaluate(()=>{tradeAudit.stop();tradeAudit.start()});
+ await page.waitForFunction(()=>document.getElementById('auditPage').textContent==='1–2 of 2 records');
+ assert.strictEqual(queries.at(-1).offset,'0');
+ total=53;await page.locator('#auditFilters button[type=submit]').click();
+ await page.waitForFunction(()=>!document.getElementById('auditNext').disabled);
+ await page.click('#auditNext');await page.waitForSelector('[data-audit-id="audit-50"]');
  await page.click('#auditPrev');await page.waitForSelector('[data-audit-id="audit-0"]');
  const downloadPromise=page.waitForEvent('download');await page.click('#auditExport');
  const download=await downloadPromise;assert.strictEqual(download.suggestedFilename(),'kadima_trade_audit_2026-09-14.csv');
@@ -64,7 +71,10 @@ const fs=require('fs'),path=require('path'),assert=require('assert');
  await page.setViewportSize({width:390,height:844});
  assert.ok(await page.evaluate(()=>document.documentElement.scrollWidth<=innerWidth+1));
  assert.ok(await page.locator('#tradeAudit .scroll').evaluate(n=>n.scrollWidth>n.clientWidth));
+ await page.locator('#tradeAudit').evaluate(n=>n.scrollIntoView({block:'start'}));
  await page.screenshot({path:'/tmp/kadima-audit-mobile.png'});
+ await page.locator('#tradeAudit .scroll').evaluate(n=>n.scrollIntoView({block:'start'}));
+ await page.screenshot({path:'/tmp/kadima-audit-mobile-table.png'});
  unavailable=true;await page.locator('#auditFilters button[type=submit]').click();
  await page.waitForFunction(()=>document.querySelector('#auditStatus').textContent.includes('unavailable'));
  assert.strictEqual(await page.locator('#auditTable tbody tr').count(),3);
