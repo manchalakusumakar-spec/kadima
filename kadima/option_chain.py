@@ -249,6 +249,9 @@ class OptionChain:
                 ltp=q.ltp,oi=q.oi,oi_change=q.oi_change,volume=q.volume,iv=q.iv,
                 delta=q.delta,gamma=q.gamma,theta=q.theta,vega=q.vega,bid=q.bid,ask=q.ask)
                 for q in self.quotes.values()])
+        from . import trade_audit
+        trade_audit.safe_call(trade_audit.observe, self.index.opt_exchange,
+            [(q.token, q.ltp) for q in self.quotes.values()], datetime.now(IST).isoformat())
         return True
 
     # ------------------------------------------------------------- analytics

@@ -88,6 +88,8 @@ def submit(pos, side, quantity, price):
                   '(intent,signal_id,side,quantity,state,created_at) VALUES (?,?,?,?,?,?)',
                   (intent, pos.signal_id, side, quantity, 'submitting', now_ist().isoformat()))
         storage.upsert_position(pos, _connection=c)
+    from . import trade_audit
+    trade_audit.safe_call(trade_audit.record_submission, pos, side, quantity, price, intent)
     try:
         result = angel_orders.place_limit_order(tradingsymbol=pos.symbol,
             symboltoken=pos.token, exchange=pos.exchange, transactiontype=side,

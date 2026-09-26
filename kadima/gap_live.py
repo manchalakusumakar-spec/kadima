@@ -250,6 +250,8 @@ class Worker:
             return row, chain, snap
         row.update(direction="CE", underlying=name, token=q.token, contract_symbol=q.symbol,
                    exchange=chain.index.opt_exchange, strike=q.strike, entry=q.ask,
+                    stop=stop, ltp=q.ltp, quote_at=data['chain_at'],
+                    expiry=getattr(chain, '_expiry', ''),
                    spot_stop=row["metrics"]["stop"], days=days,
                    score=round((shield_score + float(gamma.get("score", 0)))/2, 2),
                    episode="gap:"+name+":"+today[0]["start_ts"]+":"+chain._expiry)
@@ -258,12 +260,15 @@ class Worker:
     def process(self, data):
         name = data["index"]["name"]
         row, chain, snap = self._prepare(data)
+        from . import trade_audit
+        trade_audit.safe_call(trade_audit.record, row, 'GAP_AND_GO', 'gap_and_go')
         if not row.get("eligible"):
             self.executor.fast_rows["GAP:"+name] = row
             audit.log("GAP_LIVE_CANDIDATE", **row)
             return row
         sid = gap_and_go.signal_id(row)
         row["signal_id"] = sid
+        trade_audit.safe_call(trade_audit.record, row, "GAP_AND_GO", "gap_and_go", sid)
         snapshot_at = data["chain_at"]
         def revalidate():
             if self.stop_event.is_set() or not still_current(data):

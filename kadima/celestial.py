@@ -146,6 +146,8 @@ def publish(producer, rows):
         c.execute('DELETE FROM celestial_candidates WHERE ts < ?',
                   ((now_ist() - timedelta(days=1)).isoformat(),))
         c.executemany('INSERT OR REPLACE INTO celestial_candidates VALUES (?,?,?,?)', encoded)
+    from . import trade_audit
+    trade_audit.safe_call(trade_audit.record_gamma, producer, rows)
 
 
 def news_impact(symbol, direction, now=None):

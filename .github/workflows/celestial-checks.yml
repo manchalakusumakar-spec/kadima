@@ -30,13 +30,17 @@ jobs:
       - name: Python regressions and compilation
         run: |
           python -m unittest discover -s tests -v
-          python -m compileall -q kadima dashboard_live tools
+          python -m compileall -q kadima dashboard_live tools trade_audit_update
       - name: Intercepted desktop and mobile dashboard
-        run: node tests/test_celestial_dashboard.cjs
+        run: |
+          node tests/test_celestial_dashboard.cjs
+          node tests/test_trade_audit_dashboard.cjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: celestial-fixture-screenshots
-          path: /tmp/kadima-celestial-*.png
+          path: |
+            /tmp/kadima-celestial-*.png
+            /tmp/kadima-audit-*.png
           if-no-files-found: ignore
           retention-days: 7
