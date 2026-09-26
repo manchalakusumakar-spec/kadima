@@ -194,10 +194,12 @@ def record(row, strategy=None, producer='engine', signal_id=None, origin='SUGGES
 
 def record_gamma(producer, rows):
     from . import celestial
-    # Capture the same ranked shortlist as the engine/dashboard, with its gates.
+    # Persist every qualifying lead in this producer's bounded batch, including
+    # other strikes and rows beyond the display's twenty-row limit.
     # Browser-only percentage scenarios are deliberately not persisted as plans.
-    for row in celestial.top20():
-        record(dict(row, score=row.get('final_score')), 'GAMMA', 'gamma_top20')
+    for row in celestial.ranked_candidates(candidates=rows):
+        if row['final_score'] >= 60:
+            record(dict(row, score=row['final_score']), 'GAMMA', producer)
 
 
 def record_shield(payload, lead, pick, signal_id):
@@ -247,9 +249,17 @@ def observe(exchange, quotes, quote_at, now=None):
                 t1 = r['t1_at'] or (at.isoformat() if active and p['t1'] and price >= p['t1'] else None)
                 t2 = r['t2_at'] or (at.isoformat() if active and p['t2'] and price >= p['t2'] else None)
                 sl = r['sl_at'] or (at.isoformat() if active and p['stop'] and price <= p['stop'] else None)
-                c.execute('''UPDATE trade_audit_plans SET ltp=?,quote_at=?,high_ltp=?,t1_at=?,t2_at=?,sl_at=?
-                             WHERE audit_id=?''', (price, at.isoformat(), max(r['high_ltp'] or price, price) if at >= start else r['high_ltp'],
-                             t1, t2, sl, r['audit_id']))
+                # Scanners in separate processes can read the same old row.
+                # Recheck time and preserve first hits/terminal state in SQLite
+                # at write time; a later commit must not erase another sample.
+                c.execute('''UPDATE trade_audit_plans SET ltp=?,quote_at=?,
+                    high_ltp=CASE WHEN ? THEN MAX(COALESCE(high_ltp,?),?) ELSE high_ltp END,
+                    t1_at=CASE WHEN sl_at IS NULL AND t2_at IS NULL THEN COALESCE(t1_at,?) ELSE t1_at END,
+                    t2_at=CASE WHEN sl_at IS NULL AND t2_at IS NULL THEN COALESCE(t2_at,?) ELSE t2_at END,
+                    sl_at=CASE WHEN sl_at IS NULL AND t2_at IS NULL THEN COALESCE(sl_at,?) ELSE sl_at END
+                    WHERE audit_id=? AND (quote_at IS NULL OR quote_at<?)''',
+                    (price, at.isoformat(), at >= start, price, price,
+                     t1, t2, sl, r['audit_id'], at.isoformat()))
 
 
 def _episode_for_signal(c, day, strategy, episode, exchange, token, signal_id, original_at=None):

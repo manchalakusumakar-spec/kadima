@@ -13,6 +13,19 @@ from unittest.mock import Mock, patch
 import test_execution_lifecycle as f
 
 a = importlib.import_module(f.PKG + '.trade_audit')
+c = importlib.import_module(f.PKG + '.celestial')
+
+
+def gamma_candidate(token, **changes):
+    row = dict(id='NFO:'+str(token), exchange='NFO', token=str(token),
+               symbol='TEST'+str(token)+'CE', underlying='STOCK'+str(token),
+               direction='CE', best_strike=100, option_ltp=110,
+               premium_move_pct=10, gamma_score=80, priority=2,
+               last_updated=f.NOW.isoformat(), spot_at=f.NOW.isoformat(),
+               volume_spike=True, oi_support=True, spread_status='CLEAN',
+               tradeable=True, direction_clear=True)
+    row.update(changes)
+    return row
 
 
 def proposal(**changes):
@@ -99,6 +112,83 @@ class TradeAudit(unittest.TestCase):
             a.record(proposal(**overrides))
         self.assertEqual(len(self.rows()), 3)
         self.assertEqual(a.report(day='2026-09-15')['total'], 1)
+
+    def test_gamma_history_includes_all_threshold_leads_beyond_top20(self):
+        candidates = [gamma_candidate(i) for i in range(1, 32)]
+        candidates += [gamma_candidate(50, underlying='NIFTY', priority=1),
+                       gamma_candidate(51, underlying='NIFTY', priority=1)]
+        c.publish('all-gamma', candidates)
+        self.assertEqual(len(c.top20()), 20)
+        self.assertNotIn('51', {r['token'] for r in c.top20()})
+        self.assertEqual({r['token'] for r in self.rows()}, {r['token'] for r in candidates})
+        c.publish('all-gamma', [])
+        self.assertEqual(c.top20(), [])
+        self.assertEqual(len(self.rows()), 33)
+        self.place.assert_not_called()
+
+    def test_gamma_threshold_uses_final_score_and_keeps_freshness_gates(self):
+        candidates = [gamma_candidate(1, gamma_score=55),
+                      gamma_candidate(2, gamma_score=65, event_risk_penalty=20),
+                      gamma_candidate(3, gamma_score=50),
+                      gamma_candidate(4, last_updated=(f.NOW-timedelta(seconds=31)).isoformat()),
+                      gamma_candidate(5, premium_move_pct=4.99)]
+        news = dict(news_score=10, news_available=True, news_blocked=False, news_sources=[])
+        with patch.object(c, 'news_impact', return_value=news):
+            c.publish('threshold', candidates)
+        self.assertEqual({r['token']:r['score'] for r in self.rows()}, {'1':65, '3':60})
+        self.assertEqual(c.read_config()['score_threshold'], 65)
+        self.assertFalse(c.read_config()['auto_trade_enabled'])
+
+    def interleaved_quotes(self, first_seconds, first_price, second_seconds, second_price):
+        """A second SQLite writer commits after the first writer has read a row."""
+        a.record(proposal())
+        db = a.connection()
+        other = sqlite3.connect(f.storage.DB_PATH)
+        other.row_factory = sqlite3.Row
+        self.addCleanup(other.close)
+        interleaved = []
+        class Connection:
+            def __enter__(self):
+                db.__enter__()
+                return self
+            def __exit__(self, *args):
+                return db.__exit__(*args)
+            def execute(self, sql, parameters=()):
+                if 'UPDATE trade_audit_plans SET ltp' in sql and not interleaved:
+                    interleaved.append(True)
+                    at = f.NOW+timedelta(seconds=second_seconds)
+                    with patch.object(a, 'connection', return_value=other):
+                        a.observe('NFO', [('T', second_price)], at, now=at)
+                return db.execute(sql, parameters)
+        at = f.NOW+timedelta(seconds=first_seconds)
+        with patch.object(a, 'connection', return_value=Connection()):
+            a.observe('NFO', [('T', first_price)], at, now=at)
+        self.assertEqual(interleaved, [True])
+        return self.rows()[0]
+
+    def test_concurrent_writer_preserves_first_target_and_observed_peak(self):
+        row = self.interleaved_quotes(20, 105, 10, 111)
+        self.assertEqual(row['time_to_t1_seconds'], 10)
+        self.assertEqual(row['high_ltp'], 111)
+        self.assertEqual(row['ltp'], 105)
+
+    def test_concurrent_older_quote_cannot_replace_newer_quote_or_result(self):
+        row = self.interleaved_quotes(10, 89, 20, 121)
+        self.assertEqual(row['quote_at'], (f.NOW+timedelta(seconds=20)).astimezone(a.IST).isoformat())
+        self.assertEqual(row['ltp'], 121)
+        self.assertEqual(row['time_to_t2_seconds'], 20)
+        self.assertIsNone(row['sl_at'])
+
+    def test_concurrent_stop_is_terminal_for_a_later_rebound(self):
+        row = self.interleaved_quotes(20, 125, 10, 89)
+        self.assertEqual(row['time_to_sl_seconds'], 10)
+        self.assertIsNone(row['t1_at'])
+        self.assertIsNone(row['t2_at'])
+
+    def test_concurrent_t2_is_terminal_for_a_later_fall(self):
+        row = self.interleaved_quotes(20, 89, 10, 125)
+        self.assertEqual(row['time_to_t2_seconds'], 10)
+        self.assertIsNone(row['sl_at'])
 
     def test_thresholds_are_sampled_with_first_pass_and_restart_persistence(self):
         a.record(proposal())

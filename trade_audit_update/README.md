@@ -9,7 +9,11 @@ Publishing this source does not deploy it to AWS or enable trading.
 - Each first selected contract/strategy/episode/IST day freezes its original
   source plan in `trade_audit_plans`. Repeated polls update observations and
   blockers, not the original plan. Rows survive shortlist removal and restart.
-- Capture covers Gamma's ranked Top 20, the first stock/index scalp entry plans,
+- Capture covers every fresh Gamma lead with final score >=60 in each published
+  scanner batch, including strikes outside the display's Top 20 and additional
+  strikes for the same underlying. The score is a heuristic, not a probability.
+  The display ranking and entry gates remain the existing rules. Capture also
+  covers the first stock/index scalp entry plans,
   confirmed Shield signals, Move Capture contracts after option confirmation,
   selected Gap-and-Go and MCX contracts, and alerts from the existing CAS scanner
   when that scanner runs. This change does not start inactive scanners.
@@ -28,6 +32,8 @@ Publishing this source does not deploy it to AWS or enable trading.
   by the original maximum hold/session deadline when supplied. Stop or T2 ends
   the outcome sequence. These are sampled observations, not complete price
   paths, executable fills, or proof that a trade could have earned that return.
+  Concurrent scanner writes preserve the first hits and highest observed price;
+  older samples cannot replace a newer quote or reverse a terminal outcome.
 - RECENT POLL means a sample was received within 30 seconds. It does not prove
   exchange quote freshness. Both freshness labels are red; T1 is light green,
   T2 dark green, stop red. Capture errors are process-local diagnostics; outages

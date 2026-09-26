@@ -1,7 +1,7 @@
 {
   "kadima/angel_orders.py": "6e379765f37044c255e5ca61b2a3b05abeec77dd",
   "kadima/auto_executor.py": "7cfe6cf21a520ba967d6a672b2f54a99bbe81321",
-  "kadima/celestial.py": "8820fb4c1c51858467fccc86db01338078d391ea",
+  "kadima/celestial.py": "4c6d8d0be224193f6eeef066b4b9be5317256501",
   "kadima/celestial_adoption.py": "68e66fca7baca0b42cc29b80cd41cff301ae4f57",
   "kadima/control_api.py": "a5dc553006b305d5c557313bd8df3674bec6dbf7",
   "kadima/engine.py": "642812637e5d0485faa02cb0a097827e86676b16",
@@ -34,7 +34,7 @@
   "kadima/move_capture_handoff.py": "a880ba1a94d68ad8878a589dbc2985a2dff88e3d",
   "kadima/move_capture_execution.py": "4567a2cd2c018b7c689f25044ff67c576a9a6085",
   "kadima/momentum_quote_watch.py": "92409bbd7fecd0d4bbd25e69a4cbda99f5628958",
-  "kadima/trade_audit.py": "446c8ed53a19c7360e59e264e10c2b3361ce3f66",
+  "kadima/trade_audit.py": "66b12fa755e28e4d14e85c6691596f9bc7b6ec5c",
   "kadima/option_chain.py": "cbf3b30cb74caae957df9eef894e2935bde04295",
   "kadima/cas_blast_scanner.py": "f554ceae4189a185b158b3514f5da48ac2036493"
 }
