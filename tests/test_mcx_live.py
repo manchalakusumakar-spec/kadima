@@ -173,7 +173,9 @@ class MCXInstallerTests(unittest.TestCase):
             'kadima/move_capture.py', 'kadima/move_capture_service.py',
             'kadima/move_capture_handoff.py', 'kadima/move_capture_execution.py',
             'kadima/momentum_quote_watch.py'}
-        self.assertEqual(set(module.base.FILES) | recovery, set(manifest))
+        audit_dependencies = {'kadima/trade_audit.py', 'kadima/option_chain.py',
+                              'kadima/cas_blast_scanner.py', 'kadima/price_history.py'}
+        self.assertEqual(set(module.base.FILES) | recovery | audit_dependencies, set(manifest))
         raw=module.base.read_file(module.ROOT/'kadima/auto_executor.py')
         self.assertEqual(module.base.digest(raw),module.COMPOSED_EXECUTOR)
 
@@ -205,7 +207,7 @@ class MCXInstallerTests(unittest.TestCase):
         self.assertEqual(manifest['kadima/auto_executor.py'],
                          '7cfe6cf21a520ba967d6a672b2f54a99bbe81321')
         self.assertEqual(manifest['kadima/mcx_live.py'],
-                         '86928e87cca0fe6c085466f9c0b5c715d4ebb415')
+                         'bbe4c65d18428505898b2b579e3c3b9dfa6a271c')
         self.assertEqual(manifest['kadima/instrument_master.py'],
                          'a04a6c3636d49081fb49d48ac745aea0adc73f1f')
 

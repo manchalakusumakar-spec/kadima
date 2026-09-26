@@ -415,12 +415,15 @@ class Worker:
             raise ValueError('stock_fast_snapshot_changed_during_history')
         self.preparation_stage = 'planning'
         row = plan(data, chain, bars, cfg)
+        from . import trade_audit
+        trade_audit.safe_call(trade_audit.record, row, 'SCALP', 'stock_fast')
         if self.stop_event.is_set():
             row.update(eligible=False, blocked_reasons=row['blocked_reasons'] + ['stock_fast_worker_stopping'])
         if row['eligible']:
             self.preparation_stage = 'policy_binding'
             sid = bind_policy(row)
             row['signal_id'] = sid
+            trade_audit.safe_call(trade_audit.record, row, 'SCALP', 'stock_fast', sid)
             def revalidate():
                 current = controls()
                 if self.stop_event.is_set() or current['revision'] != cfg['revision'] or not still_current(data):

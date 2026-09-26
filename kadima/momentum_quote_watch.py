@@ -57,6 +57,10 @@ class QuoteWatch:
             quote = received.get(('NFO', row['token']))
             if quote is None:
                 continue
+            from . import price_history
+            price_history.full_quote(quote, exchange='NFO', token=row['token'],
+                symbol=row['symbol'], underlying=row['underlying'], asset='OPTION',
+                strike=row['strike'], side=row['opt_type'])
             # Full-quote LTP is validated by fetch_batch; missing depth stays missing.
             depth = quote.get('depth') or {}
             def price(side):

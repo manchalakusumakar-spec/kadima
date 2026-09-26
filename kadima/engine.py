@@ -250,6 +250,13 @@ class Engine:
         st.is_live_tick = True
         self._invalidate_shield(st)
         st.builder.add_tick(tick["ts"], tick["ltp"], tick["volume"])
+        # Keep the reviewed socket/feed implementation untouched. Its callback
+        # supplies receipt time only; broker opening references come separately
+        # from the exchange-timestamped Move Capture feed.
+        from . import price_history
+        price_history.capture(dict(exchange=st.chain.index.exchange, token=str(tick['token']),
+            symbol=name, underlying=name, asset='INDEX', price=tick['ltp'],
+            volume=tick['volume'], at=tick['ts'], received_at=tick['ts'], basis='RECEIVED'))
 
     def _on_bank_close(self, candle: Candle) -> None:
         if candle.interval != 5:
@@ -339,6 +346,8 @@ class Engine:
         """Optional lane failure must not suppress the established scanners."""
         try:
             row = self.fast_lane.scan(st)
+            from . import trade_audit
+            trade_audit.safe_call(trade_audit.record, row, 'SCALP', 'index_fast')
             auto_executor.EXECUTOR.fast_rows[st.name] = row
             signature = (row.get('episode'),row['stage'],tuple(row['blocked_reasons']))
             if self._fast_reported.get(st.name) != signature:
@@ -347,6 +356,7 @@ class Engine:
             if row['eligible']:
                 from .fast_momentum import signal_id
                 sid = signal_id(row)
+                trade_audit.safe_call(trade_audit.record, row, 'SCALP', 'index_fast', sid)
                 result = auto_executor.EXECUTOR.evaluate_and_enter(
                     st.name,row['direction'],st.chain,st.spot,st.snap,row['days'],
                     'fast_momentum',sid,'EXPERIMENTAL',row['score'],
@@ -606,6 +616,8 @@ class Engine:
                     'pcr': lead.chain.pcr(), 'max_pain': lead.chain.max_pain()}
                 sid = storage.insert_signal(lead.name, lead.tier, lead.score,
                     lead.direction, json.dumps(payload, default=str))
+                from . import trade_audit
+                trade_audit.safe_call(trade_audit.record_shield, payload, lead, pick, sid)
                 lead.shield_signal_id = sid
                 lead.last_signaled_tier_since = lead.tier_since
                 audit.log('CONFIRMED_EVENT', signal_id=sid, **payload)
