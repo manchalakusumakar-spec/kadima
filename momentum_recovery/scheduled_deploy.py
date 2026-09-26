@@ -379,6 +379,7 @@ def final_database_check(bundle=BUNDLE):
             ast.dump(os_bindings[0], include_attributes=False) ==
             ast.dump(ast.parse('import os').body[0], include_attributes=False), 'runtime_environment_binding_unreviewed')
     for name, statement in (
+            ('ANGEL_CLIENT_ID', 'ANGEL_CLIENT_ID = os.environ.get("ANGEL_CLIENT_ID", "")'),
             ('DATA_DIR', 'DATA_DIR = os.environ.get("KADIMA_DATA_DIR", "/var/lib/kadima")'),
             ('DB_PATH', 'DB_PATH = os.path.join(DATA_DIR, "kadima.db")')):
         assignments = [node for node in source.body if isinstance(node, ast.Assign)
@@ -420,6 +421,7 @@ def stage_commands(bundle):
 
 def run_stages(stages, invoke, record, pre_stage=lambda: None):
     for name, argv in stages:
+        record({'state': 'checking', 'stage': name})
         pre_stage()
         record({'state': 'running', 'stage': name})
         result = invoke(argv)
