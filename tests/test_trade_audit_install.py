@@ -19,6 +19,7 @@ class AuditInstall(unittest.TestCase):
     def test_manifest_never_targets_executor_configuration_or_activation(self):
         paths = set(self.base.FILES)
         self.assertIn('kadima/trade_audit.py', paths)
+        self.assertIn('kadima/price_history.py', paths)
         self.assertIn('kadima/execution_ledger.py', paths)
         for name in ('kadima/auto_executor.py', 'kadima/config.py', 'kadima/angel_orders.py',
                      'kadima/rate_limiter.py', 'tools/activate_execution.py'):
@@ -47,9 +48,11 @@ class AuditInstall(unittest.TestCase):
             shutil.copyfile(ROOT/'mcx_live_update/auto_executor.py', target/'kadima/auto_executor.py')
             # Other local entrypoint imports may be encountered by dependency traversal.
             (target/'kadima/trade_audit.py').unlink()
+            (target/'kadima/price_history.py').unlink()
             executor_before = (target/'kadima/auto_executor.py').read_bytes()
             changes, _ = self.base.backend_plan(ROOT, target, (1000, 1000))
-            self.assertEqual([c.path.relative_to(target).as_posix() for c in changes], ['kadima/trade_audit.py'])
+            self.assertEqual({c.path.relative_to(target).as_posix() for c in changes},
+                             {'kadima/trade_audit.py','kadima/price_history.py'})
             self.assertEqual((target/'kadima/auto_executor.py').read_bytes(), executor_before)
             (target/'kadima/auto_executor.py').write_bytes(executor_before+b'\n# installed custom stop overlay\n')
             with self.assertRaisesRegex(self.base.Blocked, 'unreviewed_dependency:kadima/auto_executor.py'):
@@ -58,7 +61,7 @@ class AuditInstall(unittest.TestCase):
 
     def test_activation_hashes_include_new_capture_dependencies(self):
         manifest = json.loads((ROOT/'tools/activation_source.json').read_text())
-        for path in ('kadima/trade_audit.py', 'kadima/option_chain.py', 'kadima/cas_blast_scanner.py'):
+        for path in ('kadima/trade_audit.py', 'kadima/price_history.py', 'kadima/option_chain.py', 'kadima/cas_blast_scanner.py'):
             self.assertEqual(manifest[path], self.installer.digest((ROOT/path).read_bytes()))
 
 

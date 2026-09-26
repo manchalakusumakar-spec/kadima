@@ -80,6 +80,13 @@ def install_transaction(changes, units, backup, flat_check, source_check, import
                 or type(data.get('total')) is not int):
             raise base.Blocked('post_install_audit_api_invalid')
         print('AUDIT API: authenticated HTTP 200; plans and fills are separate.')
+        prices = base.local_api('/api/kadima/prices?limit=1', token)
+        if (not isinstance(prices, dict) or not isinstance(prices.get('rows'), list)
+                or type(prices.get('total')) is not int):
+            raise base.Blocked('post_install_price_history_api_invalid')
+        if prices.get('capture_enabled') is not True:
+            raise base.Blocked('post_install_price_capture_disabled')
+        print('PRICE HISTORY API: authenticated HTTP 200; capture requires subsequent fresh quotes.')
     return _original_transaction(changes, units, backup, flat_check, source_check,
                                  import_check, audit_post_check, **kwargs)
 

@@ -49,6 +49,22 @@
 <div class="toolbar"><span id="auditPage" class="note">No records loaded</span><div><button data-view id="auditPrev" type="button" disabled>Previous</button> <button data-view id="auditNext" type="button" disabled>Next</button></div></div>
 <p class="note">* Actual holding time runs from the first BUY confirmation to the final SELL confirmation. Exchange execution timestamps are unavailable. A maximum-hold policy is a deadline, not a forecast. “Recent poll” reports receipt freshness; exchange quote freshness is unverified. — means the source did not provide the value. Browser-only Gamma percentage scenarios are not engine plans and are not saved here.</p>
 </section>
+<section class="panel" id="priceMemory" aria-labelledby="priceTitle">
+<div class="toolbar"><h2 id="priceTitle">Daily Price Memory</h2><span id="priceStatus" class="muted" role="status">Sign in to view saved prices</span></div>
+<p class="note">Opening price, first observation and first suggestion are different references. This table keeps sampled price history across restarts. A late first observation is never labelled as the opening price.</p>
+<form id="priceFilters" class="toolbar"><label>Date <input id="priceDay" data-view type="date" required></label>
+<label>Type <select id="priceAsset" data-view><option value="ALL">All instruments</option><option value="STOCK">Stocks</option><option value="INDEX">Indices</option><option value="OPTION">Options</option></select></label>
+<label>Stock / contract <input id="priceSymbol" data-view maxlength="80" placeholder="Search instruments"></label>
+<button data-view type="submit">Apply filters</button><button data-view type="button" id="priceExport">Export daily CSV</button></form>
+<div class="scroll" style="max-height:440px"><table id="priceTable"><thead><tr>
+<th>Instrument</th><th>Broker opening ₹</th><th>First observed ₹ / IST</th><th>Previous close ₹</th><th>Last sample ₹ / IST</th>
+<th>From open %</th><th>From first %</th><th>Observed high ₹ / IST</th><th>Observed low ₹ / IST</th><th>Coverage</th><th>History</th>
+</tr></thead><tbody></tbody></table></div>
+<div class="toolbar"><span id="pricePage" class="note">No records loaded</span><div><button data-view id="pricePrev" disabled>Previous</button> <button data-view id="priceNext" disabled>Next</button></div></div>
+<details id="priceDetail"><summary>Sampled one-minute history</summary><p id="priceDetailStatus" class="note">Select “Minutes” on an instrument.</p>
+<div class="scroll" style="max-height:320px"><table id="priceBars"><thead><tr><th>Minute IST</th><th>First ₹</th><th>High ₹</th><th>Low ₹</th><th>Last ₹</th><th>Observed volume delta</th><th>Samples</th></tr></thead><tbody></tbody></table></div></details>
+<p class="note">Coverage includes instruments received by the existing feeds and option ladders. High/low values are observed samples, not certified exchange extremes. Missing minutes stay missing. Minute detail is kept for 7 calendar days; daily references for 180. Conflicting opening references suppress the related percentages. Price changes are not trade profits.</p>
+</section>
 <section class="panel"><div class="toolbar"><h2>Gamma Blast · Top 20 likely candidates</h2><span class="muted" id="candidateCount">0 candidates</span></div><p class="note"><span id="gammaSource">Celestial contract ranking · +5% premium radar · No fixed upper profit target</span></p>
 <div class="toolbar"><label>T1 gain % <input id="planT1" data-view type="number" min="1" max="200" value="10" style="width:75px"></label><label>T2 gain % <input id="planT2" data-view type="number" min="1" max="200" value="20" style="width:75px"></label><span class="note">Display scenarios only · T2 must exceed T1 · settings reset on reload</span></div><p class="note">Entry uses reported LTP until a matching managed fill is available; it is not an entry signal or executable quote. T1/T2 are percentage scenarios, not forecasts or automatic exits. Holding estimates extrapolate measured premium movement and can fail; missing/stale inputs show Unavailable. Existing trades use their reported engine stop. New-trade exit plans are unavailable until engine validation.</p><div class="toolbar"><span class="note">Live ranking · hover or focus to pause scrolling</span><button id="gammaScrollToggle" class="small" data-view aria-controls="gammaScroll" aria-pressed="false">Pause scrolling</button></div><div class="scroll" id="gammaScroll" tabindex="0" role="region" aria-label="Gamma Top 20 scrolling table" style="max-height:480px;overflow:auto"><table id="candidates"><thead><tr><th>Rank</th><th>Option</th><th>Underlying</th><th>Side</th><th>Best strike</th><th>LTP</th><th>Entry reference ₹</th><th>Exit / stop ₹</th><th>T1 ₹ · scenario</th><th>T2 ₹ · scenario</th><th>Holding estimate</th><th>Move %</th><th>Gamma</th><th>Bull</th><th>Bear</th><th>News</th><th>Final</th><th>Tier</th><th>Vol ×</th><th>OI</th><th>Spread</th><th>Action</th><th>Updated IST</th><th>Control</th></tr></thead><tbody></tbody></table></div>
 <p class="note">Missing news coverage, stale quotes, poor liquidity, and unconfirmed direction block entry. BUY uses the same risk, sizing, and contract checks as auto mode; no raw browser orders.</p></section>
@@ -113,8 +129,8 @@ for(const id of ['planT1','planT2'])el(id).addEventListener('change',updateGamma
 function planSettings(){return {t1:Number(el('planT1').value),t2:Number(el('planT2').value)}}
 function notice(s,bad=false){el('notice').textContent=s;el('notice').hidden=false;el('notice').className=bad?'bad':'';}
 async function request(path,method='GET',body){const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),9000);try{const response=await fetch('/dashboard-api/'+path,{method,credentials:'same-origin',cache:'no-store',signal:controller.signal,headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined});let data;try{data=await response.json()}catch{throw new Error('Invalid backend response')}if(!response.ok){if(response.status===401)showLogin();const detail=typeof data.detail==='string'?data.detail:'Request rejected';throw new Error(detail.replaceAll('_',' '))}return data}finally{clearTimeout(timer)}}
-function showLogin(){legacy.stop();serverResources.stop();tradeAudit.stop();signedIn=false;online=false;el('login').hidden=false;el('desk').hidden=true;el('logout').hidden=true;syncControls()}
-function showDesk(){signedIn=true;el('login').hidden=true;el('desk').hidden=false;el('logout').hidden=false;legacy.start();serverResources.start();tradeAudit.start()}
+function showLogin(){legacy.stop();serverResources.stop();tradeAudit.stop();priceMemory.stop();signedIn=false;online=false;el('login').hidden=false;el('desk').hidden=true;el('logout').hidden=true;syncControls()}
+function showDesk(){signedIn=true;el('login').hidden=true;el('desk').hidden=false;el('logout').hidden=false;legacy.start();serverResources.start();tradeAudit.start();priceMemory.start()}
 function syncControls(){document.querySelectorAll('#desk button,#desk select,#desk input').forEach(b=>{if(!b.closest('.legacy-panels')&&!b.hasAttribute('data-view'))b.disabled=writing||!online||!snapshot?.config.rollout_enabled});document.querySelectorAll('[data-buy]').forEach(b=>b.disabled=writing||!online||b.dataset.ready!=='true');if(snapshot){el('resume').disabled=el('resume').disabled||snapshot.config.kill_latched;el('resetKill').disabled=el('resetKill').disabled||!snapshot.config.kill_latched}}
 async function write(path,body={}){if(writing||!online)return;writing=true;syncControls();try{const result=await request('celestial/'+path,'POST',body);notice(result.ok===false?'Not all exits could be requested. Check unresolved exposure and broker orders.':result.reason?.replaceAll('_',' ')||'Saved. Broker fills must be confirmed separately.',result.ok===false)}catch(error){notice(error.name==='AbortError'?'Request outcome unknown. Do not repeat blindly; inspect the broker order book.':error.message,true)}finally{writing=false;await refresh();syncControls()}}
 function cell(row,value,cls){const c=document.createElement('td');c.textContent=value??'—';if(cls)c.className=cls;row.append(c);return c}
@@ -351,6 +367,73 @@ const tradeAudit=(()=>{
  return {start(){if(active)return;active=true;revision++;poll()},stop(){active=false;revision++;connected=false;body.replaceChildren();status('Sign in to view audit records');$('Page').textContent='No records loaded';$('Prev').disabled=true;$('Next').disabled=true;}};
 })();
 // END TRADE AUDIT
+
+const priceMemory=(()=>{
+ const $=name=>el('price'+name),body=$('Table').tBodies[0],bars=$('Bars').tBodies[0];
+ const stamp=t=>t&&Number.isFinite(Date.parse(t))?new Intl.DateTimeFormat('en-IN',{timeZone:'Asia/Kolkata',hour:'2-digit',minute:'2-digit',second:'2-digit',hour12:false}).format(new Date(t)):'—';
+ const pct=n=>typeof n==='number'&&Number.isFinite(n)?(n>0?'+':'')+format(n)+'%':'—';
+ let active=false,busy=false,revision=0,detailRevision=0,offset=0,lastPoll=0,connected=false,exporting=false;
+ $('Day').value=new Date(Date.now()+19800000).toISOString().slice(0,10);
+ let filters={day:$('Day').value,asset:'ALL',symbol:''};
+ const query=page=>new URLSearchParams({...filters,...(page?{limit:'50',offset:String(offset)}:{})}).toString();
+ function status(message,bad=false){$('Status').textContent=message;$('Status').className=bad?'bad':'muted'}
+ function freshness(){for(const node of body.querySelectorAll('[data-price-at]')){const age=Date.now()-Date.parse(node.dataset.priceAt);node.textContent=connected&&age>=0&&age<=30000?'RECENT SAMPLE':'STALE';}}
+ async function detail(row){
+  const generation=++detailRevision,day=filters.day;$('Detail').open=true;bars.replaceChildren();
+  $('DetailStatus').textContent='Loading '+row.symbol+'…';
+  try{
+   const data=await request('price-minutes?'+new URLSearchParams({day,key:row.key}));
+   if(!active||generation!==detailRevision)return;
+   if(!Array.isArray(data.bars))throw Error('Invalid history response');
+   for(const b of data.bars){const tr=document.createElement('tr');
+    [stamp(b.minute),format(b.first),format(b.high),format(b.low),format(b.last),format(b.volume_delta,0),format(b.samples,0)].forEach(v=>cell(tr,v));bars.append(tr);}
+   const returns=data.sampled_close_returns_pct||{};
+   $('DetailStatus').textContent=row.symbol+' · '+day+' · '+data.bars.length+' observed minutes. Sampled close returns: '+[1,3,5,15].map(n=>n+'m '+pct(returns[String(n)])).join(' · ')+(data.returns_asof?' · as of '+stamp(data.returns_asof)+' IST':'')+'. Missing or gapped windows show —.';
+   if(!data.bars.length)empty(bars,7,'No retained minute samples for this instrument/date.');
+  }catch(e){if(active&&generation===detailRevision)$('DetailStatus').textContent='History unavailable: '+e.message;}
+ }
+ function render(data){
+  if(!Array.isArray(data.rows)||!Number.isInteger(data.total))throw Error('Invalid price response');
+  if(data.total>0&&offset>=data.total){offset=Math.floor((data.total-1)/50)*50;revision++;return;}
+  if(!data.total)offset=0;body.replaceChildren();
+  for(const r of data.rows){
+   const tr=document.createElement('tr');
+   [r.symbol+' · '+r.asset+(r.expiry?' · '+r.expiry:''),
+    r.reference_conflict?'REFERENCE CONFLICT':format(r.opening_price)+(r.reference_at?' · reported '+stamp(r.reference_at):''),
+    format(r.first)+' · '+stamp(r.first_at),format(r.previous_close),format(r.last)+' · '+stamp(r.last_at),
+    pct(r.move_from_open_pct),pct(r.move_from_first_pct),format(r.high)+' · '+stamp(r.high_at),format(r.low)+' · '+stamp(r.low_at),
+    (r.minutes_recorded??0)+' minutes · largest observed gap '+format(r.max_gap_seconds,0)+'s',''].forEach(v=>cell(tr,v));
+   if(r.reference_conflict)tr.cells[1].className='bad';
+   const badge=document.createElement('strong');badge.className='audit-freshness';badge.dataset.priceAt=r.last_at||'';tr.cells[4].append(document.createElement('br'),badge);
+   const button=document.createElement('button');button.type='button';button.dataset.view='';button.className='small';button.textContent='Minutes';button.onclick=()=>detail(r);tr.cells[10].append(button);body.append(tr);
+  }
+  if(!data.rows.length)empty(body,11,'No saved prices for these filters. Recording starts when a valid instrument quote is received.');
+  $('Page').textContent=data.total?(offset+1)+'–'+(offset+data.rows.length)+' of '+data.total+' instruments':'0 instruments';
+  $('Prev').disabled=offset===0;$('Next').disabled=!data.has_more;
+  const failures=(data.writers||[]).reduce((n,w)=>n+(w.failures||0)+(w.dropped||0),0);
+  const localFailure=!!data.local_writer?.last_error;
+  const disabled=data.capture_enabled===false;
+  status('Saved data read at '+stamp(data.ts)+' IST'+(disabled?' · Recording disabled.':'')+(failures||localFailure?' · Recording gaps reported; inspect coverage.':''),!!(disabled||failures||localFailure));freshness();
+ }
+ async function poll(){
+  if(!active||busy||document.hidden)return;const generation=revision;busy=true;lastPoll=Date.now();
+  try{const data=await request('prices?'+query(true));if(!active||generation!==revision)return;connected=true;render(data);}
+  catch(e){if(active&&generation===revision){connected=false;status('Price history unavailable: '+e.message,true);freshness();}}
+  finally{busy=false;if(active&&generation!==revision)poll();}
+ }
+ $('Filters').onsubmit=e=>{e.preventDefault();filters={day:$('Day').value,asset:$('Asset').value,symbol:$('Symbol').value.trim()};offset=0;revision++;detailRevision++;bars.replaceChildren();$('DetailStatus').textContent='Select “Minutes” on an instrument.';poll();};
+ $('Prev').onclick=()=>{offset=Math.max(0,offset-50);revision++;poll();};
+ $('Next').onclick=()=>{offset+=50;revision++;poll();};
+ $('Export').onclick=async()=>{
+  if(!active||exporting)return;exporting=true;$('Export').disabled=true;
+  try{const data=await request('price-export?'+query(false));if(!active)return;
+   if(typeof data.content!=='string'||!/^kadima_price_history_\d{4}-\d{2}-\d{2}\.csv$/.test(data.filename))throw Error('Invalid export');
+   const url=URL.createObjectURL(new Blob(['\ufeff',data.content],{type:'text/csv;charset=utf-8'})),a=document.createElement('a');a.href=url;a.download=data.filename;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),1000);
+  }catch(e){if(active)status('Price export unavailable: '+e.message,true);}finally{exporting=false;$('Export').disabled=false;}
+ };
+ setInterval(()=>{if(active&&!document.hidden){freshness();if(Date.now()-lastPoll>=15000)poll();}},1000);
+ return {start(){if(active)return;active=true;revision++;poll();},stop(){active=false;revision++;detailRevision++;connected=false;body.replaceChildren();bars.replaceChildren();$('DetailStatus').textContent='Select “Minutes” on an instrument.';$('Page').textContent='No records loaded';$('Prev').disabled=true;$('Next').disabled=true;status('Sign in to view saved prices');}};
+})();
 
 request('session').then(()=>{showDesk();return refresh()}).catch(showLogin);
 </script></body></html>

@@ -242,6 +242,14 @@ class OptionChain:
              "delta": q.delta, "gamma": q.gamma, "theta": q.theta,
              "vega": q.vega} for q in self.quotes.values()])
         self._last_poll = time.monotonic()
+        from . import price_history
+        history_now = datetime.now(IST)
+        for row in fetched:
+            q = self.quotes.get(str(row.get('symbolToken')))
+            if q:
+                price_history.full_quote(row, exchange=self.index.opt_exchange, token=q.token,
+                    symbol=q.symbol, underlying=self.index.name, asset='OPTION',
+                    expiry=self._expiry, strike=q.strike, side=q.opt_type, now=history_now)
         # Publish a completed immutable-by-convention sample for the observer.
         # Never expose a half-refreshed ladder while poll mutates quote objects.
         self._forecast_sample = dict(mono=self._last_poll, expiry=self._expiry,
@@ -297,7 +305,6 @@ def _i(v):
         return int(float(v))
     except (TypeError, ValueError):
         return None
-
 
 
 

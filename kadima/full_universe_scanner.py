@@ -148,6 +148,9 @@ class FullUniverseScanner:
                 self.gap_paper.pop(name, None)
                 continue
             spot = float(spot_row['ltp'])
+            from . import price_history
+            price_history.full_quote(spot_row, exchange=chain.index.exchange,
+                token=chain.index.token, symbol=name, underlying=name, asset='STOCK')
             self.prices[name]=dict(ltp=spot,received_at=spot_row['_received_at'])
             # Default-OFF and paper-only. The prefilter never calls an executor;
             # it only publishes a cheap opening-gap observation from this same

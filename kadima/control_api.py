@@ -38,7 +38,7 @@ from .forecast_observer import read_report as read_forecast_report
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
-from kadima import audit, trade_audit
+from kadima import audit, trade_audit, price_history
 
 app = FastAPI(title="KADIMA Control API", version="1.0")
 
@@ -620,6 +620,44 @@ def trade_audit_report(day: Optional[str] = None, strategy: Optional[str] = None
         raise HTTPException(422, 'audit_invalid_filter') from None
     except Exception:
         raise HTTPException(503, 'audit_unavailable') from None
+
+
+@app.get('/api/kadima/prices')
+def price_history_report(day: Optional[str] = None, asset: Optional[str] = None,
+                         symbol: str = '', limit: int = 50, offset: int = 0,
+                         authorization: Optional[str] = Header(None)):
+    _check_auth(authorization)
+    try:
+        return price_history.report(day, asset, symbol, limit, offset)
+    except ValueError:
+        raise HTTPException(422, 'price_history_invalid_filter') from None
+    except Exception:
+        raise HTTPException(503, 'price_history_unavailable') from None
+
+
+@app.get('/api/kadima/prices/minutes')
+def price_history_minutes(day: str, key: str, authorization: Optional[str] = Header(None)):
+    _check_auth(authorization)
+    try:
+        return price_history.history(day, key)
+    except ValueError:
+        raise HTTPException(422, 'price_history_invalid_identity') from None
+    except Exception:
+        raise HTTPException(503, 'price_history_unavailable') from None
+
+
+@app.get('/api/kadima/prices/export')
+def price_history_export(day: Optional[str] = None, asset: Optional[str] = None,
+                         symbol: str = '', authorization: Optional[str] = Header(None)):
+    _check_auth(authorization)
+    try:
+        return price_history.export(day, asset, symbol)
+    except ValueError as exc:
+        message = str(exc)
+        raise HTTPException(422, 'narrow_price_export_filters' if message.startswith('narrow_')
+                            else 'price_history_invalid_filter') from None
+    except Exception:
+        raise HTTPException(503, 'price_history_unavailable') from None
 
 
 @app.get('/api/kadima/audit/export')

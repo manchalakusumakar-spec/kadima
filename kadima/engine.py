@@ -250,6 +250,13 @@ class Engine:
         st.is_live_tick = True
         self._invalidate_shield(st)
         st.builder.add_tick(tick["ts"], tick["ltp"], tick["volume"])
+        # Keep the reviewed socket/feed implementation untouched. Its callback
+        # supplies receipt time only; broker opening references come separately
+        # from the exchange-timestamped Move Capture feed.
+        from . import price_history
+        price_history.capture(dict(exchange=st.chain.index.exchange, token=str(tick['token']),
+            symbol=name, underlying=name, asset='INDEX', price=tick['ltp'],
+            volume=tick['volume'], at=tick['ts'], received_at=tick['ts'], basis='RECEIVED'))
 
     def _on_bank_close(self, candle: Candle) -> None:
         if candle.interval != 5:
