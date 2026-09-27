@@ -16,9 +16,10 @@ The apply path checks paused controls, held entry/deployment timers and inactive
 workers; validates the running process and exact source predecessors; records
 one durable attempt; stops the engine and scanner plus the known optional macro
 and watchdog services if installed; verifies they stopped; backs up original
-sources; and installs only the PR19 focused file set. No broker session/order
-operation, ledger repair, trading activation or automatic restart is invoked.
-The existing graceful service shutdown may persist normal engine state. The
+sources; and installs only the PR19 focused file set. The installer invokes no
+broker reader/order operation, ledger repair, activation or automatic restart.
+The existing graceful service shutdown may log out its broker API session and
+persist normal engine state; that shutdown path does not square off a position. The
 installer does not rewrite the execution ledger or claim every possible external
 cron job or broker-side automation has been disabled.
 
