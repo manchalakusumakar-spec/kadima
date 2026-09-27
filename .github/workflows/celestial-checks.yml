@@ -32,7 +32,7 @@ jobs:
         run: |
           python -m unittest discover -s tests -v
           python -m compileall -q kadima dashboard_live tools trade_audit_update momentum_recovery
-          bash -n momentum_recovery/install_stopped_source.sh momentum_recovery/install_stopped_audit.sh
+          bash -n momentum_recovery/install_stopped_source.sh momentum_recovery/install_stopped_audit.sh momentum_recovery/check_stopped_readiness.sh
       - name: Intercepted desktop and mobile dashboard
         run: |
           node tests/test_celestial_dashboard.cjs

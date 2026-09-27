@@ -2,41 +2,59 @@
 
 Verified against GitHub PR metadata, exact-head workflow runs and ancestry comparisons to PR20. AWS is not connected; GitHub checks are not evidence of installation or live fills.
 
-## Latest observation — 28 September 2026, 00:13 IST
+## Latest observation — 28 September 2026, 00:34 IST
 
-The operator supplied the successful output from maintenance commit
-`53cebd77e95eff85c4957a818417ef053f490145`. The pinned PR19 release
-`bd294a7048749258fbaa2cc786f20a441a2a8073` installed 11 source files.
-The engine, universe scanner, macro-watch and EOD watchdog were left stopped.
-No restart, activation, ledger repair or broker order was performed by the
-installer. This is operator-provided host evidence, not direct AWS access.
+The operator supplied successful output from maintenance commit
+`87497b9a68044e749b517255c356e12ea4961ae3`. The exact final PR24 source release
+`8837cd6dc04e16123e94d8b78a3a716f83ed022c` (including PR20) installed 21 backend
+and composed UI files. All five services were left stopped: engine, universe
+scanner, dashboard, macro-watch and EOD watchdog. The earlier PR19 source update
+had installed successfully at 00:13 IST. These are operator-provided host results.
 
-The exported gateway/page were received and independently matched to
-`059f182fce93c71269e92501cc00af4f710f83ec` and
-`4c9d221436b7675eee5fda80d1546311273f6832`. Their custom news, projected paths,
-probability display and stock controls are now reviewed and composed with the
-PR24 dashboard. The composition also restores an existing missing MCX display
-helper. Authentication and write-control handlers are preserved.
+No broker order, historical repair, restart or activation was performed by either
+source installer. PR24 runtime/API/worker health remains unverified while stopped.
+The operator manages the manual NIFTY carry-forward holding externally.
 
 | Component | Current status |
 |---|---|
-| PR19 momentum | Source installed; services stopped; not activated |
-| PR20 audit and price history + PR24 learning | Combined stopped-service source update prepared; host execution pending |
-| Historical ledger repair | Pending; old active-process/all-flat repair must not be run against updated stopped sources |
-| Startup / authenticated endpoints / learning worker | Pending; source installation does not establish runtime health |
-| Manual carry-forward holding | Externally managed by the operator; no flat-account claim |
-| Other separate PRs and design requests | Pending as listed below; no blanket all-features deployment claim |
+| PR19 momentum / missed-move recovery | Source installed; startup and activation pending |
+| PR20 trade audit, persistent Gamma plans, filters/colours/CSV | Source installed; runtime verification pending |
+| PR20 daily price references and minute history | Source installed; new capture pending startup |
+| PR24 continuous trade learning / forecast and strike review | Source installed; learner startup/heartbeat pending |
+| Custom dashboard including new panels | Source installed; dashboard service stopped |
+| Historical BANKEX ledger repair | Pending; stopped-state account/evidence/complete-book review needed |
+| Service startup and API/data checks | Pending |
+| Trading activation / automatic session deployment | Pending; no deployment timer was armed by maintenance |
+| PR7 separate CAS engine | Not deployed; integration pending |
+| PR17 two-lot / ten-point index scalper | Not deployed; integration pending |
+| PR18 dynamic S/R, Fibonacci, pivot and CAS stop adapter | Not deployed; production bindings/calibration incomplete |
+| PR16 memory protection | Branch not deployed; existing swap is present |
+| PR14/15 standalone Move Capture | Not separately deployed; PR19 integrated momentum path is installed |
+| PR5/9 complete FETCH/MCX and live-input branches | Full integration unverified/pending; existing UI customizations preserved |
+| PR4 general updates-anytime installer | Separate branch pending; current stopped-service maintenance works |
+| PR23 audit RAG | Not deployed; previously deferred |
 
-The next procedure is [STOPPED_AUDIT.md](../momentum_recovery/STOPPED_AUDIT.md).
-It stages final PR24 `8837cd6dc04e16123e94d8b78a3a716f83ed022c`, which already
-includes PR20, preserves the composed executor/configuration and all databases,
-stops the dashboard before UI replacement and leaves all selected services
-stopped. It does not invoke the old repair/restart installer. The old repair's
-source guards are retained; later historical repair needs separately reviewed
-stopped-state and account-bound admission before startup.
+Lottery, Shock latency redesign, CAS PeakLock, advance T-1/intraday signals,
+NIFTY one-minute Supertrend selling, and email/WhatsApp audit delivery are not
+established as deployment-ready. Their details remain below. Existing base
+lineage PRs are not counted as fresh pending installs merely because they remain
+open in GitHub. Open PR heads were checked again at 00:40 IST and are unchanged.
 
-Open GitHub PR heads were checked again on 28 September IST and remain the same
-as the inventory below. Earlier entries document observations at those times.
+The installed UI preserves custom news, timed forecasts, score probability and
+stock controls. Authentication/write handlers remain preserved. Source hashes:
+gateway `f45a083d859d286d09cf251f34b9e15c096227ab`, page
+`3816a160f46420aaf28cb7f8de8579fdd3cf31e5`.
+
+The next procedure is [STOPPED_READINESS.md](../momentum_recovery/STOPPED_READINESS.md).
+It reads stopped service configuration, the exact private historical case and
+complete broker books without repairing, starting services or enabling trading.
+The known manual holding can be observed without requiring account flatness.
+
+Startup review found that Auto Trade pause does not disable reconciliation or
+all exit/cancel paths. The standalone EOD watchdog has a direct broker-order
+path and must remain stopped pending trigger/configuration review. Do not start
+all five services together or force engine startup solely for a learning heartbeat.
+The old active-process repair guards remain unchanged; they are not bypassed.
 
 ## Operator observation — 27 September 2026, 23:18:26 IST
 
@@ -72,7 +90,7 @@ Two newer GitHub requests were found after the original inventory:
 | PR | Current source / verification | Deployment treatment |
 |---|---|---|
 | [#23](https://github.com/manchalakusumakar-spec/kadima/pull/23) | Standalone audit RAG, `9231e59ea7788c9a691f725cde6c3b152ff397ce`; PR reports 12 offline tests | Separate additive tooling; dashboard/plugin unwired, runtime/model evaluation pending; not included in the manual command |
-| [#24](https://github.com/manchalakusumakar-spec/kadima/pull/24) | Continuous trade learning, `8837cd6dc04e16123e94d8b78a3a716f83ed022c`; exact-head CI 36319864991 passed | Stacked on PR20; advisory evidence/forecast/strike review, no automatic rule changes. Pinned by the new stopped audit/learning installer; host installation pending |
+| [#24](https://github.com/manchalakusumakar-spec/kadima/pull/24) | Continuous trade learning, `8837cd6dc04e16123e94d8b78a3a716f83ed022c`; exact-head CI 36319864991 passed | Stacked on PR20; advisory evidence/forecast/strike review, no automatic rule changes. Source installed in the 00:34 operator result; runtime/heartbeat pending |
 
 No reboot, repair, runtime source update, broker action or activation was performed
 by the pause command. The repair-and-restart deployment still needs current broker books,
@@ -107,12 +125,12 @@ The repair remains evidence-specific and requires the real account to have zero 
 | [#17](https://github.com/manchalakusumakar-spec/kadima/pull/17) | Add 2-lot index scalper with 10-point premium target | `d065a9732656138adab5f7f71afbe7f589d0c6f4` | success | Separate/diverged branch; not composed into this deployment |
 | [#18](https://github.com/manchalakusumakar-spec/kadima/pull/18) | Draft dynamic stops: structure zones, manual CAS and durable execution adapter | `00d6bc5b26dc1730fa2dc6f2b2a4c0d2eed797cb` | success | Separate/diverged branch; not composed into this deployment. Execution adapter remains disabled and production bindings/calibration are incomplete |
 | [#19](https://github.com/manchalakusumakar-spec/kadima/pull/19) | Recover missed stock momentum signals and add guarded spot-led auto-entry | `bd294a7048749258fbaa2cc786f20a441a2a8073` | success | Source installed on AWS; services stopped, activation pending |
-| [#20](https://github.com/manchalakusumakar-spec/kadima/pull/20) | Persist trade audit and daily price history for Gamma and momentum | `d584fe0eba27a8f23d2dfd2bac8fb68cb48501ce` | success | Included by final PR24 stopped source plan; host installation pending |
+| [#20](https://github.com/manchalakusumakar-spec/kadima/pull/20) | Persist trade audit and daily price history for Gamma and momentum | `d584fe0eba27a8f23d2dfd2bac8fb68cb48501ce` | success | Source installed through final PR24 at 00:34 IST; runtime checks pending |
 | [#21](https://github.com/manchalakusumakar-spec/kadima/pull/21) | Guard historical reconciliation and schedule one paused deployment attempt | `7e6424ac79dacc791e05e85e65c891e193b81655` | success | Pinned repair component; existing scheduled runner is not armed by this manual command |
 
 ## Corrections to the earlier chat inventory
 
-- PR20 already implements persistent >=60 Gamma audit capture, first plans, actual fill comparisons, first observed T1/T2/stop outcomes, requested colors, filters and CSV export. These are implemented and tested, but AWS installation remains unverified. It also provides daily references and minute history; coverage is observed feeds/selected ladders, not every listed option.
+- PR20 already implements persistent >=60 Gamma audit capture, first plans, actual fill comparisons, first observed T1/T2/stop outcomes, requested colors, filters and CSV export. Source installation is now confirmed by the 00:34 operator output; runtime collection remains unverified. It also provides daily references and minute history; coverage is observed feeds/selected ladders, not every listed option.
 - MCX is PR13; PR11 is the Gap paper state machine. PR14/15 are the standalone Move Capture line. PR19 is the separate momentum-recovery integration chosen for this host lineage.
 - PR1/2/3/6/8/10/11/12/13 are already ancestors of PR20. Ancestry does not establish their current AWS activation or every installed file; the guarded installers still require the exact reviewed predecessor/overlays.
 - PR4/5/7/9/14/15/16/17/18 diverge from PR20. A complete replacement of AWS with any branch would discard or conflict with other work. They require explicit composition; this command does not claim to deploy them.

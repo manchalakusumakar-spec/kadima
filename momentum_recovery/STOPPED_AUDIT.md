@@ -1,4 +1,8 @@
-# Stopped-service audit, price-history and learning update
+# Completed: stopped-service audit, price-history and learning update
+
+The operator supplied successful output on 28 September 2026 at 00:34 IST:
+21 files installed; all five services left stopped. Do not rerun the completed
+apply command. The next read-only procedure is [STOPPED_READINESS.md](STOPPED_READINESS.md).
 
 The operator's 28 September 2026, 00:13 IST result confirms that the PR19
 momentum sources installed and four application services remained stopped.
