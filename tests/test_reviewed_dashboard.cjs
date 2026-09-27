@@ -18,7 +18,9 @@ const fs=require('fs'),path=require('path'),assert=require('assert');
    candidates:[row,{...row,id:'NFO:2',symbol:'STALECE',last_updated:new Date(at-31000).toISOString()}],positions:[]},
   state:{market_open:true,indices:{NIFTY:{spot:25000,last_updated:now,
    technicals:{vwap:24900,ema20:24980,ema50:24950,rsi:61}}}},
-  dashboard_data:{ts:now,positions:[],forecaster:{status:'observing',checked_at:now,metrics:{},
+  dashboard_data:{ts:now,positions:[],session:{realized_gain_today_inr:0,capital_deployed_inr:0,
+   capital_ceiling_inr:15000,daily_loss_used_inr:0,daily_loss_limit_inr:750,
+   position_slots_used:0,position_slots_max:1},forecaster:{status:'observing',checked_at:now,metrics:{},
    latest:{model:'fixture',as_of:now,issued_at:now,expires_at:later,assets:[{name:'NIFTY',bias:'UP',heat:2,
     reason:'Fixture only',invalidation:'Fixture level',source_times:{},missing_inputs:[],
     checkpoints:[{target_at:now,low:24980,expected:25000,high:25020},
@@ -48,6 +50,7 @@ const fs=require('fs'),path=require('path'),assert=require('assert');
  await page.waitForSelector('[data-buy]');
  await page.waitForFunction(()=>document.getElementById('legacy-commodities').textContent.includes('CRUDEFIXTURECE'));
  await page.waitForFunction(()=>document.getElementById('legacy-news').textContent.includes('Fixture public feed'));
+ await page.waitForFunction(()=>document.getElementById('legacy-statusbar').textContent.includes('Positions: API connected'));
  await page.waitForSelector('#legacy-forecastPanel svg');
  assert.strictEqual(await page.locator('#candidates th').count(),25);
  assert.strictEqual(await page.locator('#candidates tbody tr').count(),1);
