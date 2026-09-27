@@ -5,6 +5,32 @@ not an all-feature release and it does not activate trading. See
 [`docs/deployment_inventory_20260927.md`](../docs/deployment_inventory_20260927.md)
 for all 21 checked PRs, ancestry and remaining feature work.
 
+## Pause entries now, including a weekend with a held position
+
+`prepare_maintenance.py --pause-entries` is a separate preparation action. It
+verifies the running engine identity and fresh controls, holds the existing
+session-auto and scheduled-deployment timers, and pauses global/stock entries
+through their authenticated APIs. Stock changes use the fresh control revision.
+It never stops/restarts the engine, places/cancels orders, logs into the broker,
+repairs the ledger, writes runtime sources, resets a kill, or enables trading.
+Existing-position monitoring remains running. Inactive competing workers are
+required; an active scheduler/deployment worker is not forcibly terminated.
+
+The output contains selected controls/service states and exact installed source
+hashes, including session/portfolio modules and dashboard files. Credentials,
+source contents, raw environment and broker financial records are not printed.
+An empty API position list is explicitly **not** broker-flat evidence, especially
+before weekend startup restoration. Both timers remain disabled after the pause;
+a later pause failure preserves existing holds and never resumes automatically.
+
+The preparation entrypoint is standalone and can be extracted from the exact
+reviewed Git commit into a private temporary file, then run using
+`sudo -n python3 -I -B /absolute/path/prepare_maintenance.py --pause-entries`.
+Without the flag, it only reports available status/source hashes. This action
+can prepare maintenance today even while actual deployment remains blocked by
+broker exposure. A fresh host report is still required to compose the separate
+pending feature branches; stopping the server alone cannot resolve that work.
+
 ## Before running
 
 Close both pending broker orders and open positions through normal broker
