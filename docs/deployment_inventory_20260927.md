@@ -2,6 +2,30 @@
 
 Verified against GitHub PR metadata, exact-head workflow runs and ancestry comparisons to PR20. AWS is not connected; GitHub checks are not evidence of installation or live fills.
 
+## Latest direction — 27 September 2026, 23:58 IST
+
+The operator explicitly authorises stopping KADIMA now and personally managing
+the manual carry-forward holding. Closing that holding is not required for the
+new, limited stopped-service PR19 source update. The source-only installer
+preserves the ledger, executor, configuration and UI, makes no broker requests,
+and leaves services stopped. It does not weaken the old repair-and-restart
+procedure or claim the account is flat. See
+[`momentum_recovery/STOPPED_SOURCE.md`](../momentum_recovery/STOPPED_SOURCE.md).
+
+The 23:49 operator-supplied diagnostic verified the source admission and matched
+historical case, with one unresolved local position and order. A real nonzero
+broker carry-forward position blocked flatness before the order book was read.
+The manual holding is externally managed; installed manual-adoption logic does
+not auto-trail or exit it. Global and stock entries remain paused. The UI archive
+was exported successfully with the two previously reported hashes, but its
+contents have not been provided here. The local historical record must not be
+confused with a proven current broker pending order.
+
+The stopped-source command prepares/applies only PR19 and returns the saved UI
+archive for review. PR20/24 and the other separate branches remain pending. A
+published command is not evidence that AWS source installation has occurred;
+the operator's result is still required. Restart and activation remain separate.
+
 ## Operator observation — 27 September 2026, 23:18:26 IST
 
 The operator ran PR22's entry-pause command and supplied its output. This is
@@ -38,8 +62,8 @@ Two newer GitHub requests were found after the original inventory:
 | [#23](https://github.com/manchalakusumakar-spec/kadima/pull/23) | Standalone audit RAG, `9231e59ea7788c9a691f725cde6c3b152ff397ce`; PR reports 12 offline tests | Separate additive tooling; dashboard/plugin unwired, runtime/model evaluation pending; not included in the manual command |
 | [#24](https://github.com/manchalakusumakar-spec/kadima/pull/24) | Continuous trade learning, `8837cd6dc04e16123e94d8b78a3a716f83ed022c`; exact-head CI 36319864991 passed | Stacked on PR20; advisory evidence/forecast/strike review, no automatic rule changes. Queued for a source-matched rollout after UI composition; not yet added to PR22 deployment pins |
 
-No reboot, repair, runtime source update, broker action or activation is approved
-by the pause output. A future deployment still needs current broker books,
+No reboot, repair, runtime source update, broker action or activation was performed
+by the pause command. The repair-and-restart deployment still needs current broker books,
 historical ledger admission, matched sources and the normal post-install checks.
 
 ## One-command deployment scope

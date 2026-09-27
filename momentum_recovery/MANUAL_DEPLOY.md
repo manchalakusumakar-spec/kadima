@@ -5,6 +5,14 @@ not an all-feature release and it does not activate trading. See
 [`docs/deployment_inventory_20260927.md`](../docs/deployment_inventory_20260927.md)
 for the checked PRs, ancestry, latest host observation and remaining feature work.
 
+At 23:58 IST on 27 September the operator authorised a different limited action:
+stop KADIMA and update sources while personally managing the manual holding.
+Use the separate [stopped-source procedure](STOPPED_SOURCE.md) for that action.
+It installs the reviewed PR19 source and leaves services stopped, with no broker
+call or ledger repair. It does not change the account-flat requirements of the
+repair-and-restart sequence documented below. The account is known nonflat from
+the 23:49 broker diagnostic, and the UI archive still needs source review.
+
 ## Current host blocker — 27 September, 23:18 IST
 
 The operator's preparation output confirms Auto Trade and Stock Live off,
