@@ -1,0 +1,57 @@
+# GitHub deployment inventory — 27 September 2026
+
+Verified against GitHub PR metadata, exact-head workflow runs and ancestry comparisons to PR20. AWS is not connected; GitHub checks are not evidence of installation or live fills.
+
+## One-command deployment scope
+
+The manual command attempts the existing reviewed historical repair, then PR19 momentum recovery, then PR20 trade audit / price history / dashboard. It preserves the installed MCX/session/portfolio executor and leaves global Auto Trade and Stock Live paused. It does not activate a strategy or merge PRs.
+
+The repair remains evidence-specific and requires the real account to have zero nonzero broker positions and no pending orders. Closing pending orders alone is insufficient. An account-bound historical record must still be unresolved exactly as reviewed. The private evidence file is not committed.
+
+## All existing pull requests
+
+| PR | Scope | Head | GitHub CI | Relationship / deployment treatment |
+|---|---|---|---|---|
+| [#1](https://github.com/manchalakusumakar-spec/kadima/pull/1) | Review dashboard release: partial-fill protection, Shield 65 and complete installer | `e1d42a175b2e3bf29886b16474fa79f57aaedecd` | No returned PR-triggered run | Already in PR20 ancestry; preserve/review installed lineage, do not reinstall the old PR |
+| [#2](https://github.com/manchalakusumakar-spec/kadima/pull/2) | Draft: Celestial all-root stock ladders, controls and release tooling | `b986b3903019c6619c230ea18033db27b9c0f4b0` | success | Already in PR20 ancestry; preserve/review installed lineage, do not reinstall the old PR |
+| [#3](https://github.com/manchalakusumakar-spec/kadima/pull/3) | Unify Shield 65 confirmation and trace Angel One dispatch | `b256364525979113872ecfc9c5acf6ec6a3d9f95` | success | Already in PR20 ancestry; preserve/review installed lineage, do not reinstall the old PR |
+| [#4](https://github.com/manchalakusumakar-spec/kadima/pull/4) | Allow KADIMA server updates 24/7 with exposure checks | `c98d2111f46b1b144da4ac95f86b00d79370c899` | success | Separate/diverged branch; not composed into this deployment |
+| [#5](https://github.com/manchalakusumakar-spec/kadima/pull/5) | Fix FETCH stock coverage and timestamps; add MCX market and Gamma Blast watch | `69bb0e7706cd5e834bca9f3db7629bc7e715df90` | success | Separate/diverged branch; not composed into this deployment |
+| [#6](https://github.com/manchalakusumakar-spec/kadima/pull/6) | Add experimental fast-momentum lane and execution diagnostics | `b506c918583df5842d8569a450944c5b98e5211a` | success | Already in PR20 ancestry; preserve/review installed lineage, do not reinstall the old PR |
+| [#7](https://github.com/manchalakusumakar-spec/kadima/pull/7) | Add separate CAS premium-awakening engine and staged execution | `5759aa7177becd4db323b98321077b868fd32c35` | success | Separate/diverged branch; not composed into this deployment |
+| [#8](https://github.com/manchalakusumakar-spec/kadima/pull/8) | Repair AWS execution diagnostics and add guarded activation | `bde4c2952b54996b6f3be9a891df3167a00f20e7` | success | Already in PR20 ancestry; preserve/review installed lineage, do not reinstall the old PR |
+| [#9](https://github.com/manchalakusumakar-spec/kadima/pull/9) | Live input freshness, timed index projections and score-based probability | `e1c82b2cbe70aab41f765d80ed3e440bbd213fb8` | success | Separate/diverged branch; not composed into this deployment |
+| [#10](https://github.com/manchalakusumakar-spec/kadima/pull/10) | Stock fast momentum: guarded live execution, 5/10/15-minute policies and dashboard controls | `7529526deb7dd8bc46880fc2fd4d19a59c073e20` | success | Already in PR20 ancestry; preserve/review installed lineage, do not reinstall the old PR |
+| [#11](https://github.com/manchalakusumakar-spec/kadima/pull/11) | Gap-and-Go: paper-only state machine and replay harness | `f4b5ce7f3c6b72f2e2ad370b7f8d74152fe97435` | success | Already in PR20 ancestry; preserve/review installed lineage, do not reinstall the old PR |
+| [#12](https://github.com/manchalakusumakar-spec/kadima/pull/12) | Gap-and-Go: guarded live execution through shared KADIMA executor | `40b8f459a0b8e5874554b277a92bbc7492e0eefe` | success | Already in PR20 ancestry; preserve/review installed lineage, do not reinstall the old PR |
+| [#13](https://github.com/manchalakusumakar-spec/kadima/pull/13) | MCX: guarded one-lot live commodity options lane | `9a0726a25bf6e0cf85ca65ef4e2bb5cd6d4012a0` | success | Already in PR20 ancestry; preserve/review installed lineage, do not reinstall the old PR |
+| [#14](https://github.com/manchalakusumakar-spec/kadima/pull/14) | Move Capture: isolated spot-first impulse shadow engine | `b4ed72e9cc168b269578129c271af0ba27d9d5ad` | success | Separate/diverged branch; not composed into this deployment. PR19 provides a separate in-process momentum path; do not start a second feed blindly |
+| [#15](https://github.com/manchalakusumakar-spec/kadima/pull/15) | Move Capture: guarded auto-trade option confirmation path | `77f393cfd20c36ddef236dcec14f8a27279c7f8b` | success | Separate/diverged branch; not composed into this deployment. PR19 provides a separate in-process momentum path; do not start a second feed blindly |
+| [#16](https://github.com/manchalakusumakar-spec/kadima/pull/16) | Memory admission protection, lower refresh peaks, and guarded 1 GiB swap installer | `26ac9ec16044e1275eeaa83b959d981c5fff380d` | success | Separate/diverged branch; not composed into this deployment. GitHub reports base conflicts; existing host swap was observed working |
+| [#17](https://github.com/manchalakusumakar-spec/kadima/pull/17) | Add 2-lot index scalper with 10-point premium target | `d065a9732656138adab5f7f71afbe7f589d0c6f4` | success | Separate/diverged branch; not composed into this deployment |
+| [#18](https://github.com/manchalakusumakar-spec/kadima/pull/18) | Draft dynamic stops: structure zones, manual CAS and durable execution adapter | `00d6bc5b26dc1730fa2dc6f2b2a4c0d2eed797cb` | success | Separate/diverged branch; not composed into this deployment. Execution adapter remains disabled and production bindings/calibration are incomplete |
+| [#19](https://github.com/manchalakusumakar-spec/kadima/pull/19) | Recover missed stock momentum signals and add guarded spot-led auto-entry | `bd294a7048749258fbaa2cc786f20a441a2a8073` | success | Pinned source-install stage |
+| [#20](https://github.com/manchalakusumakar-spec/kadima/pull/20) | Persist trade audit and daily price history for Gamma and momentum | `d584fe0eba27a8f23d2dfd2bac8fb68cb48501ce` | success | Pinned final audit/history/dashboard stage |
+| [#21](https://github.com/manchalakusumakar-spec/kadima/pull/21) | Guard historical reconciliation and schedule one paused deployment attempt | `7e6424ac79dacc791e05e85e65c891e193b81655` | success | Pinned repair component; existing scheduled runner is not armed by this manual command |
+
+## Corrections to the earlier chat inventory
+
+- PR20 already implements persistent >=60 Gamma audit capture, first plans, actual fill comparisons, first observed T1/T2/stop outcomes, requested colors, filters and CSV export. These are implemented and tested, but AWS installation remains unverified. It also provides daily references and minute history; coverage is observed feeds/selected ladders, not every listed option.
+- MCX is PR13; PR11 is the Gap paper state machine. PR14/15 are the standalone Move Capture line. PR19 is the separate momentum-recovery integration chosen for this host lineage.
+- PR1/2/3/6/8/10/11/12/13 are already ancestors of PR20. Ancestry does not establish their current AWS activation or every installed file; the guarded installers still require the exact reviewed predecessor/overlays.
+- PR4/5/7/9/14/15/16/17/18 diverge from PR20. A complete replacement of AWS with any branch would discard or conflict with other work. They require explicit composition; this command does not claim to deploy them.
+- The new PeakLock design differs from PR18's manual CAS no-price-stop policy. Those policies must be reconciled before activating a common exit path.
+
+## Requests not established as deployable by this review
+
+Lottery (score 40 / INR 3,000), Shock latency/threshold redesign, CAS PeakLock, advance T-1/intraday move framework, NIFTY one-minute Supertrend selling, and automated email/WhatsApp audit delivery are not made deployable by this maintenance command. Existing PR20 audit views do not implement message delivery. No new trading thresholds are enabled here.
+
+## Remaining host checks
+
+- Global Auto Trade paused; Stock Live off; no kill reset; broker positions and pending orders verified by the pinned account-bound repair.
+- Existing reviewed historical evidence still present and unchanged; ordinary weekday API restoration must have occurred. The manual command does not select the special weekend-unrestored mode.
+- Current source/overlays, process identity and configuration match the reviewed installers. Unknown edits stop the rollout.
+- Both session-auto and the prior scheduled-deployment workers must be inactive. After the initial broker preflight, their timers are disabled and remain disabled; running workers are never killed.
+- No repeated attempts after repair/source mutation begins. Inspect the durable stage status if a later stage fails.
+- Final services, authenticated audit/price endpoints and local ledger checks must pass. Actual quote capture, resource usage and subsequent live activation remain separate host verification.
+
