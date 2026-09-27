@@ -132,6 +132,27 @@ def broker_preflight_command(bundle):
             '--evidence', str(bundle/'evidence.json'), '--broker-check-only']
 
 
+def check_dashboard_predecessors(helper, bundle):
+    """Reject unknown UI before any historical repair or source stage starts."""
+    package = Path(bundle)/'releases/audit'
+    manifest = json.loads(helper.read_regular(package/'trade_audit_update/predecessors.json'))
+    path = package/'stock_fast_update/upgrade_dashboard.py'
+    helper.require(helper.blob_hash(helper.read_regular(path)) ==
+                   '3e72af124de85020e873614128f78d6dc080b185', 'dashboard_patch_helper_changed')
+    spec = importlib.util.spec_from_file_location('_manual_dashboard_preflight', path)
+    ui = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(ui)
+    script = helper.read_regular(package/'stock_fast_update/panel.js').decode()
+    for kind, name, installed in (
+            ('gateway', 'gateway.py', Path('/opt/kadima-dashboard/gateway.py')),
+            ('page', 'dashboard.html', Path('/var/www/html/dashboard.html'))):
+        incoming = helper.read_regular(package/'dashboard_live'/name).decode()
+        patched = ui.patch_gateway(incoming) if kind == 'gateway' else ui.patch_dashboard(incoming, script)
+        allowed = set(manifest[kind]) | {helper.blob_hash(raw.encode()) for raw in (incoming, patched)}
+        helper.require(helper.blob_hash(helper.read_regular(installed)) in allowed,
+                       'dashboard_predecessor_unreviewed:'+kind)
+
+
 def execute(helper, bundle, state, *, apply, invoke):
     # A prior attempt can have committed a repair even if later steps failed.
     # Never silently skip/retry it or restore the execution database.
@@ -150,6 +171,8 @@ def execute(helper, bundle, state, *, apply, invoke):
     try:
         record(latest.copy())
         admission()
+        record({'state': 'checking', 'stage': 'dashboard_source_preflight'})
+        check_dashboard_predecessors(helper, bundle)
         record({'state': 'checking', 'stage': 'broker_flat_preflight'})
         result = invoke(broker_preflight_command(bundle))
         helper.require(result.returncode == 0, 'broker_or_historical_admission_failed_no_deployment')

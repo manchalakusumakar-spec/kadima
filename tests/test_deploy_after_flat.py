@@ -1,4 +1,5 @@
 import importlib.util
+import json
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
@@ -41,6 +42,9 @@ class ManualDeployTests(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
         self.fail_command = None
+        patcher = patch.object(m, 'check_dashboard_predecessors', return_value=None)
+        patcher.start()
+        self.addCleanup(patcher.stop)
 
     def invoke(self, command):
         self.calls.append(command)
@@ -74,6 +78,15 @@ class ManualDeployTests(unittest.TestCase):
             self.execute()
         self.assertEqual(len(self.calls), 1)
         self.assert_no_apply()
+
+    def test_unknown_dashboard_blocks_before_broker_and_every_mutation(self):
+        with patch.object(m, 'check_dashboard_predecessors',
+                          side_effect=self.helper.Blocked('dashboard_predecessor_unreviewed:gateway')):
+            with self.assertRaisesRegex(self.helper.Blocked, 'dashboard_predecessor_unreviewed'):
+                self.execute()
+        self.assertEqual(self.calls, [])
+        self.assert_no_apply()
+        self.assertEqual(self.records[-1]['stage'], 'dashboard_source_preflight')
 
     def test_plan_checks_broker_but_does_not_disable_timers(self):
         self.execute(apply=False)
@@ -160,6 +173,48 @@ class ManualDeployTests(unittest.TestCase):
                 self.execute()
         self.assertEqual(self.records[-1]['reason'], 'ValueError')
         self.assertNotIn('secret-token-example', str(self.records))
+
+
+class DashboardPreflightTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.bundle = Path(self.tmp.name)
+        self.package = self.bundle/'releases/audit'
+        self.helper = m.load_reviewed_helper()
+        for relative in ('stock_fast_update/upgrade_dashboard.py', 'stock_fast_update/panel.js',
+                         'dashboard_live/gateway.py', 'dashboard_live/dashboard.html'):
+            path=self.package/relative
+            path.parent.mkdir(parents=True,exist_ok=True)
+            path.write_bytes((ROOT/relative).read_bytes())
+        path=self.package/'trade_audit_update/predecessors.json'
+        path.parent.mkdir()
+        path.write_text(json.dumps({'gateway':{},'page':{}}))
+        self.sources = {
+            Path('/opt/kadima-dashboard/gateway.py'):(ROOT/'dashboard_live/gateway.py').read_bytes(),
+            Path('/var/www/html/dashboard.html'):(ROOT/'dashboard_live/dashboard.html').read_bytes(),
+        }
+        original=self.helper.read_regular
+        patcher=patch.object(self.helper,'read_regular',lambda path,*a:self.sources.get(Path(path))
+                             if Path(path) in self.sources else original(path,*a))
+        patcher.start();self.addCleanup(patcher.stop)
+
+    def test_current_reviewed_sources_are_accepted(self):
+        m.check_dashboard_predecessors(self.helper,self.bundle)
+
+    def test_unknown_custom_source_is_preserved_and_refused(self):
+        for path in self.sources:
+            original=self.sources[path]
+            self.sources[path]=original+b'\ncustom change\n'
+            with self.assertRaisesRegex(self.helper.Blocked,'dashboard_predecessor_unreviewed'):
+                m.check_dashboard_predecessors(self.helper,self.bundle)
+            self.assertEqual(self.sources[path],original+b'\ncustom change\n')
+            self.sources[path]=original
+
+    def test_changed_ui_helper_is_refused(self):
+        (self.package/'stock_fast_update/upgrade_dashboard.py').write_text('raise Exception("not reviewed")')
+        with self.assertRaisesRegex(self.helper.Blocked,'dashboard_patch_helper_changed'):
+            m.check_dashboard_predecessors(self.helper,self.bundle)
 
 
 if __name__ == '__main__':

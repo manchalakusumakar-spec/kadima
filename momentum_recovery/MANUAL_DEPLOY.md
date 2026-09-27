@@ -3,7 +3,38 @@
 This operator-run command installs the compatible maintenance sequence. It is
 not an all-feature release and it does not activate trading. See
 [`docs/deployment_inventory_20260927.md`](../docs/deployment_inventory_20260927.md)
-for all 21 checked PRs, ancestry and remaining feature work.
+for the checked PRs, ancestry, latest host observation and remaining feature work.
+
+## Current host blocker — 27 September, 23:18 IST
+
+The operator's preparation output confirms Auto Trade and Stock Live off,
+session-auto disabled/inactive, engine/scanner/dashboard active, and the dated
+deployment timer **not installed**. No automatic 09:15 attempt is armed by that
+output. An empty API position list remains unverified broker exposure.
+
+The reported gateway `059f182fce93c71269e92501cc00af4f710f83ec` and page
+`4c9d221436b7675eee5fda80d1546311273f6832` are not recognised by the PR20 or
+PR24 UI predecessor manifests. Preserve them. The manual runner now checks UI
+admission before its broker/repair/source stages, so this known mismatch cannot
+first emerge after a historical repair has committed. Do not run an older
+manual bootstrap to avoid this check. Its deployment pins remain unchanged.
+
+`check_broker_readiness.py --evidence /private/reviewed.json --export-dashboard`
+is the next read-only diagnostic from a separate extracted release directory.
+It verifies the reviewed runtime/import graph, running process, account-bound
+evidence, paused controls and held timers, reads the local ledger with SQLite
+query-only mode, then invokes the existing pinned broker reader once. It has no
+apply mode, order action, control write, service stop/restart or deployment path.
+It permits inspection of an unrestored API without authorising historical
+repair; all existing mutation/startup gates remain unchanged. Any nonzero broker
+position still blocks flatness and reports only the first sanitized blocker.
+
+The optional export writes a mode-0600 archive in a private temporary directory.
+It contains only `gateway.py`, `dashboard.html` and their hash manifest, never
+additional config/environment/database/contract-note files. Source contents are
+not printed. The operator can provide this archive for review of the installed
+UI customisations. Keep it private: it contains the actual installed source.
+Diagnostic reports and a successful broker observation are not deploy permits.
 
 ## Pause entries now, including a weekend with a held position
 

@@ -2,6 +2,46 @@
 
 Verified against GitHub PR metadata, exact-head workflow runs and ancestry comparisons to PR20. AWS is not connected; GitHub checks are not evidence of installation or live fills.
 
+## Operator observation — 27 September 2026, 23:18:26 IST
+
+The operator ran PR22's entry-pause command and supplied its output. This is
+operator-provided host evidence, not a direct AWS session by this reviewer.
+
+| Item | Observed state |
+|---|---|
+| Auto Trade / Stock Live | Both false; stock revision 14; kill false |
+| Engine / scanner / dashboard | All active; engine kept running |
+| Session-auto timer | Disabled and inactive |
+| 28 September deployment service/timer | Not found; no 09:15 attempt is armed by these units |
+| API position count | Zero; broker flatness explicitly unverified |
+| Runtime deployment | None performed by the preparation command |
+
+The reported `run.py`, stock-fast, stock execution, stock API and news collector
+hashes equal the five exact predecessor pins in PR19's focused installer.
+The executor is the preserved MCX/session/portfolio composition
+`7cfe6cf21a520ba967d6a672b2f54a99bbe81321`; engine, socket feed and FIFO limiter
+also match their reviewed hashes. Full dependency/config/process admission must
+still run on the host; this static comparison does not approve every host file.
+
+**New blocker:** gateway `059f182fce93c71269e92501cc00af4f710f83ec` and dashboard
+`4c9d221436b7675eee5fda80d1546311273f6832` do not match the reviewed plain/stock
+panel versions or the PR20/PR24 predecessor manifests. GitHub blob lookup also
+did not resolve these installed variants. Their actual source must be reviewed
+and preserved before composing the UI update. The manual runner now refuses an
+unknown UI before any historical repair or source installation. The read-only
+broker readiness command optionally exports exactly these two files privately.
+
+Two newer GitHub requests were found after the original inventory:
+
+| PR | Current source / verification | Deployment treatment |
+|---|---|---|
+| [#23](https://github.com/manchalakusumakar-spec/kadima/pull/23) | Standalone audit RAG, `9231e59ea7788c9a691f725cde6c3b152ff397ce`; PR reports 12 offline tests | Separate additive tooling; dashboard/plugin unwired, runtime/model evaluation pending; not included in the manual command |
+| [#24](https://github.com/manchalakusumakar-spec/kadima/pull/24) | Continuous trade learning, `8837cd6dc04e16123e94d8b78a3a716f83ed022c`; exact-head CI 36319864991 passed | Stacked on PR20; advisory evidence/forecast/strike review, no automatic rule changes. Queued for a source-matched rollout after UI composition; not yet added to PR22 deployment pins |
+
+No reboot, repair, runtime source update, broker action or activation is approved
+by the pause output. A future deployment still needs current broker books,
+historical ledger admission, matched sources and the normal post-install checks.
+
 ## One-command deployment scope
 
 The manual command attempts the existing reviewed historical repair, then PR19 momentum recovery, then PR20 trade audit / price history / dashboard. It preserves the installed MCX/session/portfolio executor and leaves global Auto Trade and Stock Live paused. It does not activate a strategy or merge PRs.
@@ -54,4 +94,3 @@ Lottery (score 40 / INR 3,000), Shock latency/threshold redesign, CAS PeakLock, 
 - Both session-auto and the prior scheduled-deployment workers must be inactive. After the initial broker preflight, their timers are disabled and remain disabled; running workers are never killed.
 - No repeated attempts after repair/source mutation begins. Inspect the durable stage status if a later stage fails.
 - Final services, authenticated audit/price endpoints and local ledger checks must pass. Actual quote capture, resource usage and subsequent live activation remain separate host verification.
-
