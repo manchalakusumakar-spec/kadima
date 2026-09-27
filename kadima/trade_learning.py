@@ -210,25 +210,28 @@ def observe(exchange, quotes, quote_at, now=None):
     c = connection()
     if not c.execute("SELECT 1 FROM sqlite_master WHERE name='execution_fills'").fetchone():
         return
-    for token, price in quotes[:100]:
-        price = number(price)
-        if price is None or price <= 0:
-            continue
-        owned = c.execute('''SELECT p.signal_id,MIN(f.ts) first_fill FROM positions p
-            JOIN execution_orders e ON e.signal_id=p.signal_id AND e.side='BUY'
-            JOIN execution_fills f ON f.intent=e.intent AND f.dry_run=0
-            WHERE p.exchange=? AND p.token=? AND p.remaining_qty>0
-              AND p.status IN ('open','entry_pending','exit_pending') GROUP BY p.signal_id''',
-            (exchange, str(token))).fetchall()
-        with c:
-            for row in owned:
-                if not stamp(row['first_fill']) or at < stamp(row['first_fill']):
-                    continue
-                c.execute('''INSERT INTO trade_learning_samples VALUES (?,?,?,?,?,1)
-                    ON CONFLICT(signal_id) DO UPDATE SET
-                      last_at=excluded.last_at,low=MIN(low,excluded.low),high=MAX(high,excluded.high),samples=samples+1
-                    WHERE julianday(excluded.last_at)>julianday(last_at)''',
-                    (row['signal_id'], at.isoformat(), at.isoformat(), price, price))
+    prices={str(token):number(price) for token,price in quotes[:100]}
+    prices={token:price for token,price in prices.items() if price is not None and price>0}
+    if not prices:
+        return
+    # One query per quote batch, not one per F&O contract. Usually no owned
+    # contract is present, so an entire ladder exits without any writes.
+    owned = c.execute('''SELECT p.signal_id,p.token,MIN(f.ts) first_fill FROM positions p
+        JOIN execution_orders e ON e.signal_id=p.signal_id AND e.side='BUY'
+        JOIN execution_fills f ON f.intent=e.intent AND f.dry_run=0
+        WHERE p.exchange=? AND p.token IN ('''+','.join('?' for _ in prices)+''') AND p.remaining_qty>0
+          AND p.status IN ('open','entry_pending','exit_pending') GROUP BY p.signal_id''',
+        (exchange,*prices)).fetchall()
+    with c:
+        for row in owned:
+            if not stamp(row['first_fill']) or at < stamp(row['first_fill']):
+                continue
+            price=prices[row['token']]
+            c.execute('''INSERT INTO trade_learning_samples VALUES (?,?,?,?,?,1)
+                ON CONFLICT(signal_id) DO UPDATE SET
+                  last_at=excluded.last_at,low=MIN(low,excluded.low),high=MAX(high,excluded.high),samples=samples+1
+                WHERE julianday(excluded.last_at)>julianday(last_at)''',
+                (row['signal_id'], at.isoformat(), at.isoformat(), price, price))
 
 
 def _lesson(code, action, evidence, kind='OBSERVED'):
