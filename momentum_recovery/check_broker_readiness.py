@@ -69,7 +69,7 @@ def private_evidence(path, prep, owner):
     return raw
 
 
-def export_ui(prep, *, parent=Path('/tmp')):
+def export_ui(prep, *, parent=Path('/tmp'), owner=None):
     # Fixed paths only; never include config, environment, ledger, audit logs,
     # broker credentials or contract-note evidence as additional archive files.
     sources = {name: prep.read_regular(path) for name, path in UI.items()}
@@ -84,6 +84,11 @@ def export_ui(prep, *, parent=Path('/tmp')):
             item = tarfile.TarInfo(name)
             item.size, item.mode = len(raw), 0o600
             archive.addfile(item, io.BytesIO(raw))
+    if owner is not None:
+        # Let the authenticated SSH operator retrieve the private review file.
+        # Hand over the directory only after the archive has been closed.
+        os.chown(path, *owner)
+        os.chown(directory, *owner)
     return dict(path=str(path), blobs=report['blobs'])
 
 
@@ -183,7 +188,7 @@ def main(argv=None):
         try:
             prep.verify_timer_hold()
             if args.export_dashboard:
-                report['dashboard_review'] = export_ui(prep)
+                report['dashboard_review'] = export_ui(prep, owner=(user.pw_uid, user.pw_gid))
             raw = private_evidence(args.evidence, prep, user.pw_uid)
             reviewed = note.evidence(json.loads(raw), datetime.now(timezone.utc))
             inspect_runtime(prep, note, installer.base, reviewed, user, report)
