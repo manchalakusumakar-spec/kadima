@@ -179,6 +179,8 @@ def apply_fill(pos, row, status):
                 pos.exit_price = sold[0] / sold[1]
         storage.upsert_position(pos, _connection=c)
     original.__dict__.update(pos.__dict__)
+    from . import trade_learning
+    trade_learning.guarded(trade_learning.mark_dirty, pos.signal_id)
     if delta:
         audit.log('execution_fill_confirmed', signal_id=pos.signal_id, side=row['side'],
                   quantity=delta, remaining_qty=pos.remaining_qty, price=amount/delta,
@@ -232,4 +234,3 @@ def refresh(positions):
                            f"check broker order {status.order_id}",
                            key=f"pending-exit:{status.order_id}")
     return healthy
-

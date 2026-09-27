@@ -25,7 +25,8 @@ COOKIE = 'kadima_dashboard_session'
 SESSIONS = {}
 ATTEMPTS = []
 LOCK = threading.Lock()
-READS = {'prices': (8081, '/api/kadima/prices'),
+READS = {'learning': (8081, '/api/kadima/learning'),
+         'prices': (8081, '/api/kadima/prices'),
          'price-minutes': (8081, '/api/kadima/prices/minutes'),
          'price-export': (8081, '/api/kadima/prices/export'),
          'audit': (8081, '/api/kadima/audit'),
@@ -272,6 +273,14 @@ def read_data(name: str, request: Request):
     authenticated(request)
     if name not in READS:
         raise HTTPException(404, 'unknown_route')
+    if name == 'learning':
+        from urllib.parse import urlencode
+        items = list(request.query_params.multi_items())
+        if (len(items) != len({k for k, _ in items}) or
+                any(k not in {'day','strategy','limit','offset'} or len(v)>80 for k,v in items)):
+            raise HTTPException(422, 'learning_invalid_filter')
+        port,path = READS[name]
+        return upstream(port,path+('?' + urlencode(items) if items else ''))
     if name in ('prices','price-minutes','price-export'):
         from urllib.parse import urlencode
         allowed = {'day','key'} if name=='price-minutes' else {'day','asset','symbol'}

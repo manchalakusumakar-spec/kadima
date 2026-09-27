@@ -189,6 +189,8 @@ def record(row, strategy=None, producer='engine', signal_id=None, origin='SUGGES
     q_at = row.get('quote_at') or row.get('last_updated')
     if reference is not None and q_at:
         observe(exchange, [(token, reference)], q_at)
+    from . import trade_learning
+    trade_learning.guarded(trade_learning.capture_plan, aid, row)
     return aid
 
 
@@ -226,6 +228,8 @@ def observe(exchange, quotes, quote_at, now=None):
     quotes = {k: v for k, v in quotes.items() if v is not None}
     if not quotes:
         return
+    from . import trade_learning
+    trade_learning.guarded(trade_learning.observe, exchange, list(quotes.items()), quote_at, now)
     c = connection()
     tokens = list(quotes)
     for offset in range(0, len(tokens), 100):
@@ -314,6 +318,8 @@ def record_submission(pos, side, quantity, price, intent):
     with c:
         c.execute('INSERT OR IGNORE INTO trade_audit_orders VALUES (?,?,?,?,?,?)',
                   (intent, pos.signal_id, side, price, quantity, now_ist().isoformat()))
+    from . import trade_learning
+    trade_learning.guarded(trade_learning.capture_submission, pos, side, quantity, price)
 
 
 def strategy_for_position(pos):

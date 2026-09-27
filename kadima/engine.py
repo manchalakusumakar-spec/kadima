@@ -135,6 +135,8 @@ class Engine:
         self.stock_worker = StockExecutionWorker(auto_executor.EXECUTOR, self.scrips)
         self._seed_last_known()
         self.forecaster = ForecastObserver(self, auto_executor.EXECUTOR)
+        from .trade_learning import Learner
+        self.learner = Learner()
 
     def _seed_last_known(self) -> None:
         """Pre-populate spot/score/tier/direction from the last
@@ -191,6 +193,7 @@ class Engine:
         auto_executor.EXECUTOR.start_monitor_thread()
         self.stock_worker.start()
         self.forecaster.start()
+        self.learner.start()
         for name, idx in self.scan_indices.items():
             self.feed.subscribe(EXCHANGE_TYPE[idx.exchange], [idx.token])
         if self.bank_tokens:
@@ -207,6 +210,7 @@ class Engine:
     def stop(self) -> None:
         self._stop.set()
         self.forecaster.stop()
+        self.learner.stop()
         self.stock_worker.stop()
         self.bank_history.stop()
         self.feed.stop()
