@@ -264,6 +264,8 @@ class MoveCaptureExecutionWorker:
             return
 
         context = self._context(data, q, days, confirmation)
+        from . import trade_audit
+        trade_audit.safe_call(trade_audit.record_move, context, q, chain, stock_controls['holding_minutes'])
         self.stage = 'entry_gates'
         # Existing fast live gate adds rollout, auto-trade, kill, score and
         # symbol-specific fresh-news checks before the executor can submit.
@@ -276,6 +278,7 @@ class MoveCaptureExecutionWorker:
             return
 
         sid = handoff.signal_id(data)
+        trade_audit.safe_call(trade_audit.record_move, context, q, chain, stock_controls['holding_minutes'], sid)
         # Persist the selected 5/10/15 minute deadline before any order intent.
         # The existing stock worker protects these fast_momentum positions.
         c = stock_fast._connection()

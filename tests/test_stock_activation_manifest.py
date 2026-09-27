@@ -55,7 +55,7 @@ class StockActivationManifestTests(unittest.TestCase):
                     'kadima/instrument_master.py', 'kadima/celestial_universe.py'}
         self.assertTrue(required.issubset(self.manifest))
         self.assertEqual(self.manifest['kadima/full_universe_scanner.py'],
-                         '530c41a3fe4fe1e706dcfde3437f4c16e1a19b69')
+                         '834a06e6faa5b06f9945cc9e57ead7f56a8f4270')
         self.assertNotIn('kadima/config.py', self.manifest)  # Deployment configuration is not replaced.
 
     def test_complete_reviewed_source_is_accepted(self):

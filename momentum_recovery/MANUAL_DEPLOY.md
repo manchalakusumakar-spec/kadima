@@ -1,4 +1,10 @@
-# Deploy the reviewed sequence after the account is flat
+# Previous procedure: deploy after the account is flat
+
+The operator has since completed PR19 stopped-service maintenance. Do not run
+this older active-process repair/restart procedure against the stopped updated
+host. The current next step is [STOPPED_AUDIT.md](STOPPED_AUDIT.md). Its source-only
+workflow preserves the manual holding and ledger and leaves services stopped.
+The original procedure below is retained for provenance, with its original guards.
 
 This operator-run command installs the compatible maintenance sequence. It is
 not an all-feature release and it does not activate trading. See

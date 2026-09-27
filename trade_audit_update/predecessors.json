@@ -1,0 +1,64 @@
+{
+  "base_commit": "bd294a7048749258fbaa2cc786f20a441a2a8073",
+  "backend": {
+    "kadima/cas_blast_scanner.py": "d2a68a2849c4a400ee4fa11ff8d461abe2291fc8",
+    "kadima/celestial.py": "dfac18b9d76f11428357cc7d6b4d8f88d15278fa",
+    "kadima/control_api.py": [
+      "dc2ec6f89de5b7bcfe40b67ba35e36a621d06965",
+      "a5dc553006b305d5c557313bd8df3674bec6dbf7",
+      "55dca752f3a5b78b8e172e44ce5e7b28f87b6f90"
+    ],
+    "kadima/engine.py": [
+      "7f9ddb10bbc3a144a82d6de982c5ca934e2433d1",
+      "642812637e5d0485faa02cb0a097827e86676b16",
+      "d51ff3aae35df5a226f3661921d01dff6a937da3"
+    ],
+    "kadima/execution_ledger.py": [
+      "1fde45163927f6fceff4a6ae8573e4242ac4fb18",
+      "48017f3a3a59a0acada99c264ea3ec233f1203a3"
+    ],
+    "kadima/gap_live.py": "9f282800528fd942ff5da8014da93c2ac3602b34",
+    "kadima/mcx_live.py": "86928e87cca0fe6c085466f9c0b5c715d4ebb415",
+    "kadima/move_capture_execution.py": "caf9dc36389186172514caad608e8cacd109b435",
+    "kadima/option_chain.py": [
+      "b2b9c4fea31e4528743e615319797e99d5e13e2c",
+      "cbf3b30cb74caae957df9eef894e2935bde04295"
+    ],
+    "kadima/stock_fast.py": "af0fd7dcac92a7bd56bfc4709cd98d29b4efcdd5",
+    "kadima/trade_audit.py": [
+      null,
+      "66b12fa755e28e4d14e85c6691596f9bc7b6ec5c"
+    ],
+    "kadima/price_history.py": null,
+    "kadima/full_universe_scanner.py": "530c41a3fe4fe1e706dcfde3437f4c16e1a19b69",
+    "kadima/move_capture_service.py": "ff4df3b2a06b110c1432977543716e919cc760c7",
+    "kadima/momentum_quote_watch.py": "92409bbd7fecd0d4bbd25e69a4cbda99f5628958",
+    "kadima/strike_selector.py": [
+      "1b4e15cb47f28b1fe2e745f0e2da6221ef6caaa1"
+    ],
+    "kadima/forecast_observer.py": [
+      "24dcff3a12c417fbef25bf606d056e2ba241e152"
+    ],
+    "kadima/checklist_forecast.py": [
+      "a43021cea367e0a8f62875e0c86d11c8a482ec9d"
+    ],
+    "kadima/trade_learning.py": null
+  },
+  "page": {
+    "5793e612379676705449a13ddc0ab7dfa0b6cb0f": false,
+    "20a9041bb0dc1db3d733eb81b6dca42573e30b42": true,
+    "0dd27c3801f0e62e8f250d9bfe4ebbad4cd137e0": false,
+    "510d6475e4ec8c90203382eb4e723769c0e058a2": true,
+    "782dc039c5864931f5d1bbd6798a88cf1744437d": false,
+    "c9bc21db6a896d83838178956faa69f7c126020a": true
+  },
+  "gateway": {
+    "61b097f5fb3c8508db78e620444f987bdc21a200": false,
+    "1b23fd106b2084e58578805f85c6d9ef8412f686": true,
+    "8ae419c4e1374d7cefd5b752a141666e045fd34e": false,
+    "dbef90d7f7010a8227b20c591571c0d0f0bb0ae9": true,
+    "fda9f7a4e24cf64426e39faca86bc9788c054b49": false,
+    "144a3e673deb7a019a703f5ecef3d0db3eeeebca": true
+  },
+  "learning_predecessor": "d584fe0eba27a8f23d2dfd2bac8fb68cb48501ce"
+}

@@ -1,4 +1,9 @@
-# Operator-managed holding: stopped-service source maintenance
+# Completed: stopped-service momentum source maintenance
+
+Operator output received on 28 September 2026 at 00:13 IST confirms 11 files
+installed and engine/scanner/macro-watch/watchdog left stopped. Do not rerun the
+completed apply command. The exported UI has now been reviewed. Continue with
+[STOPPED_AUDIT.md](STOPPED_AUDIT.md); historical repair and startup remain pending.
 
 At 23:58 IST on 27 September 2026, the operator explicitly authorised stopping
 KADIMA while personally managing the manual carry-forward holding. This permits
@@ -45,7 +50,7 @@ extracts the maintenance code separately and invokes the stopped-source apply
 path. It then prints the existing private UI archive as base64 between labelled
 markers so the operator can return it for source review. That archive contains
 the installed gateway/page and their hash manifest, not additional credential,
-environment, database or evidence files. Its contents remain unreviewed here.
+environment, database or evidence files. Its contents were subsequently received and reviewed for the next step.
 
 Keep the EC2 machine and SSH session available. This command stops KADIMA
 application services; it does not stop/reboot the EC2 instance. The engine and
@@ -59,8 +64,9 @@ is left available, with backend data unavailable or stale while KADIMA is down.
   the other protected runtime modules. Source-only installation does not bypass
   its broker, process, startup or ledger checks.
 - PR20 audit/history and PR24 continuous learning change additional protected
-  runtime modules. They are not applied before resolving repair compatibility
-  and reviewing the installed UI variants.
+  runtime modules. The UI composition is now reviewed. The next source-only procedure preserves
+  prior evidence and explicitly leaves repair/startup pending; it does not invoke
+  or weaken the existing repair guards.
 - The current after-flat wrapper still requires broker flatness and reviewed UI
   predecessors. The stopped-source command does not edit or call that wrapper,
   its repair, or its original transaction that automatically restarts services.

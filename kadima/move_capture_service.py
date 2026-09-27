@@ -164,6 +164,10 @@ class MoveCaptureService:
         if raw_stamp <= self._last_exchange_stamp.get(identity.name, 0):
             return
         self._last_exchange_stamp[identity.name] = raw_stamp
+        from . import price_history
+        price_history.websocket(message, exchange=identity.exchange, token=identity.token,
+                                symbol=identity.name, underlying=identity.name,
+                                asset=identity.kind, now=now)
         candidate, promoted = self.detector.ingest(
             identity, now, price, volume=volume, previous_close=previous_close)
         self._last_tick_mono = time.monotonic()

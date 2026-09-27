@@ -52,6 +52,8 @@ def clean(value, depth=0):
 
 def supplemental(now):
     context = {}
+    from .trade_learning import feedback
+    context['trade_learning'] = clean(feedback(now))
     availability = {
         'global_overnight_GIFT_US_Asia_DXY_FX_yields_oil': 'missing: no connected timestamped provider',
         'heavyweights_and_sector_breadth': 'missing: no weighted constituent feed',

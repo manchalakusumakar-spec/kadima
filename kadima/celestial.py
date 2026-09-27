@@ -146,6 +146,8 @@ def publish(producer, rows):
         c.execute('DELETE FROM celestial_candidates WHERE ts < ?',
                   ((now_ist() - timedelta(days=1)).isoformat(),))
         c.executemany('INSERT OR REPLACE INTO celestial_candidates VALUES (?,?,?,?)', encoded)
+    from . import trade_audit
+    trade_audit.safe_call(trade_audit.record_gamma, producer, rows)
 
 
 def news_impact(symbol, direction, now=None):
@@ -168,12 +170,20 @@ def news_impact(symbol, direction, now=None):
                 news_sources=[e['url'] for e in events][:5])
 
 
-def top20(now=None, *, manual=False):
+def ranked_candidates(now=None, *, manual=False, candidates=None):
+    """Score source rows before display deduplication and the twenty-row limit.
+
+    Audit capture supplies the bounded published batch so another producer
+    cannot replace that snapshot before its qualifying leads are recorded.
+    """
     now = now or now_ist()
     cfg = read_config()
+    if candidates is None:
+        candidates = (json.loads(record[0]) for record in
+                      connection().execute('SELECT payload FROM celestial_candidates'))
     rows = []
-    for record in connection().execute('SELECT payload FROM celestial_candidates'):
-        row = json.loads(record[0])
+    for candidate in candidates:
+        row = dict(candidate)
         if (not fresh(row.get('last_updated'), now) or not finite(row.get('premium_move_pct'), 5)
                 or not finite(row.get('gamma_score'), 0, 100)):
             continue
@@ -202,6 +212,11 @@ def top20(now=None, *, manual=False):
             rows.append(row)
     rows.sort(key=lambda r: (r['priority'], -r['final_score'],
                             0 if r['spread_status'] == 'CLEAN' else 1, -r['premium_move_pct'], r['id']))
+    return rows
+
+
+def top20(now=None, *, manual=False):
+    rows = ranked_candidates(now, manual=manual)
     # One best strike per underlying/direction; no padding to twenty weak rows.
     selected, used = [], set()
     for row in rows:

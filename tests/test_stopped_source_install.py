@@ -28,9 +28,20 @@ class SourcePlanTests(unittest.TestCase):
         self.temporary = tempfile.TemporaryDirectory()
         self.addCleanup(self.temporary.cleanup)
         self.target = Path(self.temporary.name).resolve()
-        self.installer = load('stopped_source_plan_review', 'momentum_recovery/install.py')
+        self.release = self.target / 'pr19-release'
+        shutil.copytree(ROOT / 'kadima', self.release / 'kadima')
+        shutil.copyfile(ROOT / 'run.py', self.release / 'run.py')
+        previous = json.loads((ROOT / 'tests/fixtures/pr19_sources.json').read_text())
+        self.assertEqual(previous['commit'], self.momentum_commit())
+        for name, source in previous['files'].items():
+            (self.release / name).write_text(source)
+        for name in ('momentum_recovery/install.py', 'mcx_live_update/install.py',
+                     'mcx_live_update/auto_executor.py', 'stock_fast_update/install.py'):
+            (self.release / name).parent.mkdir(parents=True, exist_ok=True)
+            shutil.copyfile(ROOT / name, self.release / name)
+        self.installer = load('stopped_source_plan_review', self.release / 'momentum_recovery/install.py')
         self.base = self.installer.base
-        shutil.copytree(ROOT / 'kadima', self.target / 'kadima')
+        shutil.copytree(self.release / 'kadima', self.target / 'kadima')
         shutil.copyfile(ROOT / 'run.py', self.target / 'run.py')
         self.executor = self.target / 'kadima/auto_executor.py'
         shutil.copyfile(ROOT / 'mcx_live_update/auto_executor.py', self.executor)
@@ -43,7 +54,11 @@ class SourcePlanTests(unittest.TestCase):
                 (self.target / name).unlink()
 
     def plan(self):
-        return self.base.backend_plan(ROOT, self.target, (os.getuid(), os.getgid()))
+        return self.base.backend_plan(self.release, self.target, (os.getuid(), os.getgid()))
+
+    @staticmethod
+    def momentum_commit():
+        return 'bd294a7048749258fbaa2cc786f20a441a2a8073'
 
     def test_reviewed_source_fixture_plan_preserves_composed_executor_and_local_config(self):
         originals = {p: p.read_bytes() for p in (self.executor, self.config)}

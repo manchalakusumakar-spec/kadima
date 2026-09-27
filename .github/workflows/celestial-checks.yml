@@ -11,6 +11,7 @@ jobs:
     env:
       ORDER_PLACEMENT_ENABLED: '0'
       KADIMA_CELESTIAL_ENABLED: '0'
+      KADIMA_PRICE_HISTORY_DISABLED: '1'
     steps:
       - uses: actions/checkout@v7
         with:
@@ -30,13 +31,31 @@ jobs:
       - name: Python regressions and compilation
         run: |
           python -m unittest discover -s tests -v
-          python -m compileall -q kadima dashboard_live tools
+          python -m compileall -q kadima dashboard_live tools trade_audit_update momentum_recovery
+          bash -n momentum_recovery/install_stopped_source.sh momentum_recovery/install_stopped_audit.sh
       - name: Intercepted desktop and mobile dashboard
-        run: node tests/test_celestial_dashboard.cjs
+        run: |
+          node tests/test_celestial_dashboard.cjs
+          node tests/test_trade_audit_dashboard.cjs
+          node tests/test_price_history_dashboard.cjs
+          node tests/test_trade_learning_dashboard.cjs
+      - name: Intercepted composed AWS dashboard
+        env:
+          DASHBOARD_TEST_HTML: momentum_recovery/reviewed_dashboard/dashboard.html
+        run: |
+          node tests/test_trade_audit_dashboard.cjs
+          node tests/test_price_history_dashboard.cjs
+          node tests/test_trade_learning_dashboard.cjs
+          node tests/test_reviewed_dashboard.cjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: celestial-fixture-screenshots
-          path: /tmp/kadima-celestial-*.png
+          path: |
+            /tmp/kadima-celestial-*.png
+            /tmp/kadima-audit-*.png
+            /tmp/kadima-price-*.png
+            /tmp/kadima-learning-*.png
+            /tmp/kadima-reviewed-*.png
           if-no-files-found: ignore
           retention-days: 7

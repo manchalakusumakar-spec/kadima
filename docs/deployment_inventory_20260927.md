@@ -2,29 +2,41 @@
 
 Verified against GitHub PR metadata, exact-head workflow runs and ancestry comparisons to PR20. AWS is not connected; GitHub checks are not evidence of installation or live fills.
 
-## Latest direction — 27 September 2026, 23:58 IST
+## Latest observation — 28 September 2026, 00:13 IST
 
-The operator explicitly authorises stopping KADIMA now and personally managing
-the manual carry-forward holding. Closing that holding is not required for the
-new, limited stopped-service PR19 source update. The source-only installer
-preserves the ledger, executor, configuration and UI, makes no broker requests,
-and leaves services stopped. It does not weaken the old repair-and-restart
-procedure or claim the account is flat. See
-[`momentum_recovery/STOPPED_SOURCE.md`](../momentum_recovery/STOPPED_SOURCE.md).
+The operator supplied the successful output from maintenance commit
+`53cebd77e95eff85c4957a818417ef053f490145`. The pinned PR19 release
+`bd294a7048749258fbaa2cc786f20a441a2a8073` installed 11 source files.
+The engine, universe scanner, macro-watch and EOD watchdog were left stopped.
+No restart, activation, ledger repair or broker order was performed by the
+installer. This is operator-provided host evidence, not direct AWS access.
 
-The 23:49 operator-supplied diagnostic verified the source admission and matched
-historical case, with one unresolved local position and order. A real nonzero
-broker carry-forward position blocked flatness before the order book was read.
-The manual holding is externally managed; installed manual-adoption logic does
-not auto-trail or exit it. Global and stock entries remain paused. The UI archive
-was exported successfully with the two previously reported hashes, but its
-contents have not been provided here. The local historical record must not be
-confused with a proven current broker pending order.
+The exported gateway/page were received and independently matched to
+`059f182fce93c71269e92501cc00af4f710f83ec` and
+`4c9d221436b7675eee5fda80d1546311273f6832`. Their custom news, projected paths,
+probability display and stock controls are now reviewed and composed with the
+PR24 dashboard. The composition also restores an existing missing MCX display
+helper. Authentication and write-control handlers are preserved.
 
-The stopped-source command prepares/applies only PR19 and returns the saved UI
-archive for review. PR20/24 and the other separate branches remain pending. A
-published command is not evidence that AWS source installation has occurred;
-the operator's result is still required. Restart and activation remain separate.
+| Component | Current status |
+|---|---|
+| PR19 momentum | Source installed; services stopped; not activated |
+| PR20 audit and price history + PR24 learning | Combined stopped-service source update prepared; host execution pending |
+| Historical ledger repair | Pending; old active-process/all-flat repair must not be run against updated stopped sources |
+| Startup / authenticated endpoints / learning worker | Pending; source installation does not establish runtime health |
+| Manual carry-forward holding | Externally managed by the operator; no flat-account claim |
+| Other separate PRs and design requests | Pending as listed below; no blanket all-features deployment claim |
+
+The next procedure is [STOPPED_AUDIT.md](../momentum_recovery/STOPPED_AUDIT.md).
+It stages final PR24 `8837cd6dc04e16123e94d8b78a3a716f83ed022c`, which already
+includes PR20, preserves the composed executor/configuration and all databases,
+stops the dashboard before UI replacement and leaves all selected services
+stopped. It does not invoke the old repair/restart installer. The old repair's
+source guards are retained; later historical repair needs separately reviewed
+stopped-state and account-bound admission before startup.
+
+Open GitHub PR heads were checked again on 28 September IST and remain the same
+as the inventory below. Earlier entries document observations at those times.
 
 ## Operator observation — 27 September 2026, 23:18:26 IST
 
@@ -47,7 +59,7 @@ The executor is the preserved MCX/session/portfolio composition
 also match their reviewed hashes. Full dependency/config/process admission must
 still run on the host; this static comparison does not approve every host file.
 
-**New blocker:** gateway `059f182fce93c71269e92501cc00af4f710f83ec` and dashboard
+**Earlier UI blocker (resolved by source composition):** gateway `059f182fce93c71269e92501cc00af4f710f83ec` and dashboard
 `4c9d221436b7675eee5fda80d1546311273f6832` do not match the reviewed plain/stock
 panel versions or the PR20/PR24 predecessor manifests. GitHub blob lookup also
 did not resolve these installed variants. Their actual source must be reviewed
@@ -60,13 +72,13 @@ Two newer GitHub requests were found after the original inventory:
 | PR | Current source / verification | Deployment treatment |
 |---|---|---|
 | [#23](https://github.com/manchalakusumakar-spec/kadima/pull/23) | Standalone audit RAG, `9231e59ea7788c9a691f725cde6c3b152ff397ce`; PR reports 12 offline tests | Separate additive tooling; dashboard/plugin unwired, runtime/model evaluation pending; not included in the manual command |
-| [#24](https://github.com/manchalakusumakar-spec/kadima/pull/24) | Continuous trade learning, `8837cd6dc04e16123e94d8b78a3a716f83ed022c`; exact-head CI 36319864991 passed | Stacked on PR20; advisory evidence/forecast/strike review, no automatic rule changes. Queued for a source-matched rollout after UI composition; not yet added to PR22 deployment pins |
+| [#24](https://github.com/manchalakusumakar-spec/kadima/pull/24) | Continuous trade learning, `8837cd6dc04e16123e94d8b78a3a716f83ed022c`; exact-head CI 36319864991 passed | Stacked on PR20; advisory evidence/forecast/strike review, no automatic rule changes. Pinned by the new stopped audit/learning installer; host installation pending |
 
 No reboot, repair, runtime source update, broker action or activation was performed
 by the pause command. The repair-and-restart deployment still needs current broker books,
 historical ledger admission, matched sources and the normal post-install checks.
 
-## One-command deployment scope
+## Previous after-flat deployment scope (not the current stopped workflow)
 
 The manual command attempts the existing reviewed historical repair, then PR19 momentum recovery, then PR20 trade audit / price history / dashboard. It preserves the installed MCX/session/portfolio executor and leaves global Auto Trade and Stock Live paused. It does not activate a strategy or merge PRs.
 
@@ -94,8 +106,8 @@ The repair remains evidence-specific and requires the real account to have zero 
 | [#16](https://github.com/manchalakusumakar-spec/kadima/pull/16) | Memory admission protection, lower refresh peaks, and guarded 1 GiB swap installer | `26ac9ec16044e1275eeaa83b959d981c5fff380d` | success | Separate/diverged branch; not composed into this deployment. GitHub reports base conflicts; existing host swap was observed working |
 | [#17](https://github.com/manchalakusumakar-spec/kadima/pull/17) | Add 2-lot index scalper with 10-point premium target | `d065a9732656138adab5f7f71afbe7f589d0c6f4` | success | Separate/diverged branch; not composed into this deployment |
 | [#18](https://github.com/manchalakusumakar-spec/kadima/pull/18) | Draft dynamic stops: structure zones, manual CAS and durable execution adapter | `00d6bc5b26dc1730fa2dc6f2b2a4c0d2eed797cb` | success | Separate/diverged branch; not composed into this deployment. Execution adapter remains disabled and production bindings/calibration are incomplete |
-| [#19](https://github.com/manchalakusumakar-spec/kadima/pull/19) | Recover missed stock momentum signals and add guarded spot-led auto-entry | `bd294a7048749258fbaa2cc786f20a441a2a8073` | success | Pinned source-install stage |
-| [#20](https://github.com/manchalakusumakar-spec/kadima/pull/20) | Persist trade audit and daily price history for Gamma and momentum | `d584fe0eba27a8f23d2dfd2bac8fb68cb48501ce` | success | Pinned final audit/history/dashboard stage |
+| [#19](https://github.com/manchalakusumakar-spec/kadima/pull/19) | Recover missed stock momentum signals and add guarded spot-led auto-entry | `bd294a7048749258fbaa2cc786f20a441a2a8073` | success | Source installed on AWS; services stopped, activation pending |
+| [#20](https://github.com/manchalakusumakar-spec/kadima/pull/20) | Persist trade audit and daily price history for Gamma and momentum | `d584fe0eba27a8f23d2dfd2bac8fb68cb48501ce` | success | Included by final PR24 stopped source plan; host installation pending |
 | [#21](https://github.com/manchalakusumakar-spec/kadima/pull/21) | Guard historical reconciliation and schedule one paused deployment attempt | `7e6424ac79dacc791e05e85e65c891e193b81655` | success | Pinned repair component; existing scheduled runner is not armed by this manual command |
 
 ## Corrections to the earlier chat inventory
@@ -110,7 +122,7 @@ The repair remains evidence-specific and requires the real account to have zero 
 
 Lottery (score 40 / INR 3,000), Shock latency/threshold redesign, CAS PeakLock, advance T-1/intraday move framework, NIFTY one-minute Supertrend selling, and automated email/WhatsApp audit delivery are not made deployable by this maintenance command. Existing PR20 audit views do not implement message delivery. No new trading thresholds are enabled here.
 
-## Remaining host checks
+## Earlier after-flat host checks (retained; not bypassed by source maintenance)
 
 - Global Auto Trade paused; Stock Live off; no kill reset; broker positions and pending orders verified by the pinned account-bound repair.
 - Existing reviewed historical evidence still present and unchanged; ordinary weekday API restoration must have occurred. The manual command does not select the special weekend-unrestored mode.

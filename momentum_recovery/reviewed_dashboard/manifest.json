@@ -1,0 +1,38 @@
+{
+  "composition_base_commit": "bd294a7048749258fbaa2cc786f20a441a2a8073",
+  "files": {
+    "dashboard.html": {
+      "base_blob": "5793e612379676705449a13ddc0ab7dfa0b6cb0f",
+      "composed_blob": "3816a160f46420aaf28cb7f8de8579fdd3cf31e5",
+      "installed_blob": "4c9d221436b7675eee5fda80d1546311273f6832",
+      "upstream_blob": "579bb9131f4265c8d67171ca38b3df4803fdc837"
+    },
+    "gateway.py": {
+      "base_blob": "61b097f5fb3c8508db78e620444f987bdc21a200",
+      "composed_blob": "f45a083d859d286d09cf251f34b9e15c096227ab",
+      "installed_blob": "059f182fce93c71269e92501cc00af4f710f83ec",
+      "upstream_blob": "5cda4ae5fa109ac76967c4d9477f803259f01711"
+    }
+  },
+  "gateway_changed_functions": [
+    "read_data"
+  ],
+  "gateway_preserved_functions": [
+    "origin_check",
+    "authenticated",
+    "security_headers",
+    "health",
+    "server_health",
+    "login",
+    "session",
+    "logout",
+    "upstream",
+    "live_news",
+    "manual_exit",
+    "celestial_write"
+  ],
+  "method": "Three-way merge of the exact installed AWS files and PR24 using PR19 dashboard sources as base; restore exact upstream mcxGamma helper accidentally removed in installed UI.",
+  "secret_review": "No embedded credentials/private keys/bearer tokens found; gateway loads deployment credentials from server configuration. Browser has no broker token.",
+  "source_release_commit": "8837cd6dc04e16123e94d8b78a3a716f83ed022c",
+  "version": 1
+}
