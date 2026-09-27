@@ -36,7 +36,8 @@ class RankedStrike:
                 "iv": round(q.iv, 2) if q.iv else None,
                 "spread_pct": round(q.spread_pct, 2) if q.spread_pct else None,
                 "score": round(self.score, 1), "reasons": self.reasons,
-                "rejected": self.rejected}
+                "rejected": self.rejected,
+                "historical_review": getattr(self, 'historical_review', None)}
 
 
 def rank(chain: OptionChain, direction: str, spot: float,
@@ -112,6 +113,8 @@ def rank(chain: OptionChain, direction: str, spot: float,
         out.append(RankedStrike(q, score, reasons))
 
     out.sort(key=lambda r: r.score, reverse=True)
+    from .trade_learning import remember_selection
+    remember_selection(chain, direction, spot, days_to_expiry, out)
     return out
 
 

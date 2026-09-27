@@ -33,6 +33,16 @@ class AuditHttp(unittest.TestCase):
         self.assertEqual(response.status_code, 503)
         self.assertEqual(response.json(), {'detail':'audit_unavailable'})
 
+    def test_learning_auth_filters_and_isolation(self):
+        self.assertEqual(self.client.get('/api/kadima/learning').status_code,401)
+        response=self.client.get('/api/kadima/learning?day=2026-09-14',headers=self.auth)
+        self.assertEqual(response.status_code,200)
+        self.assertEqual(response.json()['mode'],'ADVISORY')
+        self.assertFalse(response.json()['worker_fresh'])
+        for q in ('strategy=bad','limit=201','day=2026-02-31','offset=-1'):
+            self.assertEqual(self.client.get('/api/kadima/learning?'+q,headers=self.auth).status_code,422)
+        self.ex.buy_candidate.assert_not_called();self.ex.squareoff.assert_not_called()
+
 
 @unittest.skipUnless(gateway_fixture.AVAILABLE, 'FastAPI/httpx required')
 class AuditGateway(unittest.TestCase):
@@ -62,6 +72,16 @@ class AuditGateway(unittest.TestCase):
         for path in ('/audit?url=bad', '/audit?day=a&day=b', '/audit?symbol='+'x'*81,
                      '/audit-export?offset=1'):
             self.assertEqual(self.client.get(path, headers=self.auth).status_code, 422)
+        self.upstream.assert_not_called()
+
+    def test_learning_read_only_fixed_destination(self):
+        self.assertEqual(self.client.get('/learning').status_code,401)
+        self.upstream.assert_not_called()
+        self.assertEqual(self.client.get('/learning?day=2026-09-14&strategy=SCALP',headers=self.auth).status_code,200)
+        self.assertEqual(self.upstream.call_args.args,(8081,'/api/kadima/learning?day=2026-09-14&strategy=SCALP'))
+        self.upstream.reset_mock()
+        for path in ('/learning?url=https://bad.test','/learning?day=a&day=b','/learning?symbol=ABC'):
+            self.assertEqual(self.client.get(path,headers=self.auth).status_code,422)
         self.upstream.assert_not_called()
 
 

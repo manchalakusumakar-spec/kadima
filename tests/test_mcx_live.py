@@ -174,7 +174,9 @@ class MCXInstallerTests(unittest.TestCase):
             'kadima/move_capture_handoff.py', 'kadima/move_capture_execution.py',
             'kadima/momentum_quote_watch.py'}
         audit_dependencies = {'kadima/trade_audit.py', 'kadima/option_chain.py',
-                              'kadima/cas_blast_scanner.py', 'kadima/price_history.py'}
+                              'kadima/cas_blast_scanner.py', 'kadima/price_history.py',
+                              'kadima/trade_learning.py', 'kadima/strike_selector.py',
+                              'kadima/forecast_observer.py', 'kadima/checklist_forecast.py'}
         self.assertEqual(set(module.base.FILES) | recovery | audit_dependencies, set(manifest))
         raw=module.base.read_file(module.ROOT/'kadima/auto_executor.py')
         self.assertEqual(module.base.digest(raw),module.COMPOSED_EXECUTOR)

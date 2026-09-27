@@ -37,6 +37,7 @@ jobs:
           node tests/test_celestial_dashboard.cjs
           node tests/test_trade_audit_dashboard.cjs
           node tests/test_price_history_dashboard.cjs
+          node tests/test_trade_learning_dashboard.cjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
@@ -45,5 +46,6 @@ jobs:
             /tmp/kadima-celestial-*.png
             /tmp/kadima-audit-*.png
             /tmp/kadima-price-*.png
+            /tmp/kadima-learning-*.png
           if-no-files-found: ignore
           retention-days: 7

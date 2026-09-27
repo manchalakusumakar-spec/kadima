@@ -73,8 +73,8 @@ def load_helper(path, expected):
 
 
 def audit_local_api(path, token):
-    """Read only the two new health routes without widening the pinned helper."""
-    if path not in ('/api/kadima/audit?limit=1', '/api/kadima/prices?limit=1'):
+    """Read only the review health routes without widening the pinned helper."""
+    if path not in ('/api/kadima/audit?limit=1', '/api/kadima/prices?limit=1', '/api/kadima/learning?limit=1'):
         raise base.Blocked('unknown_audit_local_endpoint')
     request = urllib.request.Request('http://127.0.0.1:8081'+path,
                                      headers={'Authorization': 'Bearer '+token}, method='GET')
@@ -102,6 +102,11 @@ def install_transaction(changes, units, backup, flat_check, source_check, import
         if prices.get('capture_enabled') is not True:
             raise base.Blocked('post_install_price_capture_disabled')
         print('PRICE HISTORY API: authenticated HTTP 200; capture requires subsequent fresh quotes.')
+        learning = audit_local_api('/api/kadima/learning?limit=1', token)
+        if (not isinstance(learning, dict) or not isinstance(learning.get('rows'), list)
+                or learning.get('mode') != 'ADVISORY' or learning.get('worker_fresh') is not True):
+            raise base.Blocked('post_install_learning_worker_unverified')
+        print('LEARNING API: authenticated HTTP 200; background review heartbeat is fresh; advisory only.')
     return _original_transaction(changes, units, backup, flat_check, source_check,
                                  import_check, audit_post_check, **kwargs)
 

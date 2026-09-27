@@ -622,6 +622,20 @@ def trade_audit_report(day: Optional[str] = None, strategy: Optional[str] = None
         raise HTTPException(503, 'audit_unavailable') from None
 
 
+@app.get('/api/kadima/learning')
+def trade_learning_report(day: Optional[str] = None, strategy: Optional[str] = None,
+                          limit: int = 50, offset: int = 0,
+                          authorization: Optional[str] = Header(None)):
+    _check_auth(authorization)
+    from . import trade_learning
+    try:
+        return trade_learning.report(day, strategy, limit, offset)
+    except ValueError:
+        raise HTTPException(422, 'learning_invalid_filter') from None
+    except Exception:
+        raise HTTPException(503, 'learning_unavailable') from None
+
+
 @app.get('/api/kadima/prices')
 def price_history_report(day: Optional[str] = None, asset: Optional[str] = None,
                          symbol: str = '', limit: int = 50, offset: int = 0,

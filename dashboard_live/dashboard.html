@@ -10,6 +10,7 @@
 
 #tradeAudit form{justify-content:flex-start;align-items:flex-end;margin:16px 0}#tradeAudit label{display:grid;gap:6px;font-size:12px;color:var(--muted)}#auditTable{font-size:12px}#auditTable th{position:sticky;top:0;z-index:2;background:#17243b}#auditTable td{white-space:pre-line;min-width:105px;background:var(--audit-row,#101d32)}#auditTable th:first-child,#auditTable td:first-child{position:sticky;left:0;min-width:195px;z-index:1}#auditTable th:first-child{z-index:3}.audit-t1{--audit-row:#c7edd3;color:#14321e}.audit-t2{--audit-row:#175137;color:#e8fff0}.audit-sl{--audit-row:#652a36;color:#ffe5e9}.audit-key{display:inline-block;padding:3px 7px;margin:3px;border-radius:4px;background:var(--audit-row)}.audit-freshness{color:#ffadba}.audit-t1 .audit-freshness{color:#a11228}#auditPage{margin-top:12px}#auditStatus{font-size:12px}
 #priceFilters{justify-content:flex-start;align-items:flex-end;gap:12px;margin-top:16px}#priceFilters label{display:grid;gap:6px;font-size:12px;color:var(--muted)}#priceMemory .scroll:focus-visible{outline:2px solid var(--gold);outline-offset:3px}#priceMemory th{position:sticky;top:0;z-index:2}#priceMemory td:first-child{z-index:1}#priceMemory th:first-child{z-index:3}#priceTable td:not([colspan]){min-width:125px}#priceTable th:first-child,#priceTable td:first-child:not([colspan]){min-width:210px;width:210px;max-width:210px;white-space:normal;overflow-wrap:anywhere}#priceTable td[colspan]{position:static}#priceDetail summary{cursor:pointer;padding:12px 0;color:var(--gold)}#pricePage{margin:12px 0}@media(max-width:700px){#priceTable th:first-child,#priceTable td:first-child:not([colspan]){min-width:140px;width:140px;max-width:140px}#priceFilters input,#priceFilters select{max-width:100%}#priceFilters label{max-width:100%}}
+#learningTable td{white-space:pre-line;min-width:150px;max-width:320px;overflow-wrap:anywhere}#learningTable th{white-space:normal}#learningFilters{justify-content:flex-start;margin:14px 0}#learningFilters label{display:grid;gap:6px}
 </style></head><body><main>
 <header><div><div class="eyebrow">Disciplined freedom</div><h1>KADIMA <span style="color:var(--gold)">CELESTIAL</span></h1><div class="muted">Autonomous Gamma Blast · Operations desk</div></div><div><div id="clock" class="muted">— IST</div><button id="logout" class="small" hidden>Sign out</button></div></header>
 <section id="login" class="panel"><h2>Sign in to the desk</h2><p>Your dashboard session keeps broker credentials on the server.</p><form id="loginForm"><label for="password">Dashboard password</label><input id="password" type="password" required autocomplete="current-password"><button class="primary" type="submit">Sign in</button></form></section>
@@ -49,6 +50,14 @@
 <th>Observed result</th><th>Time to T1 / T2 / result</th><th>Exit reason / blockers</th></tr></thead><tbody></tbody></table></div>
 <div class="toolbar"><span id="auditPage" class="note">No records loaded</span><div><button data-view id="auditPrev" type="button" disabled>Previous</button> <button data-view id="auditNext" type="button" disabled>Next</button></div></div>
 <p class="note">* Actual holding time runs from the first BUY confirmation to the final SELL confirmation. Exchange execution timestamps are unavailable. A maximum-hold policy is a deadline, not a forecast. “Recent poll” reports receipt freshness; exchange quote freshness is unverified. — means the source did not provide the value. Browser-only Gamma percentage scenarios are not engine plans and are not saved here.</p>
+</section>
+<section class="panel" id="tradeLearning" aria-labelledby="learningTitle">
+<div class="toolbar"><h2 id="learningTitle">Continuous Trade Learning</h2><span id="learningStatus" role="status" aria-live="polite">Sign in to view continuous learning</span></div>
+<p class="note">Every recorded outcome contributes evidence. These are observations and research candidates, not proven causes or automatic changes to trading rules. Profit / loss is before fees.</p>
+<form id="learningFilters" class="toolbar"><label>Date (IST) <input data-view id="learningDay" type="date" required></label><label>Trade type <select data-view id="learningStrategy"><option value="ALL">All trade types</option></select></label><button data-view type="submit">Apply filters</button></form>
+<p id="learningEvidence" class="note"></p>
+<div class="scroll" tabindex="0" role="region" aria-label="Continuous trade learning" style="max-height:520px"><table id="learningTable"><thead><tr><th>Contract / strategy</th><th>Confirmed outcome</th><th>What to retain / investigate</th><th>What to avoid / investigate</th><th>Forecast review</th><th>Evidence gaps</th></tr></thead><tbody></tbody></table></div>
+<div class="toolbar"><span id="learningPage" class="note"></span><div><button data-view id="learningPrev" type="button" disabled>Previous</button> <button data-view id="learningNext" type="button" disabled>Next</button></div></div>
 </section>
 <section class="panel" id="priceMemory" aria-labelledby="priceTitle">
 <div class="toolbar"><h2 id="priceTitle">Daily Price Memory</h2><span id="priceStatus" class="muted" role="status">Sign in to view saved prices</span></div>
@@ -131,8 +140,8 @@ for(const id of ['planT1','planT2'])el(id).addEventListener('change',updateGamma
 function planSettings(){return {t1:Number(el('planT1').value),t2:Number(el('planT2').value)}}
 function notice(s,bad=false){el('notice').textContent=s;el('notice').hidden=false;el('notice').className=bad?'bad':'';}
 async function request(path,method='GET',body){const controller=new AbortController();const timer=setTimeout(()=>controller.abort(),9000);try{const response=await fetch('/dashboard-api/'+path,{method,credentials:'same-origin',cache:'no-store',signal:controller.signal,headers:body?{'Content-Type':'application/json'}:{},body:body?JSON.stringify(body):undefined});let data;try{data=await response.json()}catch{throw new Error('Invalid backend response')}if(!response.ok){if(response.status===401)showLogin();const detail=typeof data.detail==='string'?data.detail:'Request rejected';throw new Error(detail.replaceAll('_',' '))}return data}finally{clearTimeout(timer)}}
-function showLogin(){legacy.stop();serverResources.stop();tradeAudit.stop();priceMemory.stop();signedIn=false;online=false;el('login').hidden=false;el('desk').hidden=true;el('logout').hidden=true;syncControls()}
-function showDesk(){signedIn=true;el('login').hidden=true;el('desk').hidden=false;el('logout').hidden=false;legacy.start();serverResources.start();tradeAudit.start();priceMemory.start()}
+function showLogin(){legacy.stop();serverResources.stop();tradeAudit.stop();priceMemory.stop();tradeLearning.stop();signedIn=false;online=false;el('login').hidden=false;el('desk').hidden=true;el('logout').hidden=true;syncControls()}
+function showDesk(){signedIn=true;el('login').hidden=true;el('desk').hidden=false;el('logout').hidden=false;legacy.start();serverResources.start();tradeAudit.start();priceMemory.start();tradeLearning.start()}
 function syncControls(){document.querySelectorAll('#desk button,#desk select,#desk input').forEach(b=>{if(!b.closest('.legacy-panels')&&!b.hasAttribute('data-view'))b.disabled=writing||!online||!snapshot?.config.rollout_enabled});document.querySelectorAll('[data-buy]').forEach(b=>b.disabled=writing||!online||b.dataset.ready!=='true');if(snapshot){el('resume').disabled=el('resume').disabled||snapshot.config.kill_latched;el('resetKill').disabled=el('resetKill').disabled||!snapshot.config.kill_latched}}
 async function write(path,body={}){if(writing||!online)return;writing=true;syncControls();try{const result=await request('celestial/'+path,'POST',body);notice(result.ok===false?'Not all exits could be requested. Check unresolved exposure and broker orders.':result.reason?.replaceAll('_',' ')||'Saved. Broker fills must be confirmed separately.',result.ok===false)}catch(error){notice(error.name==='AbortError'?'Request outcome unknown. Do not repeat blindly; inspect the broker order book.':error.message,true)}finally{writing=false;await refresh();syncControls()}}
 function cell(row,value,cls){const c=document.createElement('td');c.textContent=value??'—';if(cls)c.className=cls;row.append(c);return c}
@@ -437,5 +446,47 @@ const priceMemory=(()=>{
  return {start(){if(active)return;active=true;revision++;poll();},stop(){active=false;revision++;detailRevision++;connected=false;body.replaceChildren();bars.replaceChildren();$('DetailStatus').textContent='Select “Minutes” on an instrument.';$('Page').textContent='No records loaded';$('Prev').disabled=true;$('Next').disabled=true;status('Sign in to view saved prices');}};
 })();
 
+// BEGIN CONTINUOUS TRADE LEARNING
+const tradeLearning=(()=>{
+ let active=false,busy=false,generation=0,offset=0,total=0,timer=null;
+ const body=el('learningTable').tBodies[0],status=el('learningStatus');
+ el('learningDay').value=new Date(Date.now()+19800000).toISOString().slice(0,10);
+ for(const [v,label] of Object.entries({INTRADAY:'Intraday / Shield',GAMMA:'Gamma Blast',CAS:'CAS',SCALP:'Scalping',MOVE_CAPTURE:'Move Capture',GAP_AND_GO:'Gap-and-Go',MCX:'MCX',MANUAL:'Manual',UNKNOWN:'Unknown'}))option(el('learningStrategy'),v,label);
+ function messages(list){return (Array.isArray(list)?list:[]).map(x=>x.action).join('\n')||'No supported observation';}
+ async function poll(){
+  if(!active||busy)return;busy=true;const g=generation;
+  try{
+   const query=new URLSearchParams({day:el('learningDay').value,strategy:el('learningStrategy').value,limit:50,offset});
+   const data=await request('learning?'+query);if(!active||g!==generation)return;
+   if(!Array.isArray(data.rows)||!Number.isInteger(data.total))throw Error('Invalid learning response');
+   total=data.total;body.replaceChildren();
+   for(const r of data.rows){
+    const tr=document.createElement('tr');tr.dataset.learningSignal=r.signal_id;
+    const outcome=String(r.outcome||'UNRESOLVED').replaceAll('_',' ');
+    cell(tr,r.symbol+'\n'+r.strategy+' · #'+r.signal_id);
+    cell(tr,outcome+'\n₹'+format(r.gross_pnl)+' before fees',r.outcome==='GROSS_LOSS'?'bad':r.outcome==='GROSS_WIN'?'good':'');
+    cell(tr,messages(r.should));cell(tr,messages(r.should_not));
+    const f=r.forecast_review||{};
+    cell(tr,String(f.status||'Unavailable').replaceAll('_',' ')+'\n'+(f.checkpoints?.length||0)+' forecast checkpoints');
+    cell(tr,(r.missing||[]).join('\n')+'\nCause remains unconfirmed.');
+    body.append(tr);
+   }
+   if(!data.rows.length)empty(body,6,'No reviewed trades for this date. Recording starts after installation; unavailable history stays unknown.');
+   const fresh=data.worker_fresh&&Date.now()-Date.parse(data.worker_at)>=0&&Date.now()-Date.parse(data.worker_at)<=120000;
+   status.textContent=(fresh?'Review loop active':'Review loop stale / not started')+' · '+timeIST(data.worker_at)+' IST · '+(data.pending||0)+' awaiting review';
+   status.className=fresh?'note':'bad';
+   const groups=data.feedback?.groups||[];
+   el('learningEvidence').textContent=groups.length+' strategy / strike-profile groups · '+groups.filter(x=>x.status==='RESEARCH_READY').length+' ready for further validation · '+(data.capture?.failures||0)+' capture/review errors reported';
+   el('learningPage').textContent=total?(offset+1)+'–'+Math.min(offset+data.rows.length,total)+' of '+total:'0 records';
+   el('learningPrev').disabled=offset===0;el('learningNext').disabled=!data.has_more;
+  }catch(e){if(active&&g===generation){status.textContent='Learning unavailable: '+e.message;status.className='bad';}}
+  finally{busy=false;if(active){clearTimeout(timer);timer=setTimeout(poll,g!==generation?0:30000);}}
+ }
+ el('learningFilters').onsubmit=e=>{e.preventDefault();offset=0;generation++;clearTimeout(timer);if(busy)timer=setTimeout(poll,100);else poll();};
+ el('learningPrev').onclick=()=>{offset=Math.max(0,offset-50);generation++;poll();};
+ el('learningNext').onclick=()=>{if(offset+50<total){offset+=50;generation++;poll();}};
+ return {start(){if(active)return;active=true;generation++;poll();},stop(){active=false;generation++;clearTimeout(timer);body.replaceChildren();status.textContent='Sign in to view continuous learning';el('learningEvidence').textContent='';el('learningPage').textContent='';el('learningPrev').disabled=true;el('learningNext').disabled=true;}};
+})();
+// END CONTINUOUS TRADE LEARNING
 request('session').then(()=>{showDesk();return refresh()}).catch(showLogin);
 </script></body></html>

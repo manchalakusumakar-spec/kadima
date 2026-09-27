@@ -66,7 +66,8 @@ class AuditInstall(unittest.TestCase):
             self.assertEqual(manifest[path], self.installer.digest((ROOT/path).read_bytes()))
 
     def test_transaction_post_check_reaches_new_routes_without_widening_base_allowlist(self):
-        payloads = [dict(rows=[], total=0), dict(rows=[], total=0, capture_enabled=True)]
+        payloads = [dict(rows=[], total=0), dict(rows=[], total=0, capture_enabled=True),
+                    dict(rows=[], total=0, mode='ADVISORY', worker_fresh=True)]
         responses = []
         for payload in payloads:
             response = MagicMock()
@@ -85,9 +86,9 @@ class AuditInstall(unittest.TestCase):
                 patch.object(self.installer.urllib.request, 'build_opener', return_value=opener) as build:
             self.installer.install_transaction([], [], None, None, None, None, original_post_check)
             original_post_check.assert_called_once_with()
-            self.assertEqual(opener.open.call_count, 2)
+            self.assertEqual(opener.open.call_count, 3)
             for call, path in zip(opener.open.call_args_list,
-                                  ('/api/kadima/audit?limit=1', '/api/kadima/prices?limit=1')):
+                                  ('/api/kadima/audit?limit=1', '/api/kadima/prices?limit=1', '/api/kadima/learning?limit=1')):
                 request = call.args[0]
                 self.assertEqual(request.full_url, 'http://127.0.0.1:8081'+path)
                 self.assertEqual(request.get_method(), 'GET')
