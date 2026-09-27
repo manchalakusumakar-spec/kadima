@@ -28,6 +28,17 @@ EMPTY_PROPERTIES = ('ExecCondition', 'ExecStartPre', 'ExecStartPost', 'ExecStop'
     'BindPaths', 'BindReadOnlyPaths', 'TemporaryFileSystem', 'ExtensionImages',
     'ExtensionDirectories')
 NAME = re.compile(r'[A-Za-z_][A-Za-z0-9_]*\Z')
+# systemctl's custom printers omit empty arrays of structs even with --all.
+# A missing line is admitted only after D-Bus independently returns typed zero.
+EMPTY_STRUCT_ARRAYS = {
+    **{name: 'a(sasbttttuii)' for name in
+       ('ExecCondition', 'ExecStartPre', 'ExecStartPost', 'ExecStop', 'ExecStopPost')},
+    'EnvironmentFiles': 'a(sb)', 'BindPaths': 'a(ssbt)',
+    'BindReadOnlyPaths': 'a(ssbt)', 'TemporaryFileSystem': 'a(ss)',
+    'ExtensionImages': 'a(sba(ss))',
+}
+DIAGNOSTIC_PROPERTIES = frozenset(PROPERTIES) | {
+    name + 'Ex' for name in PROPERTIES if name.startswith('Exec')}
 
 
 class Blocked(RuntimeError):
@@ -211,6 +222,56 @@ def safe_unit_summary(properties, target=TARGET):
     return result
 
 
+def service_properties(raw, invoke, summary, target=TARGET):
+    """Parse documented repeated EnvironmentFiles; prove absent array empties.
+
+    systemd/src/systemctl/systemctl-show.c prints EnvironmentFiles once per
+    (path, optional) entry in array order. Other requested keys stay unique.
+    Unknown output never becomes metadata: diagnostics use fixed names/counts.
+    """
+    rows = {}
+    malformed = unknown = 0
+    for line in raw.splitlines():
+        if '=' not in line:
+            malformed += 1
+            continue
+        name, value = line.split('=', 1)
+        if name not in DIAGNOSTIC_PROPERTIES:
+            unknown += 1
+            continue
+        rows.setdefault(name, []).append(value)
+    missing = [name for name in PROPERTIES if name not in rows]
+    summary['property_shape'] = {
+        'line_count': len(raw.splitlines()),
+        'property_line_counts': {name: len(values) for name, values in sorted(rows.items())},
+        'missing_properties': missing,
+        'unknown_property_line_count': unknown,
+        'malformed_line_count': malformed,
+    }
+    diagnostic = {name: values[0] for name, values in rows.items() if len(values) == 1 and name in PROPERTIES}
+    summary.update(safe_unit_summary(diagnostic, target))
+    require(not malformed and not unknown and all(name in PROPERTIES for name in rows),
+            'service_property_shape_unsupported')
+    require(all(len(values) == 1 or (name == 'EnvironmentFiles' and all(values))
+                for name, values in rows.items()), 'service_property_shape_unsupported')
+    properties = {name: ' '.join(values) for name, values in rows.items()}
+    # Never infer a missing scalar or an unknown D-Bus property as empty.
+    require(all(name in EMPTY_STRUCT_ARRAYS for name in missing), 'service_property_missing')
+    proofs = {}
+    for name in missing:
+        proof = invoke(['/usr/bin/busctl', '--system', 'get-property',
+                        'org.freedesktop.systemd1',
+                        '/org/freedesktop/systemd1/unit/kadima_2eservice',
+                        'org.freedesktop.systemd1.Service', name])
+        require(proof in (EMPTY_STRUCT_ARRAYS[name] + ' 0', EMPTY_STRUCT_ARRAYS[name] + ' 0\n'),
+                'service_empty_property_unverified')
+        proofs[name] = proof
+        properties[name] = ''
+    summary['property_shape']['typed_empty_properties_verified'] = sorted(proofs)
+    summary.update(safe_unit_summary(properties, target))
+    return properties, proofs
+
+
 def verify_interpreter(python, target, user, read):
     """Keep the venv invocation path while verifying its system ELF target."""
     system = re.fullmatch(r'/usr/bin/python3(?:\.[0-9]+)?', str(python)) is not None
@@ -269,19 +330,12 @@ def inspect_context(*, invoke=invoke, read=read_regular, user=None, target=TARGE
     target = Path(target)
     summary = {'unit': UNIT, 'credentials_printed': False, 'runtime_imported': False}
     try:
-        command = ['/usr/bin/systemctl', 'show', UNIT]
+        command = ['/usr/bin/systemctl', 'show', UNIT, '--all', '--no-pager', '--full']
         for property_name in PROPERTIES:
             command.extend(['-p', property_name])
         raw = invoke(command)
         require(isinstance(raw, str) and len(raw) <= 250_000, 'service_context_unavailable')
-        properties = {}
-        for line in raw.splitlines():
-            require('=' in line, 'service_property_shape_unsupported')
-            name, value = line.split('=', 1)
-            require(name in PROPERTIES and name not in properties, 'service_property_shape_unsupported')
-            properties[name] = value
-        require(set(properties) == set(PROPERTIES), 'service_property_missing')
-        summary.update(safe_unit_summary(properties, target))
+        properties, empty_proofs = service_properties(raw, invoke, summary, target)
         summary['engine_stopped'] = properties['ActiveState'] == 'inactive' and properties['MainPID'] == '0'
         require(properties['LoadState'] == 'loaded' and summary['engine_stopped'], 'engine_must_remain_stopped')
         require(properties['User'] == 'ubuntu' and properties['Group'] in ('', 'ubuntu'), 'service_owner_unreviewed')
@@ -354,7 +408,7 @@ def inspect_context(*, invoke=invoke, read=read_regular, user=None, target=TARGE
         options = dict(invoke=invoke, read=read, user=user, target=target,
                        interpreter_check=interpreter_check)
         return Context(python, data_dir/'kadima.db', summary, env, fingerprints,
-                       (raw, manager_raw, fingerprints, interpreter), lambda: inspect_context(**options))
+                       (raw, empty_proofs, manager_raw, fingerprints, interpreter), lambda: inspect_context(**options))
     except Blocked as exc:
         exc.summary = summary
         raise

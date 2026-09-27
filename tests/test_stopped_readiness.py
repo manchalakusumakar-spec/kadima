@@ -14,7 +14,7 @@ import sys
 import tempfile
 from types import SimpleNamespace
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -413,6 +413,72 @@ class WatchdogInspectionTests(unittest.TestCase):
                 with contextlib.redirect_stderr(io.StringIO()), self.assertRaises(SystemExit):
                     self.m.main(['--history', '/unused', '--evidence', '/unused', flag])
                 load_helper.assert_not_called()
+
+
+class WatchdogHoldIntegrationTests(unittest.TestCase):
+    def setUp(self):
+        self.m = load('stopped_readiness_hold_integration', 'momentum_recovery/check_stopped_readiness.py')
+        self.helper = SimpleNamespace(observe_unit=lambda name: dict(ActiveState='inactive', MainPID='0'))
+        self.prep = SimpleNamespace(verify_timer_hold=Mock())
+        self.source = SimpleNamespace(LOCKS=(), verify_prior_state=Mock(return_value=({}, {})),
+                                      ensure_stopped=Mock())
+        class ContextBlocked(RuntimeError):
+            def __init__(self):
+                super().__init__('fixture_context_blocked')
+                self.summary = {'credentials_printed': False}
+        class HoldBlocked(RuntimeError):
+            def __init__(self):
+                super().__init__('fixture_install_uncertain')
+                self.hold_receipt = {'held': False, 'mutation_attempted': True, 'state': 'uncertain'}
+        self.context = SimpleNamespace(Blocked=ContextBlocked,
+            inspect_context=Mock(side_effect=ContextBlocked()))
+        self.hold = SimpleNamespace(Blocked=HoldBlocked,
+            hold_reviewed_cron=Mock(return_value={'held': True, 'state': 'held'}),
+            verify_held_cron=Mock())
+        self.modules = dict(zip(self.m.PINS, (self.helper, self.prep, self.source, SimpleNamespace(),
+            self.context, SimpleNamespace(Blocked=RuntimeError), self.hold)))
+
+    def run_main(self, hold=False):
+        output = io.StringIO()
+        argv = ['--history', '/unused', '--evidence', '/unused']
+        if hold:
+            argv.append('--hold-reviewed-watchdog-cron')
+        with (patch.object(self.m.os, 'geteuid', return_value=0),
+              patch.object(self.m.os, 'umask'),
+              patch.object(self.m.pwd, 'getpwnam', return_value=SimpleNamespace(pw_uid=1000, pw_gid=1000)),
+              patch.object(self.m, 'load_reviewed', side_effect=lambda name: self.modules[name]),
+              patch.object(self.m, 'verify_maintenance', return_value=({}, {})),
+              patch.object(self.m, 'watchdog_triggers', return_value={'references': []}),
+              contextlib.redirect_stdout(output), self.assertRaises(SystemExit)):
+            self.m.main(argv)
+        raw = output.getvalue()
+        report, _ = json.JSONDecoder().raw_decode(raw)
+        return report, raw
+
+    def test_default_read_only_failure_never_holds_cron(self):
+        report, raw = self.run_main()
+        self.hold.hold_reviewed_cron.assert_not_called()
+        self.assertEqual(report['action'], 'read_only_stopped_readiness')
+        self.assertNotIn('watchdog_hold', report)
+        self.assertIn('READ ONLY:', raw)
+
+    def test_verified_hold_survives_later_context_failure_in_report(self):
+        report, raw = self.run_main(hold=True)
+        self.source.ensure_stopped.assert_called_once()
+        self.hold.hold_reviewed_cron.assert_called_once_with(self.helper)
+        self.assertEqual(report['watchdog_hold'], {'held': True, 'state': 'held'})
+        self.assertEqual(report['blocked'], 'fixture_context_blocked')
+        self.assertFalse(report['ledger_repaired'])
+        self.assertFalse(report['restart_requested'])
+        self.assertNotIn('READ ONLY:', raw)
+
+    def test_uncertain_hold_is_reported_before_context_or_broker_access(self):
+        self.hold.hold_reviewed_cron.side_effect = self.hold.Blocked()
+        report, _ = self.run_main(hold=True)
+        self.context.inspect_context.assert_not_called()
+        self.assertEqual(report['watchdog_hold'],
+                         {'held': False, 'mutation_attempted': True, 'state': 'uncertain'})
+        self.assertEqual(report['blocked'], 'fixture_install_uncertain')
 
 
 if __name__ == '__main__':

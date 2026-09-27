@@ -40,19 +40,30 @@ class ContextTests(unittest.TestCase):
             Path('/etc/kadima.env'): evidence('/etc/kadima.env', b'ANGEL_API_KEY=private-file\nANGEL_PASSWORD="private password"\n')}
         self.manager = 'LANG=C.UTF-8\nUNRELATED="arbitrary complex \\"value\\""\n'
         self.calls = []
+        self.omit_struct_empties = False
+        self.extra_output = ''
+        self.bus_proofs = {}
         self.interpreter = dict(invocation='/home/ubuntu/kadima-py/.venv/bin/python',
                                 real='/usr/bin/python3.13', metadata=(1, 2, 3))
 
     def invoke(self, command):
         self.calls.append(command)
+        if command[0] == '/usr/bin/busctl':
+            name = command[-1]
+            self.assertIn(name, m.EMPTY_STRUCT_ARRAYS)
+            self.assertEqual(command, ['/usr/bin/busctl', '--system', 'get-property',
+                'org.freedesktop.systemd1', '/org/freedesktop/systemd1/unit/kadima_2eservice',
+                'org.freedesktop.systemd1.Service', name])
+            return self.bus_proofs.get(name, m.EMPTY_STRUCT_ARRAYS[name] + ' 0\n')
         self.assertEqual(command[0], '/usr/bin/systemctl')
         if command[1:] == ['show-environment']:
             return self.manager
-        expected = ['/usr/bin/systemctl', 'show', m.UNIT]
+        expected = ['/usr/bin/systemctl', 'show', m.UNIT, '--all', '--no-pager', '--full']
         for name in m.PROPERTIES:
             expected.extend(['-p', name])
         self.assertEqual(command, expected, 'Context may only read systemctl properties')
-        return ''.join(f'{key}={value}\n' for key, value in self.properties.items())
+        return ''.join(f'{key}={value}\n' for key, value in self.properties.items()
+                       if not (self.omit_struct_empties and not value and key in m.EMPTY_STRUCT_ARRAYS)) + self.extra_output
 
     def read(self, path, *, missing=False):
         if missing and path not in self.files:
@@ -88,6 +99,65 @@ class ContextTests(unittest.TestCase):
         self.assertIsNone(context.fingerprints[Path('/etc/optional.env')])
         self.files[Path('/etc/optional.env')] = evidence('/etc/optional.env', b'A=1\n')
         with self.assertRaisesRegex(m.Blocked, 'context_changed'):
+            context.guard()
+
+    def test_real_systemctl_repeated_environment_files_keep_override_order(self):
+        self.extra_output = 'EnvironmentFiles=/etc/kadima-later.env (ignore_errors=no)\n'
+        self.files[Path('/etc/kadima-later.env')] = evidence('/etc/kadima-later.env', b'ANGEL_API_KEY=private-last\n')
+        self.omit_struct_empties = True
+        context = self.inspect()
+        self.assertEqual(context.env['ANGEL_API_KEY'], 'private-last')
+        self.assertEqual(context.summary['property_shape']['property_line_counts']['EnvironmentFiles'], 2)
+        self.assertEqual(context.summary['environment_files'], ['/etc/kadima.env', '/etc/kadima-later.env'])
+        self.assertEqual(context.summary['property_shape']['typed_empty_properties_verified'],
+                         sorted(set(m.EMPTY_STRUCT_ARRAYS) - {'EnvironmentFiles'}))
+        context.guard()
+
+    def test_empty_environment_files_requires_typed_zero(self):
+        self.properties['EnvironmentFiles'] = ''
+        self.omit_struct_empties = True
+        context = self.inspect()
+        self.assertIn('EnvironmentFiles', context.summary['property_shape']['typed_empty_properties_verified'])
+        self.assertEqual(context.env['ANGEL_API_KEY'], 'private-inline')
+
+    def test_missing_array_nonzero_wrong_type_or_unavailable_never_implies_empty(self):
+        self.omit_struct_empties = True
+        for proof in ('a(sasbttttuii) 1 private-command\n', 'as 0\n', '', 'a(sasbttttuii) 0\nprivate-secret\n'):
+            self.bus_proofs['ExecCondition'] = proof
+            with self.subTest(proof=proof), self.assertRaisesRegex(m.Blocked, 'empty_property_unverified') as caught:
+                self.inspect()
+            self.assertNotIn('private-', repr(caught.exception.summary))
+
+    def test_unknown_duplicate_and_malformed_output_have_redacted_shape_diagnostics(self):
+        for extra, count_key in [('private-secret-property=private-value\n', 'unknown_property_line_count'),
+                                 ('private-secret-no-equals\n', 'malformed_line_count'),
+                                 ('ExecStartEx=private-command\n', None),
+                                 ('ExecStart=private-command\n', None),
+                                 ('Environment=private-value\n', None),
+                                 ('EnvironmentFiles=\n', None)]:
+            self.extra_output = extra
+            with self.subTest(extra=extra), self.assertRaisesRegex(m.Blocked, 'property_shape') as caught:
+                self.inspect()
+            self.assertNotIn('private-', repr(caught.exception.summary))
+            self.assertEqual(caught.exception.summary['User'], 'ubuntu')
+            shape = caught.exception.summary['property_shape']
+            if count_key:
+                self.assertEqual(shape[count_key], 1)
+            elif extra.startswith('ExecStart='):
+                self.assertEqual(shape['property_line_counts']['ExecStart'], 2)
+
+    def test_missing_scalar_is_reported_and_never_defaulted_to_empty(self):
+        del self.properties['Group']
+        with self.assertRaisesRegex(m.Blocked, 'property_missing') as caught:
+            self.inspect()
+        self.assertIn('Group', caught.exception.summary['property_shape']['missing_properties'])
+        self.assertFalse(any(call[0] == '/usr/bin/busctl' for call in self.calls))
+
+    def test_empty_array_guard_rechecks_dbus_proof(self):
+        self.omit_struct_empties = True
+        context = self.inspect()
+        self.bus_proofs['ExecStop'] = 'a(sasbttttuii) 1 private-command\n'
+        with self.assertRaisesRegex(m.Blocked, 'empty_property_unverified'):
             context.guard()
 
     def test_guard_rechecks_bytes_metadata_raw_properties_and_interpreter(self):

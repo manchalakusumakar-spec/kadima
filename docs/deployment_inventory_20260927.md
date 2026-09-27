@@ -4,6 +4,15 @@ Verified against GitHub PR metadata, exact-head workflow runs and ancestry compa
 
 ## Latest observation — 28 September 2026, 00:34 IST
 
+**01:00 IST follow-up:** the operator ran readiness commit
+`08a0612ebe896ab2f055e515c86bf99db5935d9a`. All five units were observed inactive;
+service-property parsing blocked before broker access. No ledger repair,
+restart or activation occurred. The check found one direct Ubuntu cron entry
+that can start the EOD watchdog despite its currently stopped state. A corrected
+reader and exact, backed-up hold of that reviewed cron line are prepared; host
+execution and complete broker-book observation remain pending. Installed source
+status below is unchanged.
+
 The operator supplied successful output from maintenance commit
 `87497b9a68044e749b517255c356e12ea4961ae3`. The exact final PR24 source release
 `8837cd6dc04e16123e94d8b78a3a716f83ed022c` (including PR20) installed 21 backend

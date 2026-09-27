@@ -1,6 +1,7 @@
-"""Read-only readiness of the stopped PR24 installation and reviewed ledger case.
+"""Readiness of the stopped PR24 installation and reviewed ledger case.
 
 Never repairs a ledger, writes runtime source, changes a service or arms trading.
+An explicit option can hold the one reviewed watchdog cron entry with a backup.
 Broker checking logs in and reads complete position/order books only. It can
 observe the operator-managed NIFTY carryforward without calling it account flat.
 """
@@ -36,8 +37,9 @@ PINS = {
     'prepare_maintenance.py': '363fe8b8c2e1dbcafca11f89afb2666c2a8f87f3',
     'install_stopped_audit.py': '04f1a9e6c9c960ca91b4ccf7354b8a4992bd6581',
     'reconcile_contract_note.py': '931fe21de19aa8ef21c46c713836780363fe1a48',
-    'stopped_context.py': '9d53fc3c847f4a5b135315e0397d99e10166af14',
+    'stopped_context.py': '0b2fe4d36ad2b9fcc3459fcfcade0d6ddb8953a3',
     'stopped_broker_read.py': '971e8de30d884ff0b66e745b2a06b8c3fd9c0325',
+    'stopped_watchdog_hold.py': '754375590ef5b1e6d551f3eeb918d1fcdec95c2d',
 }
 
 
@@ -229,6 +231,7 @@ def main(argv=None):
     parser.add_argument('--history', type=Path, required=True)
     parser.add_argument('--evidence', type=Path, required=True)
     parser.add_argument('--broker-check', action='store_true')
+    parser.add_argument('--hold-reviewed-watchdog-cron', action='store_true')
     args = parser.parse_args(argv)
     require(os.geteuid() == 0, 'sudo_required')
     sys.dont_write_bytecode = True
@@ -236,10 +239,12 @@ def main(argv=None):
     report = dict(action='read_only_stopped_readiness', timestamp=datetime.now(timezone.utc).isoformat(),
         source_commit=COMMIT, ledger_repaired=False, restart_requested=False, activation=False,
         broker_flat_verified=False, startup_authorized=False, final_services_verified_stopped=False)
+    if args.hold_reviewed_watchdog_cron:
+        report['action'] = 'stopped_readiness_with_reviewed_watchdog_cron_hold'
     safe_errors = (Blocked,)
     try:
-        helper, prep, source, note, context_module, broker_module = (load_reviewed(name) for name in PINS)
-        safe_errors = (Blocked, context_module.Blocked, broker_module.Blocked)
+        helper, prep, source, note, context_module, broker_module, hold_module = (load_reviewed(name) for name in PINS)
+        safe_errors = (Blocked, context_module.Blocked, broker_module.Blocked, hold_module.Blocked)
         user = pwd.getpwnam('ubuntu')
         with ExitStack() as locks:
             for name in source.LOCKS:
@@ -258,6 +263,9 @@ def main(argv=None):
             source.ensure_stopped(UNITS, helper.observe_unit)
             report['services'] = {name: helper.observe_unit(name) for name in UNITS}
             report['watchdog'] = watchdog_triggers(helper)
+            if args.hold_reviewed_watchdog_cron:
+                report['watchdog_hold'] = hold_module.hold_reviewed_cron(helper)
+                report['watchdog'] = watchdog_triggers(helper)
             context = context_module.inspect_context(user=user, target=TARGET)
             report['service_context'] = context.summary
             report['runtime_flags'] = {name: (context.env[name] if context.env[name] in ('0', '1')
@@ -291,6 +299,8 @@ def main(argv=None):
                 context.guard()
                 prep.verify_timer_hold()
                 source.ensure_stopped(UNITS, helper.observe_unit)
+                if args.hold_reviewed_watchdog_cron:
+                    hold_module.verify_held_cron(helper)
                 base.check_fingerprints(fingerprints)
                 require(private_evidence(args.evidence, helper, user.pw_uid) == raw,
                         'reviewed_evidence_changed')
@@ -318,11 +328,16 @@ def main(argv=None):
         summary = getattr(exc, 'summary', None)
         if isinstance(summary, dict):
             report['service_context'] = summary
+        hold_receipt = getattr(exc, 'hold_receipt', None)
+        if isinstance(hold_receipt, dict):
+            report['watchdog_hold'] = hold_receipt
         print(json.dumps(report, indent=2, sort_keys=True))
-        print('READ ONLY: no ledger repair, service start or activation requested. Review the reported blocker.')
+        prefix = 'READINESS' if args.hold_reviewed_watchdog_cron else 'READ ONLY'
+        print(prefix + ': no ledger repair, service start or activation requested. Review the reported blocker.')
         raise SystemExit(1)
     print(json.dumps(report, indent=2, sort_keys=True))
-    print('READ ONLY: no ledger repair, source change, service start or activation. '
+    prefix = 'READINESS' if args.hold_reviewed_watchdog_cron else 'READ ONLY'
+    print(prefix + ': no ledger repair, source change, service start or activation. '
           'Broker login/read may append normal session audit logs; no order action is requested.')
 
 

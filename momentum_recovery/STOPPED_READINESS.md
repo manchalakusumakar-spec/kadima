@@ -1,12 +1,41 @@
 # Read the stopped installation before historical repair and startup
 
+At 01:00 IST on 28 September, the first host readiness run stopped at service
+property parsing before any broker call. All five units were observed inactive.
+The reader must handle systemd's repeated `EnvironmentFiles=` output and prove
+omitted structured arrays empty rather than assuming that a missing line is an
+empty property. No ledger repair, restart or activation occurred.
+
+The same observation found an Ubuntu crontab reference with SHA256
+`b0814a2c4c0ffcf904743c6232b20313bd471ba3d2c91afef30c75bfa2d20847`.
+This exactly matches `55 9 * * 1-5 systemctl start kadima-eod-watchdog`.
+Its schedule uses the cron environment's timezone, which has not been established.
+The stopped service can therefore still be invoked by cron.
+
+The next bootstrap, `prepare_stopped_restart.sh`, uses the explicit
+`--hold-reviewed-watchdog-cron` option. After the completed-maintenance and
+stopped-service checks, it privately backs up the full Ubuntu crontab, comments
+only that exact reviewed line, checks the installed result and reruns readiness.
+Every other byte of the captured crontab is preserved. Changes observed by the
+before/after checks, an unexpected target line or incomplete prior state block
+further mutation. The standard crontab tool has no atomic compare-and-swap;
+the maintenance locks do not coordinate an independent crontab editor, so an
+edit between the last read and installation can still be overwritten. Avoid
+editing this crontab during the command; its original private backup is retained.
+A repeat accepts only the exact
+verified held state; it never overwrites later crontab edits. The receipt reports
+whether the hold was verified, including when a later check fails. Keep the
+backup for deliberate restoration after the manual holding and watchdog policy
+have been reviewed. This option does not start services or change trades.
+
 PR19 and the combined PR20/PR24/custom-dashboard source installations succeeded
 on 28 September 2026 at 00:13 and 00:34 IST respectively. All five application
 services remain stopped in the supplied host result. New source is installed;
 it has not been activated or verified in a running engine.
 
-`check_stopped_readiness.py` has no apply, repair, service-start or activation
-mode. The bootstrap stages the exact published maintenance commit and PR24
+`check_stopped_readiness.py` has no ledger-repair, service-start or activation
+mode. Its default is read-only; only the explicit option above can change cron.
+The bootstrap stages the exact published maintenance commit and PR24
 release separately from the live checkout. It verifies:
 
 - Both root-private completed maintenance records, current stopped units, held
@@ -43,7 +72,8 @@ not authorize any trade or startup.
 
 Fetch the full published maintenance SHA into `/home/ubuntu/kadima-py` without
 checking it out, then execute that commit's
-`momentum_recovery/check_stopped_readiness.sh` with the same SHA. The bootstrap
+`momentum_recovery/prepare_stopped_restart.sh` with the same SHA to include the
+reviewed cron hold (`check_stopped_readiness.sh` remains read-only). The bootstrap
 uses the existing private evidence path
 `/tmp/kadima-release.ykY99v/reviewed-bankex-95.json`. It never invents evidence.
 Return the JSON report; no credentials or database upload is required.
