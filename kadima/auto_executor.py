@@ -271,7 +271,7 @@ class AutoExecutor:
         # Non-Celestial reconciliation (2026-09-29): exits are verified per
         # position, not globally, so a manual trade in some other contract
         # can no longer switch off KADIMA's stop-loss monitoring.
-        self._exit_verified = set()          # str(signal_id) safe to exit
+        self._exit_paused = set()            # str(signal_id): broker holds less than local qty
         self._external_contracts = set()     # (exchange, token) held outside KADIMA
         self._external_logged = None
         self.fast_rows = {}
@@ -447,14 +447,16 @@ class AutoExecutor:
 
         # Per-position exit verification: a SELL of local quantity is safe
         # only while the broker still holds at least that much of the contract.
-        exit_ok, mismatched = set(), []
+        # Block-list, not allow-list: a position filled after this check is
+        # monitored immediately rather than waiting for the next reconcile.
+        paused, mismatched = set(), []
         for key, qty in expected.items():
             held = live.get(key, 0)
-            if held >= qty:
-                exit_ok.update(str(p.signal_id) for p in owners[key])
+            if held < qty:
+                paused.update(str(p.signal_id) for p in owners[key])
             if held != qty:
                 mismatched.append(key)
-        self._exit_verified = exit_ok
+        self._exit_paused = paused
         self._positions_verified = True     # broker book was readable; exits filter per position
 
         if mismatched or external_on_owned:
@@ -463,7 +465,7 @@ class AutoExecutor:
             audit.log('reconcile_position_quantity_mismatch',
                       mismatched_contracts=len(mismatched),
                       external_orders_on_owned=len(external_on_owned),
-                      exits_still_monitored=len(exit_ok))
+                      exits_paused=len(paused))
             for key in mismatched:
                 if live.get(key, 0) < expected[key]:
                     alerts.enqueue(f"Broker holds less than KADIMA expects for token {key[1]} - "
@@ -478,8 +480,9 @@ class AutoExecutor:
         """Manually exit one open position by signal_id, via the dashboard's
         Live Trade panel. Reuses the exact _close_position() path check_exits()
         already uses for automatic exits — no new order logic, no new risk logic."""
-        verified = (self._celestial_verified if celestial.enabled() else self._exit_verified)
-        if self._reconcile_blocked and str(signal_id) not in verified:
+        verified = (str(signal_id) in self._celestial_verified if celestial.enabled()
+                    else self._positions_verified and str(signal_id) not in self._exit_paused)
+        if self._reconcile_blocked and not verified:
             return {"ok": False, "reason": "startup_reconcile_not_complete"}
 
         with self._lock:
@@ -860,7 +863,7 @@ class AutoExecutor:
             open_positions = [p for p in self.state.positions.values()
                               if p.status in ("open", "entry_pending") and p.remaining_qty > 0
                               and (str(p.signal_id) in self._celestial_verified if celestial.enabled()
-                                   else str(p.signal_id) in self._exit_verified)]
+                                   else str(p.signal_id) not in self._exit_paused)]
         if not open_positions:
             return
 
