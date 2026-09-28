@@ -32,10 +32,11 @@ jobs:
         run: |
           python -m unittest discover -s tests -v
           python -m compileall -q kadima dashboard_live tools trade_audit_update momentum_recovery
-          bash -n momentum_recovery/install_stopped_source.sh momentum_recovery/install_stopped_audit.sh momentum_recovery/check_stopped_readiness.sh momentum_recovery/prepare_stopped_restart.sh momentum_recovery/repair_stopped_history.sh
+          bash -n momentum_recovery/install_stopped_source.sh momentum_recovery/install_stopped_audit.sh momentum_recovery/check_stopped_readiness.sh momentum_recovery/prepare_stopped_restart.sh momentum_recovery/repair_stopped_history.sh momentum_recovery/start_repaired_paused.sh
       - name: Root SQLite sidecar ownership regressions
         run: |
           sudo "$(command -v python)" -m unittest discover -s tests -p 'test_stopped_history_repair.py' -v
+          sudo "$(command -v python)" -m unittest discover -s tests -p 'test_repaired_paused_start.py' -v
       - name: Intercepted desktop and mobile dashboard
         run: |
           node tests/test_celestial_dashboard.cjs

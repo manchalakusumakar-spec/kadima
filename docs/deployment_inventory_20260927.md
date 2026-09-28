@@ -2,7 +2,20 @@
 
 Verified against GitHub PR metadata, exact-head workflow runs and ancestry comparisons to PR20. AWS is not connected; GitHub checks are not evidence of installation or live fills.
 
-## Latest operator update — 28 September 2026, 08:34 IST
+## Latest operator update — 28 September 2026, 08:58 IST
+
+The operator reports `Historical ledger repair committed; all services remain
+stopped` from the pinned repair command. The reviewed expired BANKEX ledger case
+is therefore reported repaired; the startup command independently verifies its
+durable status, archive and exact database outcomes. The repair command requires
+zero pending broker orders before committing. A new broker observation is still
+required before startup.
+
+The engine-only paused startup command is prepared in
+[REPAIRED_PAUSED_START.md](../momentum_recovery/REPAIRED_PAUSED_START.md).
+Engine API health, remaining service startup and trading activation are pending.
+
+## Earlier operator update — 28 September 2026, 08:34 IST
 
 The operator reports cancelling the outstanding broker order. Fresh complete
 broker books must confirm zero pending orders; cancellation is not yet verified
@@ -57,7 +70,7 @@ The operator manages the manual NIFTY carry-forward holding externally.
 | PR20 daily price references and minute history | Source installed; new capture pending startup |
 | PR24 continuous trade learning / forecast and strike review | Source installed; learner startup/heartbeat pending |
 | Custom dashboard including new panels | Source installed; dashboard service stopped |
-| Historical BANKEX ledger repair | Guarded repair prepared; fresh zero-pending-order check and execution pending |
+| Historical BANKEX ledger repair | Operator reports committed at 08:58 IST; durable archive rechecked by startup |
 | Service startup and API/data checks | Pending |
 | Trading activation / automatic session deployment | Pending; no deployment timer was armed by maintenance |
 | PR7 separate CAS engine | Not deployed; integration pending |
