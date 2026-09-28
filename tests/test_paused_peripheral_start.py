@@ -116,6 +116,34 @@ class DependencyAdmissionTests(unittest.TestCase):
                 with self.subTest(key=key, dependency=dependency), self.assertRaises(m.Blocked):
                     m.unit_dependencies(values)
 
+    def test_observed_aws_dashboard_scanner_and_macro_dependencies_are_admitted(self):
+        for unit in m.UNITS:
+            values = self.properties()
+            values['Requires'] = 'sysinit.target system.slice -.mount'
+            values['Wants'] = 'tmp.mount -.mount' if unit == m.DASHBOARD else ''
+            before = values.copy()
+            with self.subTest(unit=unit):
+                m.unit_dependencies(values, unit=unit)
+                self.assertEqual(values, before)
+
+    def test_tmp_mount_exception_is_limited_to_dashboard_wants(self):
+        for unit in (None, m.ENGINE, *m.UNITS, 'unreviewed.service'):
+            for key in m.DEPENDENCIES:
+                if unit == m.DASHBOARD and key == 'Wants':
+                    continue
+                values = self.properties()
+                values[key] = 'tmp.mount'
+                with self.subTest(unit=unit, key=key), self.assertRaises(m.Blocked):
+                    m.unit_dependencies(values, unit=unit)
+
+    def test_dashboard_tmp_exception_does_not_admit_other_mounts_or_services(self):
+        for dependency in ('var-tmp.mount', 'home.mount', 'tmp.mount.extra',
+                           'unreviewed.mount', 'kadima-eod-watchdog.service'):
+            values = self.properties()
+            values['Wants'] = 'tmp.mount -.mount '+dependency
+            with self.subTest(dependency=dependency), self.assertRaises(m.Blocked):
+                m.unit_dependencies(values, unit=m.DASHBOARD)
+
     def test_engine_stop_trigger_binding_and_unknown_dependencies_are_refused(self):
         for key in self.properties():
             invalid = ['kadima-eod-watchdog.service', 'kadima-session-auto.timer', 'unreviewed.service']
@@ -285,6 +313,7 @@ class SnapshotHealthTests(unittest.TestCase):
 
 class UnitContextTests(unittest.TestCase):
     def setUp(self):
+        self.unit = m.SCANNER
         spec = importlib.util.spec_from_file_location('_peripheral_context_fixture',
             ROOT/'momentum_recovery/stopped_context.py')
         self.context = importlib.util.module_from_spec(spec)
@@ -327,7 +356,7 @@ class UnitContextTests(unittest.TestCase):
                 self.context.EMPTY_STRUCT_ARRAYS[command[-1]]+' 0\n'
         if command[1:] == ['show-environment']:
             return self.manager
-        self.assertEqual(command[:3], ['/usr/bin/systemctl', 'show', m.SCANNER])
+        self.assertEqual(command[:3], ['/usr/bin/systemctl', 'show', self.unit])
         if command[command.index('-p')+1] == 'Wants':
             return ''.join(key+'='+value+'\n' for key, value in self.dependencies.items())
         return ''.join(key+'='+value+'\n' for key, value in self.properties.items()
@@ -339,7 +368,25 @@ class UnitContextTests(unittest.TestCase):
         return self.files[path]
 
     def inspect(self):
-        return m.inspect_unit(m.SCANNER, self.cm, self.user)
+        return m.inspect_unit(self.unit, self.cm, self.user)
+
+    def test_dashboard_tmp_mount_passes_context_and_reordering_but_changes_block(self):
+        self.unit = m.DASHBOARD
+        self.properties.update(WorkingDirectory='/opt/kadima-dashboard',
+            FragmentPath='/etc/systemd/system/'+self.unit,
+            ExecStart=launch(PYTHON+' -m uvicorn gateway:app --host 127.0.0.1 --port 8082 --no-access-log'))
+        path = Path(self.properties['FragmentPath'])
+        self.files[path] = self.evidence(path, b'[Service]\nPrivateTmp=true\n')
+        self.dependencies.update(Requires='sysinit.target system.slice -.mount',
+            Wants='tmp.mount -.mount', Conflicts='shutdown.target')
+        before = self.inspect()
+        self.assertEqual(before['summary']['unit'], m.DASHBOARD)
+        self.assertEqual(before['summary']['dependencies']['Wants'], '-.mount tmp.mount')
+        self.dependencies['Wants'] = '-.mount   tmp.mount'
+        self.assertEqual(before['stable'], self.inspect()['stable'])
+        self.dependencies['Wants'] += ' unreviewed.mount'
+        with self.assertRaisesRegex(m.Blocked, 'unreviewed_peripheral_dependency:Wants'):
+            self.inspect()
 
     def test_reviewed_context_reads_ordered_environment_without_exposing_values(self):
         value = self.inspect()

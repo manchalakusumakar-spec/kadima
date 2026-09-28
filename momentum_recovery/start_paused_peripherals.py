@@ -83,7 +83,7 @@ def entrypoint(unit, raw, target=TARGET):
     return Path(executable), argv, Path('/opt/kadima-dashboard') if unit == DASHBOARD else target
 
 
-def unit_dependencies(values):
+def unit_dependencies(values, *, unit=None):
     require(set(values) == set(DEPENDENCIES), 'complete_dependency_properties_required')
     for key, value in values.items():
         require(isinstance(value, str), 'unit_dependency_shape_invalid')
@@ -95,6 +95,10 @@ def unit_dependencies(values):
         # Admit this exact infrastructure mount, never arbitrary mount names.
         if key in ('Requires', 'Wants'):
             allowed = allowed | {'-.mount'}
+        # AWS observation, 2026-09-28 15:30 IST: only the dashboard Wants
+        # tmp.mount. Keep this exact mount scoped to that unit and relation.
+        if unit == DASHBOARD and key == 'Wants':
+            allowed = allowed | {'tmp.mount'}
         require(all(name in allowed for name in value.split()), 'unreviewed_peripheral_dependency:'+key)
 
 
@@ -183,7 +187,7 @@ def inspect_unit(unit, cm, user, *, engine=False):
         require(len(rows) == len(DEPENDENCIES) and all(len(row) == 2 for row in rows), 'complete_dependency_properties_required')
         dependencies = dict(rows)
         summary['dependencies'] = dependencies
-        unit_dependencies(dependencies)
+        unit_dependencies(dependencies, unit=unit)
         dependencies = {key: ' '.join(sorted(set(value.split()))) for key, value in dependencies.items()}
         summary['dependencies'] = dependencies
         summary.update(environment_names=sorted(env))

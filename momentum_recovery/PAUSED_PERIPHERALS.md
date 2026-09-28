@@ -6,6 +6,14 @@ started_ticks104422145, state `repaired_engine_running_paused`. The current
 manual exception is NFO CARRYFORWARD `NIFTY29SEP2622800PE`, token73896, qty65,
 confirmed by the operator at14:50 IST. Peripheral services remain stopped.
 
+At 15:28 IST the peripheral check reported `unreviewed_peripheral_dependency:Wants`
+for the dashboard, with `start_requested=[]`. The operator's 15:30 IST systemd
+output identifies dashboard `Wants=tmp.mount -.mount`; scanner and macro Wants
+are empty. All three have `Requires=sysinit.target system.slice -.mount`.
+The helper now accepts exact `tmp.mount` only for the dashboard's Wants relation.
+The failed admission did not claim a peripheral attempt or issue a start command.
+The corrected bootstrap can continue the same paused startup after fresh checks.
+
 This helper pins that successful startup implementation and reads its success
 record under `/var/lib/kadima-paused-start-20260928/resume-before-start/`.
 It also verifies and fingerprints the original failed attempt in the parent
@@ -58,6 +66,10 @@ Wants. The former follows the reviewed working directories; the latter covers
 the dashboard installer's `PrivateTmp=true` setting, which adds mount Wants in
 [systemd's documented implicit dependencies](https://github.com/systemd/systemd/blob/main/man/systemd.exec.xml).
 Arbitrary mounts and root-mount trigger/stop relations remain unsupported.
+The observed dashboard `tmp.mount` Wants is also accepted, scoped to that exact
+unit and relation; it is not admitted under Requires, trigger/stop relations, or
+for the engine, scanner or macro watcher. This agrees with the documented private
+temporary-directory mount dependencies, without changing the service unit.
 Dependency comparisons use canonical sets so display reordering does not block.
 
 Before starting a service and after health checks, it verifies the paused engine

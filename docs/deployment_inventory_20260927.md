@@ -2,6 +2,17 @@
 
 Verified against GitHub PR metadata, exact-head workflow runs and ancestry comparisons to PR20. AWS is not connected; GitHub checks are not evidence of installation or live fills.
 
+## Peripheral dependency correction — 28 September 2026, 15:30 IST
+
+The operator's 15:28 check reports `unreviewed_peripheral_dependency:Wants`
+for the dashboard with no requested starts. The next supplied systemd output
+identifies dashboard `Wants=tmp.mount -.mount`; scanner and macro Wants are empty.
+All three show `Requires=sysinit.target system.slice -.mount`.
+The helper now admits `tmp.mount` only in dashboard Wants, preserving all other
+source, context, process, pause and health checks. This initial admission failure
+did not consume a peripheral attempt. Execution of the corrected helper remains
+pending; the latest confirmed engine state is running with entries paused.
+
 ## Engine running paused — 28 September 2026, 15:05 IST
 
 The supplied screenshot confirms `02ae9988e02eb80723d9f85f597dcb28996da6fc`
