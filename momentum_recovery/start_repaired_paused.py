@@ -74,6 +74,10 @@ def dependency_admission(properties):
         names = value.split()
         allowed = INFRASTRUCTURE if key in ('Wants', 'Requires', 'BindsTo') else (
             frozenset(('shutdown.target',)) if key == 'Conflicts' else frozenset())
+        # Observed on AWS: RequiresMountsFor=/home/ubuntu/kadima-py adds
+        # the root filesystem dependency. Admit this exact required mount.
+        if key == 'Requires':
+            allowed = allowed | {'-.mount'}
         require(all(name in allowed for name in names), 'unreviewed_engine_dependency:'+key)
 
 

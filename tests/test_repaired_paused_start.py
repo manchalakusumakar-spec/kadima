@@ -76,6 +76,20 @@ class DependencyAdmissionTests(unittest.TestCase):
         m.dependency_admission(properties)
         self.assertEqual(properties, original)
 
+    def test_observed_aws_root_mount_requires_is_admitted(self):
+        properties = dict.fromkeys(m.DEPENDENCIES, '') | dict(
+            Requires='sysinit.target system.slice -.mount', Conflicts='shutdown.target')
+        raw = ''.join(f'{key}={value}\n' for key, value in properties.items())
+        self.assertEqual(m.dependency_snapshot(lambda command: raw), properties)
+
+    def test_root_mount_exception_is_only_requires_and_never_a_mount_wildcard(self):
+        for key, name in [('Requires', 'home.mount'), ('Requires', 'unreviewed.mount')] + [
+                (key, '-.mount') for key in m.DEPENDENCIES if key != 'Requires']:
+            properties = self.properties()
+            properties[key] = name
+            with self.subTest(key=key, name=name), self.assertRaises(m.Blocked):
+                m.dependency_admission(properties)
+
     def test_watchdog_session_timer_and_unknown_units_are_rejected(self):
         for name in self.properties():
             for dependency in ('kadima-eod-watchdog.service', 'kadima-session-auto.timer',

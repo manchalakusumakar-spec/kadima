@@ -2,7 +2,17 @@
 
 Verified against GitHub PR metadata, exact-head workflow runs and ancestry comparisons to PR20. AWS is not connected; GitHub checks are not evidence of installation or live fills.
 
-## Latest operator update — 28 September 2026, 08:58 IST
+## Latest host observation — 28 September 2026, 09:29 IST
+
+The engine remains inactive with PID 0. Paused startup stopped before mutation
+because the guard omitted the host's exact root mount dependency `-.mount`.
+The host reports `Requires=sysinit.target system.slice -.mount` and
+`RequiresMountsFor=/home/ubuntu/kadima-py`; all other dependency groups are empty
+except `Conflicts=shutdown.target`. The startup guard now admits that exact
+root mount only under `Requires`. Historical repair remains committed; runtime
+startup and activation remain pending.
+
+## Earlier operator update — 28 September 2026, 08:58 IST
 
 The operator reports `Historical ledger repair committed; all services remain
 stopped` from the pinned repair command. The reviewed expired BANKEX ledger case

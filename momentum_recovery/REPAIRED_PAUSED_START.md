@@ -1,5 +1,14 @@
 # Start the repaired engine with entries paused
 
+The first startup attempt blocked before any start or override change because
+its dependency allowlist omitted `-.mount`. At 09:29 IST the operator supplied
+the actual host properties: `Requires=sysinit.target system.slice -.mount`,
+`RequiresMountsFor=/home/ubuntu/kadima-py`, `Conflicts=shutdown.target`, and all
+other inspected dependency groups empty. The engine was inactive with PID 0.
+The corrected gate admits only this exact root mount under `Requires`; other
+mounts and unexpected dependencies remain blocked. No service unit is edited
+to remove the filesystem requirement.
+
 At 08:58 IST on 28 September 2026 the operator reported the pinned historical
 repair's success message: "Historical ledger repair committed; all services
 remain stopped." The startup command independently verifies its durable status,
