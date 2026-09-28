@@ -2,6 +2,18 @@
 
 Verified against GitHub PR metadata, exact-head workflow runs and ancestry comparisons to PR20. AWS is not connected; GitHub checks are not evidence of installation or live fills.
 
+## Manual holding confirmed — 28 September 2026, 14:50 IST
+
+The operator confirmed the replacement `NIFTY29SEP2622800PE`, NFO CARRYFORWARD,
+token73896, quantity65 is manually managed. The 14:48:21 IST broker observation
+showed zero pending orders, one nonzero position and historical BANKEX absent.
+The startup helper now admits only that exact holding or an empty position book;
+post-start checks require it remain external and not automatically managed.
+The former CE exception is retained solely in immutable historical repair
+validation. No broker order, runtime source or historical ledger is changed.
+Engine startup, peripheral startup, live health and activation remain pending
+until AWS execution is confirmed. Entries remain paused during recovery.
+
 ## Latest supplied recovery result — 28 September 2026
 
 The recovery command at `8e04eadb4ea7d74d98586b205b9b3820743616ff` passed the

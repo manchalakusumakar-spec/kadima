@@ -84,13 +84,61 @@ class BrokerDiagnosticTests(unittest.TestCase):
         self.assertNotIn('SECRET_LOGIN_RESPONSE', json.dumps(detail))
 
     def test_flat_or_exact_manual_holding_still_passes(self):
-        broker, _ = broker_observation()
-        for positions in ([], [broker.ALLOWED_HOLDING]):
+        for positions in ([], [dict(m.STARTUP_MANUAL_HOLDING)]):
             with self.subTest(positions=positions):
                 broker, receipt = broker_observation(positions=positions)
                 before = deepcopy(receipt)
                 self.assertIs(m.require_broker_readiness(receipt, broker.validate_receipt, m.utc_now()), receipt)
                 self.assertEqual(receipt, before)
+
+    def test_new_manual_exception_does_not_rewrite_original_reader_policy(self):
+        broker, receipt = broker_observation(positions=[dict(m.STARTUP_MANUAL_HOLDING)])
+        self.assertEqual(broker.ALLOWED_HOLDING['symboltoken'], '73921')
+        self.assertFalse(receipt['readiness'])
+        self.assertFalse(receipt['flat'])
+        self.assertFalse(receipt['permitted_manual_holding_observed'])
+        self.assertEqual(receipt['error']['reason'], 'unexpected_exposure')
+        before = deepcopy(receipt)
+        m.require_broker_readiness(receipt, broker.validate_receipt, m.utc_now())
+        self.assertEqual(receipt, before)
+
+    def test_previous_manual_holding_still_validates_history_but_not_current_start(self):
+        broker, _ = broker_observation()
+        broker, receipt = broker_observation(positions=[dict(broker.ALLOWED_HOLDING)])
+        self.assertTrue(broker.validate_receipt(receipt, m.utc_now())['readiness'])
+        with self.assertRaises(m.Blocked):
+            m.require_broker_readiness(receipt, broker.validate_receipt, m.utc_now())
+
+    def test_new_exception_rejects_any_identity_quantity_or_extra_exposure_change(self):
+        variants = [dict(m.STARTUP_MANUAL_HOLDING, **change) for change in (
+            dict(netqty=130), dict(netqty=-65), dict(producttype='INTRADAY'),
+            dict(symboltoken='73921'), dict(tradingsymbol='NIFTY29SEP2623250CE'),
+            dict(exchange='BFO'))]
+        for positions in [[row] for row in variants] + [
+                [dict(m.STARTUP_MANUAL_HOLDING), dict(m.STARTUP_MANUAL_HOLDING, symboltoken='999')]]:
+            with self.subTest(positions=positions):
+                broker, receipt = broker_observation(positions=positions)
+                with self.assertRaises(m.Blocked):
+                    m.require_broker_readiness(receipt, broker.validate_receipt, m.utc_now())
+
+    def test_new_manual_holding_never_exempts_pending_orders(self):
+        pending = dict(exchange='NFO', tradingsymbol='NIFTY29SEP2622800PE', symboltoken='73896',
+            orderid='pending65', orderstatus='open', quantity='65', transactiontype='SELL')
+        broker, receipt = broker_observation(positions=[dict(m.STARTUP_MANUAL_HOLDING)], orders=[pending])
+        with self.assertRaises(m.Blocked) as result:
+            m.require_broker_readiness(receipt, broker.validate_receipt, m.utc_now())
+        self.assertEqual(result.exception.broker_readiness['pending_orders'], 1)
+
+    def test_new_manual_exception_requires_historical_absence_and_exact_error(self):
+        for change in (dict(historical_contract_absent=False),
+                       dict(error=dict(stage='position', reason='historical_exposure_present', type='ValueError')),
+                       dict(error=dict(stage='orderBook', reason='book_request_failed', type='RuntimeError'))):
+            with self.subTest(change=change):
+                broker, receipt = broker_observation(positions=[dict(m.STARTUP_MANUAL_HOLDING)])
+                receipt.update(change)
+                broker.validate_receipt(receipt, m.utc_now())
+                with self.assertRaises(m.Blocked):
+                    m.require_broker_readiness(receipt, broker.validate_receipt, m.utc_now())
 
     def test_invalid_or_stale_receipt_is_never_attached(self):
         for kind in ('extra_field', 'stale', 'unbounded_details'):
@@ -714,6 +762,7 @@ class StartupTransactionTests(unittest.TestCase):
 
     def test_success_orders_pause_override_before_engine_start_and_checks(self):
         report = self.run_start()
+        self.assertEqual(report['startup_manual_holding_exception'], m.STARTUP_MANUAL_HOLDING)
         self.assertTrue(self.active)
         self.assertTrue(self.dropin.is_file())
         self.assertTrue((self.state_dir/'attempted.json').is_file())
@@ -1025,12 +1074,13 @@ class RuntimeFreshnessTests(unittest.TestCase):
             payload[key] = before
 
     def test_only_exact_manual_carryforward_remains_external(self):
-        position = dict(exchange='NFO', token='73921', product='CARRYFORWARD', quantity=130,
-            symbol='NIFTY29SEP2623250CE', source='MANUAL_CARRYFORWARD', managed=True,
+        position = dict(exchange='NFO', token='73896', product='CARRYFORWARD', quantity=65,
+            symbol='NIFTY29SEP2622800PE', source='MANUAL_CARRYFORWARD', managed=True,
             auto_managed=False, reason='carryforward_observed_not_managed', underlying='NIFTY')
         self.top['system']['reconciliation']['positions'] = [position]
         self.assertIs(self.verify()['manual_carryforward_external'], True)
-        for key, changed in (('auto_managed', True), ('quantity', 65), ('quantity', 130.0),
+        for key, changed in (('auto_managed', True), ('quantity', 130), ('quantity', 65.0),
+                             ('token', '73921'), ('symbol', 'NIFTY29SEP2623250CE'),
                              ('source', 'MANUAL_ADOPTED'), ('product', 'INTRADAY')):
             before = position[key]
             position[key] = changed

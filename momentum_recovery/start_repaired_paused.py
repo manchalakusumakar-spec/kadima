@@ -35,6 +35,10 @@ REPAIR_BLOB = '04e8a5508fb34badb15be2b343fefd2e71d5e702'
 UNSET_FLAGS = ('KADIMA_FORCE_START', 'KADIMA_MCX_LIVE', 'KADIMA_FAST_MOMENTUM_LIVE',
                'KADIMA_CAS_LIVE', 'KADIMA_GAP_LIVE', 'KADIMA_MOVE_CAPTURE_LIVE')
 DROPIN_BYTES = ('[Service]\nUnsetEnvironment='+' '.join(UNSET_FLAGS)+'\n').encode()
+# Operator confirmed this replacement holding is externally managed on 28 Sep,
+# 14:50 IST. The pinned broker reader retains its original historical policy.
+STARTUP_MANUAL_HOLDING = dict(exchange='NFO', producttype='CARRYFORWARD',
+    tradingsymbol='NIFTY29SEP2622800PE', symboltoken='73896', netqty=65)
 DEPENDENCIES = ('Wants', 'Requires', 'BindsTo', 'Upholds', 'OnFailure', 'OnSuccess',
                 'Conflicts', 'PartOf', 'PropagatesStopTo', 'Triggers', 'TriggeredBy')
 INFRASTRUCTURE = frozenset(('network.target', 'network-online.target', 'sysinit.target',
@@ -63,10 +67,18 @@ def utc_now():
 
 
 def require_broker_readiness(value, validate, now):
-    """Expose only the bounded, validated receipt when fresh admission fails."""
+    """Apply current startup policy without rewriting historical broker receipts."""
     validate(value, now)
-    if not (value['books_complete'] is True and value['readiness'] is True and
-            value['pending_orders'] == 0):
+    flat = (value['flat'] is True and value['readiness'] is True and
+            value['nonzero_position_count'] == 0 and value['nonzero_positions'] == [] and
+            value['error'] is None)
+    manual = (value['flat'] is False and value['readiness'] is False and
+              value['nonzero_position_count'] == 1 and
+              value['nonzero_positions'] == [STARTUP_MANUAL_HOLDING] and
+              value['permitted_manual_holding_observed'] is False and
+              value['error'] == dict(stage='position', reason='unexpected_exposure', type='ValueError'))
+    if not (value['books_complete'] is True and value['historical_contract_absent'] is True and
+            value['pending_orders'] == 0 and (flat or manual)):
         exc = Blocked('fresh_broker_readiness_required')
         # Copy the validated JSON so later mutation cannot change the report.
         exc.broker_readiness = json.loads(json.dumps(value))
@@ -206,8 +218,10 @@ def verify_runtime(top, learning, now, started_at):
     positions = reconciliation.get('positions')
     require(isinstance(positions, list) and len(positions) <= 1,
             'runtime_broker_positions_unreviewed')
-    allowed = dict(exchange='NFO', token='73921', product='CARRYFORWARD', quantity=130,
-        symbol='NIFTY29SEP2623250CE', source='MANUAL_CARRYFORWARD', managed=True,
+    holding = STARTUP_MANUAL_HOLDING
+    allowed = dict(exchange=holding['exchange'], token=holding['symboltoken'],
+        product=holding['producttype'], quantity=holding['netqty'],
+        symbol=holding['tradingsymbol'], source='MANUAL_CARRYFORWARD', managed=True,
         auto_managed=False, reason='carryforward_observed_not_managed', underlying='NIFTY')
     for position in positions:
         require(isinstance(position, dict) and all(type(position.get(k)) is type(v) and
@@ -292,6 +306,7 @@ def start_transaction(*, apply, helper, state_dir, admission, prepare_override,
     require(inactive(observe(ENGINE)), 'engine_must_be_stopped_before_start')
     report = dict(action='repaired_paused_engine_start' if apply else 'repaired_paused_start_plan',
         state='paused_start_planned', activation=False, ledger_repaired=False,
+        startup_manual_holding_exception=dict(STARTUP_MANUAL_HOLDING),
         runtime_source_changed=False, start_requested=[], stopped_after_failure=[],
         start_command_invoked=False,
         peripheral_services_started=False, peripheral_startup_pending=True)

@@ -1,5 +1,29 @@
 # Start the repaired engine with entries paused
 
+## Confirmed replacement manual holding — 28 September, 14:50 IST
+
+The 14:48:21 IST broker receipt showed complete books, zero pending orders,
+historical BANKEX absent, and exactly `NFO / CARRYFORWARD /
+NIFTY29SEP2622800PE / token 73896 / netqty 65`. At 14:50 IST the operator
+confirmed this is his manual trade and that he will manage it himself.
+
+Current startup admission and runtime reconciliation now require either an
+empty position book or precisely this new holding. The former 23250 CE qty130
+exception is not accepted for current startup. Any pending order, different
+identity/quantity, extra exposure, incomplete book or historical exposure blocks.
+The engine must report the PE as `MANUAL_CARRYFORWARD`, `auto_managed=false`,
+with no managed positions, while entries remain paused. Its verified carryforward
+path observes the holding without adopting, exiting or trailing it.
+
+The pinned historical broker reader and repair validator remain byte-for-byte
+unchanged. Its receipt still truthfully evaluates the original CE policy and
+reports `readiness=false / unexpected_exposure` for this replacement PE. Only
+the current startup helper applies the operator-confirmed exact exception to
+that validated receipt; it does not rewrite the receipt or claim broker flatness.
+The startup status records `startup_manual_holding_exception` explicitly.
+Use the newly pinned recovery command; initial admission failures did not consume
+the recovery attempt. All other recovery, source and runtime gates remain.
+
 ## Fresh broker admission diagnostic
 
 The latest operator screenshot on 28 September shows recovery commit
