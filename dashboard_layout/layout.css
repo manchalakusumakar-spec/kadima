@@ -1,0 +1,18 @@
+.layout-toolbar{display:flex;align-items:center;gap:14px;flex-wrap:wrap;padding:12px 0;color:var(--muted)}
+#layoutStatus{font-size:12px}#editLayout{margin-left:auto;color:var(--gold)}
+.layout-rows{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:18px}
+.layout-rows:empty{display:none}.layout-row{grid-column:1/-1;min-width:0}
+.layout-row.layout-half{grid-column:auto}.layout-row.legacy-panels{margin:0}
+.layout-row>section.panel,.layout-row>#legacy-panels{margin:0}
+#layoutEditor{color:var(--text);background:var(--panel);border:1px solid var(--line);border-radius:16px;width:min(680px,calc(100vw - 24px));max-height:calc(100dvh - 24px);padding:24px;box-shadow:0 24px 100px #0009}
+#layoutEditor::backdrop{background:#020712c9}#layoutEditor[open]{display:flex;flex-direction:column}
+.layout-dialog-head,.layout-actions{display:flex;align-items:center;justify-content:space-between;gap:12px;flex-shrink:0}
+#layoutTitle{font-size:23px;margin-top:8px}#layoutHelp{font-size:13px;margin:14px 0}
+#layoutList{list-style:none;margin:0;padding:4px;overflow-y:auto;overscroll-behavior:contain;min-height:80px;max-height:55dvh;scroll-behavior:auto}
+#layoutList li{display:flex;align-items:center;gap:10px;padding:10px;margin:0 0 8px;border:1px solid var(--line);border-radius:9px;background:#142039}
+#layoutList .layout-label{flex:1;min-width:0;font-size:13px}#layoutList button{min-width:38px;min-height:40px;padding:7px}
+#layoutList .layout-grip{touch-action:none;cursor:grab;font-size:23px;background:transparent;border-color:transparent}
+#layoutList .layout-dragging{border-color:var(--gold);background:#273047}#layoutList .layout-dragging .layout-grip{cursor:grabbing}
+.layout-number{color:var(--gold);font-variant-numeric:tabular-nums;min-width:20px}#layoutAnnounce{font-size:12px;min-height:2.5em;margin:12px 0}
+#layoutEditor button:focus-visible,#editLayout:focus-visible{outline:2px solid var(--gold);outline-offset:3px}
+@media(max-width:700px){.layout-row.layout-half{grid-column:1/-1}#layoutEditor{padding:15px}#layoutList li{gap:6px;padding:8px}.layout-actions{flex-wrap:wrap}#layoutStatus{flex-basis:100%}}
