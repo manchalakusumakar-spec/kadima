@@ -2,6 +2,22 @@
 
 Verified against GitHub PR metadata, exact-head workflow runs and ancestry comparisons to PR20. AWS is not connected; GitHub checks are not evidence of installation or live fills.
 
+## Engine running paused — 28 September 2026, 15:05 IST
+
+The supplied screenshot confirms `02ae9988e02eb80723d9f85f597dcb28996da6fc`
+successfully resumed the engine: `repaired_engine_running_paused`, PID206362,
+started_ticks104422145, `start_command_invoked=true`, `resumed_before_start=true`,
+no cleanup stop, and exact manual PE exception qty65. Entries remain paused.
+The helper's success requires its source, repair, process and runtime checks;
+live market-feed freshness remains separately unverified.
+
+Dashboard, universe scanner and macro watcher remain stopped. Their guarded
+startup is prepared in `momentum_recovery/start_paused_peripherals.sh`; it verifies
+the recovery success record and current engine, then starts those three services
+and checks gateway/snapshot health. The engine is not restarted, and the watchdog
+and its cron stay held. Peripheral AWS execution and trading activation remain
+pending. This step does not deploy the separate unintegrated feature branches.
+
 ## Manual holding confirmed — 28 September 2026, 14:50 IST
 
 The operator confirmed the replacement `NIFTY29SEP2622800PE`, NFO CARRYFORWARD,
