@@ -42,7 +42,15 @@ The earlier unsafe watchdog cron remains held; the new timer replaces its role.
 ## Installation and verification
 
 Run the pinned `priority_trading/deploy.sh COMMIT MCX_CAPITAL` on the AWS host.
-The wrapper fetches both immutable commits and the installer:
+The wrapper fetches both immutable commits. It first validates every runtime
+manifest source and tightens **only** exact-source, engine-owned (`ubuntu:ubuntu`)
+mode **0664 to 0644**. Existing protected root/engine files retain their modes.
+No recursive chmod/chown, content edit, ownership change, service action or
+database/broker access is performed by this permission step. Unknown contents,
+owners/modes, links or replaced inodes block before deployment. It holds the
+existing maintenance locks, logs the plan and each result in a private
+`/var/lib/kadima-priority-modes-*/status.json`, and preserves any already tightened
+modes on failure. The separate normal installer then runs all existing checks:
 
 1. Verifies the ordinary deployment receipt, exact composed sources, service
    context, paused controls, historical repair provenance and absence of local
@@ -71,6 +79,13 @@ and reports the relative filename and nonsecret metadata on refusal. The old
 output did not identify the file or its metadata, so the host diagnosis is
 conditional on this check; no recursive ownership/permission change is needed.
 An initial refusal leaves the existing scheduler state unobserved, not disabled.
+
+The follow-up AWS output shared at 21:55 IST identified the actual first file:
+`kadima/auto_executor.py`, UID/GID 1000/1000, mode 0664. No attempt was claimed,
+deployment performed or service change requested. The permission preflight
+above resolves that observed mode for all matching runtime manifest files while
+keeping the installer's strict metadata admission unchanged. Protected root
+ownership was not the cause of this particular refusal.
 
 Any incomplete attempt retains its backups and revokes entry permission. It
 does not roll back a trading database, manufacture a broker fill, reset a kill

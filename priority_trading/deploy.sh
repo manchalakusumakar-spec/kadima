@@ -18,6 +18,7 @@ kadima_priority_stage=$(/usr/bin/mktemp -d /tmp/kadima-priority.XXXXXX)
 /usr/bin/git --no-replace-objects -C "$kadima_priority_history" archive --format=tar "$kadima_priority_commit" > "$kadima_priority_stage/release.tar"
 /usr/bin/mkdir "$kadima_priority_stage/release"
 /usr/bin/tar --extract --file="$kadima_priority_stage/release.tar" --directory="$kadima_priority_stage/release" --no-same-owner
+/usr/bin/sudo -n /usr/bin/python3 -I -B "$kadima_priority_stage/release/priority_trading/normalize_source_modes.py" --apply
 /usr/bin/sudo -n /usr/bin/python3 -I -B "$kadima_priority_stage/release/priority_trading/install.py" \
   --history "$kadima_priority_history" \
   --evidence /tmp/kadima-release.ykY99v/reviewed-bankex-95.json \
