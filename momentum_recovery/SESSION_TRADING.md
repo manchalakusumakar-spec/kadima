@@ -11,6 +11,34 @@ installed learning release `8837cd6dc04e16123e94d8b78a3a716f83ed022c` for compar
 The Python default is a plan; the bootstrap selects `--apply`. Actual AWS
 execution remains the operator's step because this session has no SSH/SSM access.
 
+## 18:39 IST installation blocker corrected
+
+The operator's 28 September screenshot from commit
+`90cbd1ad0c2257824a2630f673a6879aaf9513d0` reports
+`unsafe_parent_directory`, `state=blocked`, scheduler false and live entries
+false. No STATUS banner appears: this is constructor/admission failure before
+an attempt is claimed or any service restart/flag/scheduler change is requested.
+
+The installer incorrectly applied the private-directory ancestor rule to each
+file under `/run/lock`. That rejects a valid root-owned sticky 01777 lock
+directory. Debian's systemd packaging documents that shared layout in
+[maintainer discussion 1072105](https://bugs.debian.org/1072105). The screenshot
+does not expose actual host permissions, so the corrected helper checks them.
+
+The correction admits only exact `/run/lock` when it is root-owned and either
+nonwritable by group/others or exact mode 01777. `/run` and `/` retain the original
+nonwritable root-owned ancestor rule. Each opened lock must still be a regular,
+single-link root-owned file with no group/other write permission. Directory and
+file descriptors reject symlinks; the named inode is checked after nonblocking
+exclusive locking. The installer keeps the existing lock names/inodes so it
+still excludes the existing maintenance/scheduler processes. It never chmods,
+truncates, replaces or unlinks lock files or the shared directory.
+
+The generic private-parent helper and all non-lock configuration, state, source,
+account, broker, manual-holding, pause and readiness checks remain unchanged.
+The updated bootstrap can retry this initial admission failure; it does not
+remove an attempt marker or resume a partially executed activation transaction.
+
 ## What the command verifies and changes
 
 1. Verify the private successful paused-peripheral receipt and all four process

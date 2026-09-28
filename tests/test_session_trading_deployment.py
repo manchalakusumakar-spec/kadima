@@ -1,8 +1,12 @@
 """Offline deployment admission, restart sequencing and scheduler rollback."""
+from contextlib import ExitStack
 from copy import deepcopy
 from datetime import datetime, timedelta, timezone
 import importlib.util
 import json
+import os
+import stat
+import tempfile
 from pathlib import Path
 from types import SimpleNamespace
 import unittest
@@ -15,6 +19,127 @@ SPEC.loader.exec_module(m)
 gate = m.load('session_auto/gate.py')
 POLICY = json.loads((ROOT/'session_auto/policy.json').read_bytes())
 NOW = datetime(2026, 9, 28, 12, 35, tzinfo=timezone.utc)
+
+
+class LockDirectoryTests(unittest.TestCase):
+    def info(self, mode, uid=0, kind=stat.S_IFDIR):
+        return SimpleNamespace(st_mode=kind | mode, st_uid=uid)
+
+    def test_standard_sticky_lock_directory_and_nonwritable_variants(self):
+        for mode in (0o1777, 0o755, 0o700, 0o750, 0o1755):
+            with self.subTest(mode=oct(mode)):
+                self.assertTrue(m.lock_directory_admitted(self.info(mode)))
+
+    def test_nonsticky_writable_and_nonstandard_writable_modes_are_rejected(self):
+        for mode in (0o777, 0o775, 0o757, 0o770, 0o1775, 0o3777):
+            with self.subTest(mode=oct(mode)):
+                self.assertFalse(m.lock_directory_admitted(self.info(mode)))
+
+    def test_sticky_does_not_admit_wrong_owner_or_nondirectory(self):
+        for uid, kind in ((1000, stat.S_IFDIR), (0, stat.S_IFREG), (0, stat.S_IFLNK), (0, stat.S_IFIFO)):
+            with self.subTest(uid=uid, kind=kind):
+                self.assertFalse(m.lock_directory_admitted(self.info(0o1777, uid, kind)))
+
+    def test_exception_is_limited_to_exact_lock_directory(self):
+        helper=SimpleNamespace(root_parents=Mock())
+        with ExitStack() as stack, self.assertRaisesRegex(m.Blocked, 'lock_path'):
+            m.maintenance_lock(stack, helper, Path('/tmp/unreviewed.lock'))
+        helper.root_parents.assert_not_called()
+
+    def test_nonlock_ancestor_rule_is_unchanged(self):
+        helper=SimpleNamespace(root_parents=Mock(side_effect=m.Blocked('unsafe_parent_directory')))
+        with ExitStack() as stack, patch.object(m.os, 'open') as opened:
+            with self.assertRaisesRegex(m.Blocked, 'unsafe_parent_directory'):
+                m.maintenance_lock(stack, helper, m.LOCK_DIRECTORY/'kadima-test.lock')
+        helper.root_parents.assert_called_once_with(m.LOCK_DIRECTORY)
+        opened.assert_not_called()
+
+
+@unittest.skipUnless(os.geteuid() == 0, 'Root file ownership fixtures run in privileged CI')
+class RealLockFiles(unittest.TestCase):
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.directory=Path(self.tmp.name)/'lock'
+        self.directory.mkdir();self.directory.chmod(0o1777)
+        self.original_mode=stat.S_IMODE(self.directory.stat().st_mode)
+        self.path=self.directory/'kadima-test.lock'
+        self.helper=SimpleNamespace(root_parents=Mock())
+        self.override=patch.object(m,'LOCK_DIRECTORY',self.directory)
+        self.override.start();self.addCleanup(self.override.stop)
+
+    def test_existing_root_lock_inode_contents_and_mode_are_preserved(self):
+        self.path.write_bytes(b'existing lock contents')
+        self.path.chmod(0o644)
+        before=self.path.stat()
+        with ExitStack() as locks:
+            stream=m.maintenance_lock(locks,self.helper,self.path)
+            self.assertEqual(os.fstat(stream.fileno()).st_ino,before.st_ino)
+            self.assertEqual(stream.read(),b'existing lock contents')
+            with ExitStack() as competitor, self.assertRaises(BlockingIOError):
+                m.maintenance_lock(competitor,self.helper,self.path)
+        after=self.path.stat()
+        self.assertEqual((before.st_ino,before.st_mode,before.st_size),(after.st_ino,after.st_mode,after.st_size))
+        self.assertEqual(stat.S_IMODE(self.directory.stat().st_mode),self.original_mode)
+        with ExitStack() as subsequent:
+            m.maintenance_lock(subsequent,self.helper,self.path)
+        self.helper.root_parents.assert_called_with(self.directory)
+
+    def test_new_lock_is_private_and_reusable(self):
+        with ExitStack() as locks:
+            m.maintenance_lock(locks,self.helper,self.path)
+            info=self.path.stat()
+            self.assertEqual(info.st_uid,0)
+            self.assertEqual(stat.S_IMODE(info.st_mode),0o600)
+            self.assertEqual(info.st_nlink,1)
+        with ExitStack() as locks:
+            m.maintenance_lock(locks,self.helper,self.path)
+
+    def test_group_or_world_writable_file_is_rejected(self):
+        for mode in (0o666,0o660,0o622):
+            self.path.write_bytes(b'unchanged');self.path.chmod(mode)
+            with self.subTest(mode=mode),ExitStack() as locks,self.assertRaisesRegex(m.Blocked,'private_lock'):
+                m.maintenance_lock(locks,self.helper,self.path)
+            self.assertEqual(self.path.read_bytes(),b'unchanged')
+            self.path.unlink()
+
+    def test_symlink_and_hardlink_are_rejected_without_modifying_target(self):
+        target=self.directory/'target';target.write_bytes(b'protected')
+        self.path.symlink_to(target)
+        with ExitStack() as locks,self.assertRaisesRegex(m.Blocked,'lock_path'):
+            m.maintenance_lock(locks,self.helper,self.path)
+        self.path.unlink();os.link(target,self.path)
+        with ExitStack() as locks,self.assertRaisesRegex(m.Blocked,'private_lock'):
+            m.maintenance_lock(locks,self.helper,self.path)
+        self.assertEqual(target.read_bytes(),b'protected')
+
+    def test_fifo_is_rejected_without_blocking(self):
+        os.mkfifo(self.path,0o600)
+        with ExitStack() as locks,self.assertRaisesRegex(m.Blocked,'private_lock'):
+            m.maintenance_lock(locks,self.helper,self.path)
+
+    def test_nonsticky_writable_parent_is_rejected_before_creating_file(self):
+        self.directory.chmod(0o777)
+        with ExitStack() as locks,self.assertRaisesRegex(m.Blocked,'lock_directory_owner_or_mode'):
+            m.maintenance_lock(locks,self.helper,self.path)
+        self.assertFalse(self.path.exists())
+
+    def test_directory_symlink_is_rejected(self):
+        linked=Path(self.tmp.name)/'linked';linked.symlink_to(self.directory,target_is_directory=True)
+        with patch.object(m,'LOCK_DIRECTORY',linked),ExitStack() as locks,self.assertRaisesRegex(m.Blocked,'lock_path'):
+            m.maintenance_lock(locks,self.helper,linked/'kadima-test.lock')
+        self.assertFalse(self.path.exists())
+
+    def test_replaced_inode_is_rejected_and_descriptor_released(self):
+        original_flock=m.fcntl.flock
+        replacement=self.directory/'replacement';replacement.write_bytes(b'new')
+        def replacing(fd,flags):
+            original_flock(fd,flags)
+            os.replace(replacement,self.path)
+        with patch.object(m.fcntl,'flock',side_effect=replacing),ExitStack() as locks,self.assertRaisesRegex(m.Blocked,'lock_inode_changed'):
+            m.maintenance_lock(locks,self.helper,self.path)
+        with ExitStack() as locks:
+            m.maintenance_lock(locks,self.helper,self.path)
 
 
 class Boundaries(unittest.TestCase):

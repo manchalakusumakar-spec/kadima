@@ -2,6 +2,21 @@
 
 Verified against GitHub PR metadata, exact-head workflow runs and ancestry comparisons to PR20. AWS is not connected; GitHub checks are not evidence of installation or live fills.
 
+## Auto-trading attempt blocked — 28 September 2026, 18:39 IST
+
+The operator ran the activation command at `90cbd1ad0c2257824a2630f673a6879aaf9513d0`.
+Its initial admission returned `unsafe_parent_directory`, scheduler false,
+live entries false and `state=blocked`. No service restart or activation was
+requested before that failure. Auto-trading restoration remains pending.
+
+The installer used a private-directory parent check for shared `/run/lock`.
+The correction validates that exact directory as root-owned/nonwritable or
+root-owned sticky 01777, preserves strict parent checks above it, and retains
+no-follow, root-owner, regular-file, single-link, nonwritable-file and exclusive
+inode lock checks. No server permissions are changed. Host metadata must pass
+these checks; the screenshot alone does not prove its mode. See
+[SESSION_TRADING.md](../momentum_recovery/SESSION_TRADING.md) for the retry.
+
 ## Auto-trading restoration prepared — 28 September 2026
 
 Operator screenshots at 16:38 IST confirm `paused_peripherals_running`: engine,

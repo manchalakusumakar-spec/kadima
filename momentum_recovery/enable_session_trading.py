@@ -29,6 +29,7 @@ ENGINE = 'kadima.service'
 TIMER = 'kadima-session-auto.timer'
 JOB = 'kadima-session-auto.service'
 SCHEDULER = Path('/opt/kadima-session-auto')
+LOCK_DIRECTORY = Path('/run/lock')
 PINS = {
     'momentum_recovery/start_paused_peripherals.py': '491146b5a903bcedfb1113577f2a8a7284354286',
     'session_auto/install.py': '9e98a404d3f60eb33320f8465b9378bdb9c564ff',
@@ -71,6 +72,46 @@ def load(relative):
     sys.modules[spec.name] = module
     spec.loader.exec_module(module)
     return module
+
+
+def lock_directory_admitted(info):
+    """Only root's nonwritable directory or exact standard sticky 01777."""
+    mode = stat.S_IMODE(info.st_mode)
+    return (stat.S_ISDIR(info.st_mode) and info.st_uid == 0 and
+            (not mode & 0o022 or mode == 0o1777))
+
+
+def maintenance_lock(locks, helper, path):
+    """Keep the shared lock inode; never chmod, truncate, replace or unlink it.
+
+    /run/lock may legitimately be root-owned 01777. Its sticky bit protects
+    root-owned entries; /run and / retain the original nonwritable-parent rule.
+    All non-lock files continue to use the original stricter helper unchanged.
+    """
+    require(path.parent == LOCK_DIRECTORY and path.name.endswith('.lock') and
+            path.resolve(strict=False) == path, 'lock_path_unreviewed')
+    helper.root_parents(LOCK_DIRECTORY)
+    directory_fd = os.open(LOCK_DIRECTORY, os.O_RDONLY | os.O_DIRECTORY | os.O_NOFOLLOW | os.O_CLOEXEC)
+    try:
+        require(lock_directory_admitted(os.fstat(directory_fd)), 'lock_directory_owner_or_mode_unreviewed')
+        fd = os.open(path.name, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW | os.O_NONBLOCK | os.O_CLOEXEC,
+                     0o600, dir_fd=directory_fd)
+        try:
+            info = os.fstat(fd)
+            require(stat.S_ISREG(info.st_mode) and info.st_uid == 0 and info.st_nlink == 1 and
+                    not info.st_mode & 0o022, 'private_lock_required')
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            linked = os.stat(path.name, dir_fd=directory_fd, follow_symlinks=False)
+            require((linked.st_dev, linked.st_ino) == (info.st_dev, info.st_ino) and
+                    linked.st_nlink == 1, 'lock_inode_changed')
+            stream = os.fdopen(fd, 'r+b')
+            fd = None
+            return locks.enter_context(stream)
+        finally:
+            if fd is not None:
+                os.close(fd)
+    finally:
+        os.close(directory_fd)
 
 
 def after_hours(gate, policy, at):
@@ -197,13 +238,8 @@ class Deployment:
         self.user = pwd.getpwnam('ubuntu')
         self.scheduler_lock = None
         for name in self.source.LOCKS:
-            path = Path('/run/lock')/(name+'.lock')
-            self.helper.root_parents(path)
-            stream = locks.enter_context(os.fdopen(os.open(path, os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600), 'w'))
-            info = os.fstat(stream.fileno())
-            require(stat.S_ISREG(info.st_mode) and info.st_uid == 0 and info.st_nlink == 1 and
-                    not info.st_mode & 0o022, 'private_lock_required')
-            fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            path = LOCK_DIRECTORY/(name+'.lock')
+            stream = maintenance_lock(locks, self.helper, path)
             if name == 'kadima-session-auto-run':
                 self.scheduler_lock = stream
         self.scheduler_install = load('session_auto/install.py')
