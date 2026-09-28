@@ -39,6 +39,12 @@ jobs:
           sudo "$(command -v python)" -m unittest discover -s tests -p 'test_repaired_paused_start.py' -v
           sudo "$(command -v python)" -m unittest discover -s tests -p 'test_paused_peripheral_start.py' -v
           sudo "$(command -v python)" -m unittest discover -s tests -p 'test_session*py' -v
+      - name: Composed MCX CAS and owned watchdog regressions
+        run: |
+          python priority_trading/verify.py
+          sudo "$(command -v python)" priority_trading/verify.py
+          python -m compileall -q priority_trading
+          bash -n priority_trading/deploy.sh
       - name: Intercepted desktop and mobile dashboard
         run: |
           node tests/test_celestial_dashboard.cjs
