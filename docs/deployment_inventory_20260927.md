@@ -2,6 +2,22 @@
 
 Verified against GitHub PR metadata, exact-head workflow runs and ancestry comparisons to PR20. AWS is not connected; GitHub checks are not evidence of installation or live fills.
 
+## Reviewed engine restart — 28 September 2026, 16:25 IST
+
+The operator's systemd output records a successful engine exit at 15:40:03 IST
+and automatic restart at 15:40:13 IST (`Restart=always`, `NRestarts=1`,
+`Result=success`). PID208838 is active/running. The earlier peripheral attempt
+correctly refused the changed process before requesting any starts.
+
+The peripheral bootstrap now supports this exact observed restart, preserving
+the original PID206362 startup receipt and binding its own checks to PID208838.
+It repeats full source/context/process/policy/health admission, requires fresh
+broker books under the existing exact manual PE-or-flat policy, and records both
+identities plus restart and broker evidence. Another process/restart still blocks.
+The engine and its startup records are not changed. Dashboard/scanner/macro
+startup still requires successful AWS execution; trading activation and fresh
+market-feed verification remain pending.
+
 ## Peripheral dependency correction — 28 September 2026, 15:30 IST
 
 The operator's 15:28 check reports `unreviewed_peripheral_dependency:Wants`

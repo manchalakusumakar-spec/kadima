@@ -42,6 +42,13 @@ OBSERVER_OVERLAYS = {
     'kadima/macro_watch.py': '61f04cb86af8f187a6798e272d49f31776f4642d',
     'kadima/news_context.py': 'c8f31dd813856167749308455461973b76233983',
 }
+REVIEWED_RESTART_AT = datetime(2026, 9, 28, 10, 10, 13, tzinfo=timezone.utc)
+REVIEWED_ORIGINAL_PROCESS = dict(pid='206362', started_ticks='104422145')
+REVIEWED_RESTART_PROPERTIES = dict(ActiveState='active', SubState='running',
+    MainPID='208838', Restart='always', NRestarts='1', Result='success',
+    ExecMainStartTimestamp='Mon 2026-09-28 10:10:13 UTC',
+    ExecMainExitTimestamp='', ExecMainCode='0', ExecMainStatus='0')
+RESTART_PROPERTIES = (*REVIEWED_RESTART_PROPERTIES, 'ExecMainStartTimestampMonotonic')
 
 
 class Blocked(RuntimeError):
@@ -200,7 +207,7 @@ def inspect_unit(unit, cm, user, *, engine=False):
         raise
 
 
-def process_identity(context, observe, user):
+def process_identity(context, observe, user, *, environment_guard=None):
     value = observe(context['unit'])
     pid = value.get('MainPID', '')
     require(value.get('ActiveState') == 'active' and pid.isdigit() and int(pid) > 0, 'service_process_not_active')
@@ -210,6 +217,8 @@ def process_identity(context, observe, user):
     require(argv == context['argv'], 'service_process_arguments_changed')
     env = dict(part.split(b'=', 1) for part in (path/'environ').read_bytes().split(b'\0') if b'=' in part)
     require(all(env.get(k.encode()) == v.encode() for k, v in context['env'].items()), 'service_process_environment_changed')
+    if environment_guard is not None:
+        environment_guard({k.decode(): v.decode() for k, v in env.items()})
     started = (path/'stat').read_text().rsplit(') ', 1)[1].split()[19]
     return dict(pid=pid, started_ticks=started)
 
@@ -283,12 +292,80 @@ def verify_startup_record(start, helper, dependencies, now):
     return status, started, fingerprints
 
 
-def transaction(*, apply, helper, state_dir, admission, observe, invoke, health, guard, process):
+def restart_snapshot(invoke):
+    command = ['/usr/bin/systemctl', 'show', ENGINE, '--all', '--full', '--no-pager']
+    for name in RESTART_PROPERTIES:
+        command.extend(['-p', name])
+    rows = [line.split('=', 1) for line in invoke(command).splitlines()]
+    require(len(rows) == len(RESTART_PROPERTIES) and all(len(row) == 2 for row in rows),
+            'restart_property_shape_invalid')
+    values = dict(rows)
+    require(set(values) == set(RESTART_PROPERTIES), 'restart_property_shape_invalid')
+    require(all(values[k] == v for k, v in REVIEWED_RESTART_PROPERTIES.items()),
+            'reviewed_session_restart_changed')
+    stamp = values['ExecMainStartTimestampMonotonic']
+    require(stamp.isascii() and stamp.isdigit() and int(stamp) > 0,
+            'restart_monotonic_timestamp_invalid')
+    return values
+
+
+def bind_engine_process(status, current, started_at, *, allow_restart, invoke, now, ticks_per_second):
+    """Bind this operation to one process; never rewrite the startup receipt."""
+    original = status['process']
+    binding = dict(original_process=dict(original), process=dict(current),
+        started_at=started_at.isoformat(), session_restart=False, revalidated=False)
+    if current == original:
+        return binding
+    require(allow_restart, 'paused_engine_process_changed')
+    require(original == REVIEWED_ORIGINAL_PROCESS and
+            current.get('pid') == REVIEWED_RESTART_PROPERTIES['MainPID'] and
+            set(current) == {'pid', 'started_ticks'} and
+            isinstance(current['started_ticks'], str) and current['started_ticks'].isascii() and
+            current['started_ticks'].isdigit() and
+            int(current['started_ticks']) > int(original['started_ticks']),
+            'reviewed_session_restart_process_required')
+    require(now.tzinfo is not None and now.date() == REVIEWED_RESTART_AT.date() and
+            started_at <= datetime.fromisoformat(status['observed_at']) < REVIEWED_RESTART_AT <= now,
+            'reviewed_session_restart_chronology_required')
+    properties = restart_snapshot(invoke)
+    require(type(ticks_per_second) is int and ticks_per_second > 0 and
+            abs(int(properties['ExecMainStartTimestampMonotonic']) / 1_000_000 -
+                int(current['started_ticks']) / ticks_per_second) <= 1,
+            'restart_process_timestamp_mismatch')
+    binding.update(session_restart=True, started_at=REVIEWED_RESTART_AT.isoformat(),
+                   systemd=properties)
+    return binding
+
+
+def guard_engine_binding(binding, current, invoke, now):
+    require(current == binding['process'], 'paused_engine_process_changed')
+    if binding['session_restart']:
+        require(now.date() == REVIEWED_RESTART_AT.date() and now >= REVIEWED_RESTART_AT,
+                'reviewed_session_restart_chronology_required')
+        require(restart_snapshot(invoke) == binding['systemd'], 'reviewed_session_restart_changed')
+
+
+def revalidate_restart_broker(binding, *, read, start, broker, now):
+    if not binding['session_restart']:
+        return
+    value = binding.get('broker_readiness')
+    if value is None or (now - datetime.fromisoformat(value['checked_at'])).total_seconds() >= 20:
+        value = read()
+        # Only the pinned, bounded receipt schema can enter the report.
+        broker.validate_receipt(value, utc_now())
+        binding['broker_readiness'] = json.loads(json.dumps(value))
+    start.require_broker_readiness(value, broker.validate_receipt, utc_now())
+
+
+def transaction(*, apply, helper, state_dir, admission, observe, invoke, health, guard, process,
+                engine_validation=None):
     admission()
     require(all(inactive(observe(unit)) for unit in UNITS), 'peripherals_must_be_stopped')
     report = dict(action='start_paused_peripherals' if apply else 'paused_peripherals_plan',
         state='paused_peripherals_planned', activation=False, start_requested=[], processes={},
         stopped_after_failure=[], cleanup_failures=[], runtime_source_changed=False)
+    if engine_validation is not None:
+        report['engine_validation'] = engine_validation
     if not apply:
         return report
     helper.root_parents(state_dir)
@@ -369,6 +446,7 @@ def main(argv=None):
     parser.add_argument('--history', type=Path, required=True)
     parser.add_argument('--evidence', type=Path, required=True)
     parser.add_argument('--apply', action='store_true')
+    parser.add_argument('--reviewed-session-restart', action='store_true')
     args = parser.parse_args(argv)
     require(os.geteuid() == 0, 'sudo_required')
     os.umask(0o077)
@@ -405,8 +483,14 @@ def main(argv=None):
             fingerprints[start.DROPIN] = start.DROPIN_BYTES
             contexts = {unit: inspect_unit(unit, cm, user, engine=unit == ENGINE) for unit in (ENGINE, *UNITS)}
             start.paused_environment(contexts[ENGINE]['env'])
-            require(process_identity(contexts[ENGINE], helper.observe_unit, user) == startup_status['process'],
-                    'paused_engine_process_changed')
+            def engine_process():
+                return process_identity(contexts[ENGINE], helper.observe_unit, user,
+                    environment_guard=start.paused_environment)
+            engine_binding = bind_engine_process(startup_status, engine_process(), engine_after,
+                allow_restart=args.reviewed_session_restart, invoke=cm.invoke, now=utc_now(),
+                ticks_per_second=os.sysconf('SC_CLK_TCK'))
+            report['engine_validation'] = engine_binding
+            engine_after = datetime.fromisoformat(engine_binding['started_at'])
             raw = ready.private_evidence(args.evidence, helper, user.pw_uid)
             require(hashlib.sha256(raw).hexdigest() == repair.EVIDENCE_SHA256, 'exact_reviewed_evidence_required')
             evidence = note.evidence(json.loads(raw), utc_now())
@@ -447,8 +531,10 @@ def main(argv=None):
                 for unit, before in contexts.items():
                     require(inspect_unit(unit, cm, user, engine=unit == ENGINE)['stable'] == before['stable'],
                             'service_context_changed:'+unit)
-                require(process_identity(contexts[ENGINE], helper.observe_unit, user) == startup_status['process'],
-                        'paused_engine_process_changed')
+                guard_engine_binding(engine_binding, engine_process(), cm.invoke, utc_now())
+                current_policies, _ = start.verify_repair(helper, repair, broker,
+                    Path('/var/lib/kadima/kadima.db'), evidence)
+                require(current_policies == policies, 'persisted_policies_changed')
 
             def engine_health():
                 deadline = time.monotonic()+15
@@ -458,17 +544,25 @@ def main(argv=None):
                         break
                     except start.Warming:
                         require(time.monotonic() < deadline, 'current_engine_reconciliation_required')
-                        require(process_identity(contexts[ENGINE], helper.observe_unit, user) == startup_status['process'],
-                                'paused_engine_process_changed')
+                        guard_engine_binding(engine_binding, engine_process(), cm.invoke, utc_now())
                         time.sleep(0.5)
                 if start.runtime_window(utc_now()):
                     require(value['runtime_broker_reconciliation_verified'] is True and not value['runtime_workers_pending'],
                             'current_engine_reconciliation_required')
                 return value
 
-            def admission():
+            def guard():
                 invariant()
                 engine_health()
+                context = contexts[ENGINE]
+                revalidate_restart_broker(engine_binding,
+                    read=lambda: broker.read_broker(context['python'], context['env'], user, TARGET, evidence),
+                    start=start, broker=broker, now=utc_now())
+                invariant()
+                engine_binding['revalidated'] = True
+
+            def admission():
+                guard()
 
             def extra_get(port, path):
                 require((port, path) in EXTRA_ROUTES, 'unreviewed_health_endpoint')
@@ -505,8 +599,9 @@ def main(argv=None):
             print('STATUS: '+str(STATE/'status.json'), flush=True)
             report = transaction(apply=args.apply, helper=helper, state_dir=STATE, admission=admission,
                 observe=helper.observe_unit, invoke=lambda command: subprocess.run(command, capture_output=True, text=True, timeout=30),
-                health=health, guard=lambda: (invariant(), engine_health()),
-                process=lambda unit: process_identity(contexts[unit], helper.observe_unit, user))
+                health=health, guard=guard,
+                process=lambda unit: process_identity(contexts[unit], helper.observe_unit, user),
+                engine_validation=engine_binding)
             report['service_contexts'] = {unit: value['summary'] for unit, value in contexts.items()}
     except Exception as exc:
         report.update(getattr(exc, 'report', {}))

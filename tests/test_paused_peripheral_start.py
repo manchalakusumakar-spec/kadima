@@ -555,6 +555,180 @@ class StartupRecordTests(unittest.TestCase):
         self.assertEqual(start.STARTUP_MANUAL_HOLDING, self.start.STARTUP_MANUAL_HOLDING)
 
 
+class ReviewedSessionRestartTests(unittest.TestCase):
+    def setUp(self):
+        self.now = datetime(2026, 9, 28, 11, 0, tzinfo=timezone.utc)
+        self.started = datetime(2026, 9, 28, 9, 35, tzinfo=timezone.utc)
+        self.status = dict(process=dict(m.REVIEWED_ORIGINAL_PROCESS),
+            observed_at='2026-09-28T09:35:09+00:00')
+        self.current = dict(pid='208838', started_ticks='104633000')
+        self.properties = dict(m.REVIEWED_RESTART_PROPERTIES,
+            ExecMainStartTimestampMonotonic='1046330000000')
+        self.invoke = Mock(side_effect=lambda command:
+            ''.join(k+'='+v+'\n' for k, v in self.properties.items()))
+
+    def bind(self, allow=True):
+        return m.bind_engine_process(self.status, self.current, self.started,
+            allow_restart=allow, invoke=self.invoke, now=self.now, ticks_per_second=100)
+
+    def test_observed_restart_rebinds_only_operation_without_rewriting_receipt(self):
+        original, current = deepcopy(self.status), deepcopy(self.current)
+        bound = self.bind()
+        self.assertTrue(bound['session_restart'])
+        self.assertFalse(bound['revalidated'])
+        self.assertEqual(bound['original_process'], original['process'])
+        self.assertEqual(bound['process'], current)
+        self.assertEqual(bound['started_at'], m.REVIEWED_RESTART_AT.isoformat())
+        self.assertEqual((self.status, self.current), (original, current))
+        self.assertEqual(self.invoke.call_args.args[0][:3], ['/usr/bin/systemctl', 'show', m.ENGINE])
+        self.assertNotIn('start', self.invoke.call_args.args[0])
+
+    def test_original_process_needs_no_exception_or_systemd_restart_query(self):
+        self.current = dict(self.status['process'])
+        bound = self.bind(allow=False)
+        self.assertFalse(bound['session_restart'])
+        self.assertEqual(bound['started_at'], self.started.isoformat())
+        self.invoke.assert_not_called()
+
+    def test_changed_process_still_refused_without_explicit_restart_mode(self):
+        with self.assertRaisesRegex(m.Blocked, 'paused_engine_process_changed'):
+            self.bind(allow=False)
+        self.invoke.assert_not_called()
+
+    def test_other_original_process_or_new_pid_and_reused_start_ticks_are_refused(self):
+        for target, key, value in ((self.status['process'], 'pid', '7'),
+                (self.status['process'], 'started_ticks', '7'), (self.current, 'pid', '208839'),
+                (self.current, 'started_ticks', '104422145'), (self.current, 'started_ticks', 'bad')):
+            previous = target[key]
+            target[key] = value
+            with self.subTest(key=key, value=value), self.assertRaises(m.Blocked): self.bind()
+            target[key] = previous
+
+    def test_future_restart_next_day_and_wrong_receipt_chronology_are_refused(self):
+        for now in (m.REVIEWED_RESTART_AT-timedelta(seconds=1), self.now+timedelta(days=1)):
+            self.now = now
+            with self.subTest(now=now), self.assertRaises(m.Blocked): self.bind()
+        self.now = datetime(2026, 9, 28, 11, 0, tzinfo=timezone.utc)
+        self.status['observed_at'] = m.REVIEWED_RESTART_AT.isoformat()
+        with self.assertRaises(m.Blocked): self.bind()
+
+    def test_failed_inactive_additional_or_different_restart_properties_are_refused(self):
+        for key, value in (('ActiveState','inactive'), ('SubState','auto-restart'),
+                ('MainPID','208839'), ('Restart','on-failure'), ('NRestarts','2'),
+                ('Result','exit-code'), ('ExecMainStatus','1'), ('ExecMainCode','1'),
+                ('ExecMainStartTimestamp','Mon 2026-09-28 10:10:14 UTC'),
+                ('ExecMainExitTimestamp','Mon 2026-09-28 10:20:00 UTC')):
+            previous = self.properties[key]
+            self.properties[key] = value
+            with self.subTest(key=key), self.assertRaises(m.Blocked): self.bind()
+            self.properties[key] = previous
+
+    def test_missing_duplicate_unknown_or_malformed_restart_properties_are_refused(self):
+        good = self.invoke([])
+        variants = (good.replace('NRestarts=1\n', ''), good+'NRestarts=1\n',
+            good.replace('NRestarts=1\n', 'Unknown=1\n'), good+'invalid\n')
+        for raw in variants:
+            self.invoke.side_effect = None
+            self.invoke.return_value = raw
+            with self.subTest(raw=raw[-35:]), self.assertRaises(m.Blocked): self.bind()
+
+    def test_monotonic_identity_disagreement_and_invalid_values_are_refused(self):
+        for value in ('0', '-1', 'invalid', '1046340000000'):
+            self.properties['ExecMainStartTimestampMonotonic'] = value
+            with self.subTest(value=value), self.assertRaises(m.Blocked): self.bind()
+
+    def test_guard_refuses_process_or_restart_changes_after_binding(self):
+        bound = self.bind()
+        m.guard_engine_binding(bound, self.current, self.invoke, self.now)
+        for key, value in (('pid','208839'), ('started_ticks','104633001')):
+            with self.subTest(key=key), self.assertRaises(m.Blocked):
+                m.guard_engine_binding(bound, self.current | {key:value}, self.invoke, self.now)
+        self.properties['NRestarts'] = '2'
+        with self.assertRaises(m.Blocked):
+            m.guard_engine_binding(bound, self.current, self.invoke, self.now)
+
+    def test_process_environment_guard_rejects_unset_live_flag_in_actual_process(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        proc = Path(temporary.name)
+        user = SimpleNamespace(pw_uid=os.getuid())
+        pid = '208838'
+        path = proc/pid
+        path.mkdir()
+        (path/'cwd').symlink_to(proc, target_is_directory=True)
+        (path/'cmdline').write_bytes(b'/venv/python3\0run.py\0')
+        clean = b'KADIMA_CELESTIAL_ENABLED=1\0KADIMA_SESSION_AUTOTRADE=1\0'
+        (path/'environ').write_bytes(clean+b'KADIMA_FORCE_START=1\0')
+        (path/'stat').write_text(pid+' (python3) '+' '.join(['S']+['0']*18+['104633000']))
+        context = dict(unit=m.ENGINE, cwd=proc, env={}, argv=('/venv/python3', 'run.py'))
+        start = m.load_start()
+        with patch.object(m, 'Path', side_effect=lambda value: proc if value == '/proc' else Path(value)):
+            with self.assertRaisesRegex(start.Blocked, 'optional_live_flags_must_be_unset'):
+                m.process_identity(context, lambda unit: dict(ActiveState='active', MainPID=pid),
+                    user, environment_guard=start.paused_environment)
+            (path/'environ').write_bytes(clean)
+            actual = m.process_identity(context, lambda unit: dict(ActiveState='active', MainPID=pid),
+                user, environment_guard=start.paused_environment)
+        self.assertEqual(actual, dict(pid=pid, started_ticks='104633000'))
+
+
+class RestartBrokerRevalidationTests(unittest.TestCase):
+    def setUp(self):
+        self.start = m.load_start()
+        self.broker = self.start.load_repair().load_readiness().load_reviewed('stopped_broker_read.py')
+        self.now = datetime(2026, 9, 28, 11, 0, tzinfo=timezone.utc)
+        self.value = dict(started_at=(self.now-timedelta(seconds=1)).isoformat(),
+            checked_at=self.now.isoformat(), books_complete=True, flat=True,
+            readiness=True, historical_contract_absent=True, permitted_manual_holding_observed=False,
+            position_rows=0, order_rows=0, pending_orders=0, pending_order_details=[],
+            nonzero_positions=[], nonzero_position_count=0, error=None)
+        self.read = Mock(side_effect=lambda: deepcopy(self.value))
+        self.binding = dict(session_restart=True)
+
+    def verify(self):
+        with patch.object(m, 'utc_now', return_value=self.now):
+            m.revalidate_restart_broker(self.binding, read=self.read, start=self.start,
+                broker=self.broker, now=self.now)
+
+    def test_fresh_flat_receipt_is_saved_and_reused_only_briefly(self):
+        self.verify()
+        self.verify()
+        self.assertEqual(self.read.call_count, 1)
+        self.now += timedelta(seconds=20)
+        self.value.update(started_at=self.now.isoformat(), checked_at=self.now.isoformat())
+        self.verify()
+        self.assertEqual(self.read.call_count, 2)
+
+    def test_exact_confirmed_manual_pe_is_accepted_without_claiming_flatness(self):
+        self.value.update(flat=False, readiness=False, position_rows=1, nonzero_position_count=1,
+            nonzero_positions=[dict(self.start.STARTUP_MANUAL_HOLDING)],
+            error=dict(stage='position', reason='unexpected_exposure', type='ValueError'))
+        self.verify()
+        self.assertFalse(self.binding['broker_readiness']['flat'])
+        self.assertFalse(self.binding['broker_readiness']['readiness'])
+
+    def test_changed_position_refuses_and_keeps_only_validated_receipt(self):
+        self.value.update(flat=False, readiness=False, position_rows=1, nonzero_position_count=1,
+            nonzero_positions=[self.start.STARTUP_MANUAL_HOLDING | dict(netqty=130)],
+            error=dict(stage='position', reason='unexpected_exposure', type='ValueError'))
+        with self.assertRaisesRegex(self.start.Blocked, 'fresh_broker_readiness_required'): self.verify()
+        self.assertEqual(self.binding['broker_readiness'], self.value)
+
+    def test_stale_invalid_or_secret_containing_receipt_is_never_attached(self):
+        for update in (dict(checked_at='invalid'), dict(secret='private-secret'),
+                dict(started_at=(self.now-timedelta(minutes=5)).isoformat())):
+            original = deepcopy(self.value)
+            self.value.update(update)
+            with self.subTest(update=update), self.assertRaises(RuntimeError): self.verify()
+            self.assertNotIn('broker_readiness', self.binding)
+            self.value = original
+
+    def test_unchanged_engine_does_not_open_a_new_broker_session(self):
+        self.binding['session_restart'] = False
+        self.verify()
+        self.read.assert_not_called()
+
+
 class PeripheralTransactionTests(unittest.TestCase):
     def setUp(self):
         temporary = tempfile.TemporaryDirectory()
@@ -632,10 +806,26 @@ class PeripheralTransactionTests(unittest.TestCase):
             self.active[unit] = False
         return SimpleNamespace(returncode=1 if self.stop_error == unit else 0)
 
-    def run_transaction(self, *, apply=True):
+    def run_transaction(self, *, apply=True, engine_validation=None):
         return m.transaction(apply=apply, helper=self.helper, state_dir=self.state,
             admission=self.admission, observe=self.observe, invoke=self.invoke,
-            health=self.health, guard=self.guard, process=self.process)
+            health=self.health, guard=self.guard, process=self.process,
+            engine_validation=engine_validation)
+
+    def test_revalidated_original_and_current_process_are_durably_recorded(self):
+        evidence = dict(original_process=dict(m.REVIEWED_ORIGINAL_PROCESS),
+            process=dict(pid='208838', started_ticks='104633000'),
+            session_restart=True, revalidated=False)
+        def admission():
+            self.admit()
+            evidence['revalidated'] = True
+        self.admission.side_effect = admission
+        report = self.run_transaction(engine_validation=evidence)
+        self.assertEqual(report['engine_validation'], evidence)
+        self.assertTrue(self.statuses[0]['engine_validation']['revalidated'])
+        self.assertEqual(self.statuses[-1]['engine_validation']['original_process'],
+            m.REVIEWED_ORIGINAL_PROCESS)
+        self.assertNotIn(m.ENGINE, self.starts()+self.stops())
 
     def actions(self):
         return [event for event in self.events if isinstance(event, tuple) and event[0] == '/usr/bin/systemctl']

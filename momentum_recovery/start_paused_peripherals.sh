@@ -21,4 +21,5 @@ kadima_peripheral_stage=$(/usr/bin/mktemp -d /tmp/kadima-paused-peripherals.XXXX
 /usr/bin/sudo -n /usr/bin/python3 -I -B "$kadima_peripheral_stage/release/momentum_recovery/start_paused_peripherals.py" \
   --history "$kadima_history" \
   --evidence /tmp/kadima-release.ykY99v/reviewed-bankex-95.json \
+  --reviewed-session-restart \
   --apply

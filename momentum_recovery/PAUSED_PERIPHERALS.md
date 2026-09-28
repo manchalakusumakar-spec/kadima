@@ -14,6 +14,33 @@ The helper now accepts exact `tmp.mount` only for the dashboard's Wants relation
 The failed admission did not claim a peripheral attempt or issue a start command.
 The corrected bootstrap can continue the same paused startup after fresh checks.
 
+The 16:07 IST attempt then stopped before claiming an attempt because the engine
+process had changed. The operator's 16:25 IST systemd output records a clean
+deactivation at 15:40:03 IST and automatic restart at 15:40:13 IST, with
+`Restart=always`, `NRestarts=1`, `Result=success` and current PID208838. This is
+consistent with the reviewed source's 15:40 session exit; the manager log proves
+the clean exit and automatic restart, not the application's specific exit branch.
+
+The bootstrap now supplies `--reviewed-session-restart`. The original private
+success record remains unchanged. If its process is different, the helper only
+admits original PID206362/start-ticks104422145 followed by the observed PID208838,
+exact restart time/count/policy/result and running state, on 28 September UTC.
+It also compares systemd's monotonic process-start timestamp with `/proc` start
+ticks. A later restart, failed exit, altered receipt or another process is refused.
+Without the explicit option, a changed process still blocks.
+
+Admission repeats installed-source, account, repair, actual process environment,
+persisted policies, API health and automation-hold checks. For this restarted
+process, it additionally reads current broker position/order books through the
+pinned reader and applies the existing exact manual PE-or-flat startup policy.
+Pending orders or changed exposure still block. Only validated, bounded broker
+receipts are included; receipts are refreshed when 20 seconds old and must still
+meet the existing 30-second freshness check. No broker order endpoint is called.
+The observer status records both original and current process identities, the
+systemd restart snapshot and current broker evidence under `engine_validation`.
+This does not modify either engine-start receipt or restart the engine again.
+The process and restart snapshot must remain stable throughout peripheral startup.
+
 This helper pins that successful startup implementation and reads its success
 record under `/var/lib/kadima-paused-start-20260928/resume-before-start/`.
 It also verifies and fingerprints the original failed attempt in the parent
