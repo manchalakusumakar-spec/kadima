@@ -30,7 +30,7 @@ def position(**changes):
 
 def order(**changes):
     return dict(dict(exchange='NFO', tradingsymbol='NIFTY29SEP2623250CE', symboltoken='73921',
-                     orderid='order1', orderstatus='complete', quantity='130',
+                     orderid='order1', orderstatus='complete', quantity='130', transactiontype='SELL',
                      filledshares='130', unfilledshares='0'), **changes)
 
 
@@ -94,6 +94,50 @@ class ChildReaderTests(unittest.TestCase):
         self.assertFalse(value['readiness'])
         self.assertFalse(value['flat'])
         self.assertEqual(value['pending_orders'], 1)
+
+    def test_pending_detail_identifies_order_without_raw_provider_fields(self):
+        row = order(orderstatus='trigger pending', producttype='CARRYFORWARD', variety='STOPLOSS', filledshares='0',
+                    unfilledshares='130', price='89.50', triggerprice='90',
+                    apikey='SECRET_KEY', clientcode='PRIVATE_ACCOUNT', text='RAW_PROVIDER_MESSAGE')
+        value, calls, raw = self.child([position()], [row, order(orderid='terminal')])
+        self.assertEqual(calls, ['login', 'position', 'orderBook'])
+        self.assertEqual(value['pending_orders'], 1)
+        self.assertEqual(value['pending_order_details'], [dict(exchange='NFO',
+            tradingsymbol='NIFTY29SEP2623250CE', symboltoken='73921', producttype='CARRYFORWARD', variety='STOPLOSS',
+            orderid='order1', transactiontype='SELL', status='trigger pending', quantity=130,
+            filled_quantity=0, remaining_quantity=130, price=89.5, trigger_price=90.0)])
+        self.assertFalse(value['readiness'])
+        self.assertFalse(value['flat'])
+        for secret in ('SECRET_KEY', 'PRIVATE_ACCOUNT', 'RAW_PROVIDER_MESSAGE', 'terminal'):
+            self.assertNotIn(secret, raw)
+
+    def test_pending_detail_never_fabricates_missing_fill_or_price(self):
+        row = order(orderstatus='open')
+        for key in ('filledshares', 'unfilledshares'):
+            del row[key]
+        value, _, _ = self.child(orders=[row])
+        detail = value['pending_order_details'][0]
+        for key in ('filled_quantity', 'remaining_quantity', 'price', 'trigger_price', 'producttype', 'variety'):
+            self.assertIsNone(detail[key])
+
+    def test_pending_details_are_bounded_but_count_all_pending_orders(self):
+        value, _, _ = self.child(orders=[order(orderid=str(i), orderstatus='open') for i in range(10)])
+        self.assertEqual(value['pending_orders'], 10)
+        self.assertEqual(len(value['pending_order_details']), 8)
+        self.assertFalse(value['readiness'])
+
+    def test_malformed_pending_side_price_or_product_blocks_without_partial_details(self):
+        variants = [dict(transactiontype=x) for x in (None, 'UNKNOWN', True)]
+        variants += [dict(price=x) for x in ('NaN', 'Infinity', '-1', True, 'SECRET_TOKEN')]
+        variants += [dict(triggerprice=-1), dict(producttype='UNKNOWN'), dict(variety='UNKNOWN')]
+        for changes in variants:
+            with self.subTest(changes=changes):
+                value, _, raw = self.child(orders=[order(orderstatus='open', **changes)])
+                self.assertFalse(value['books_complete'])
+                self.assertFalse(value['readiness'])
+                self.assertIsNone(value['pending_orders'])
+                self.assertEqual(value['pending_order_details'], [])
+                self.assertNotIn('SECRET_TOKEN', raw)
 
     def test_allowed_holding_plus_other_exposure_is_blocked(self):
         value, _, _ = self.child([position(), position(symboltoken='999', tradingsymbol='OTHERCE')])
@@ -230,7 +274,8 @@ class ParentReaderTests(unittest.TestCase):
         self.receipt = dict(started_at=self.now.isoformat(), checked_at=self.now.isoformat(),
             books_complete=True, flat=False, readiness=True, historical_contract_absent=True,
             permitted_manual_holding_observed=True, position_rows=1, order_rows=0,
-            pending_orders=0, nonzero_positions=[m.ALLOWED_HOLDING.copy()], nonzero_position_count=1, error=None)
+            pending_orders=0, pending_order_details=[], nonzero_positions=[m.ALLOWED_HOLDING.copy()],
+            nonzero_position_count=1, error=None)
         self.calls = []
 
     def invoke(self, command, **kwargs):
@@ -305,6 +350,23 @@ class ParentReaderTests(unittest.TestCase):
         for changes in cases:
             with self.subTest(changes=changes), self.assertRaises(m.Blocked):
                 m.validate_receipt(dict(self.receipt, **changes), self.now)
+
+    def test_parent_refuses_malformed_pending_details_and_count_mismatch(self):
+        detail = dict(exchange='NFO', tradingsymbol='NIFTY29SEP2623250CE', symboltoken='73921',
+            producttype='CARRYFORWARD', variety=None, orderid='safe-order', transactiontype='SELL', status='open',
+            quantity=130, filled_quantity=0, remaining_quantity=130, price=90.0, trigger_price=None)
+        base = dict(self.receipt, readiness=False, order_rows=1, pending_orders=1,
+            pending_order_details=[detail], error=dict(stage='orderBook', reason='unresolved_broker_orders', type='ValueError'))
+        self.assertEqual(m.validate_receipt(base, self.now), base)
+        variants = [dict(detail, status='complete'), dict(detail, transactiontype='SECRET'),
+                    dict(detail, price=float('nan')), dict(detail, remaining_quantity=131),
+                    dict(detail, filled_quantity=True), dict(detail, raw_message='PRIVATE')]
+        for item in variants:
+            with self.subTest(item=item), self.assertRaises(m.Blocked):
+                m.validate_receipt(dict(base, pending_order_details=[item]), self.now)
+        for details in ([], [detail, detail]):
+            with self.subTest(details=details), self.assertRaises(m.Blocked):
+                m.validate_receipt(dict(base, pending_order_details=details), self.now)
 
 
 if __name__ == '__main__':

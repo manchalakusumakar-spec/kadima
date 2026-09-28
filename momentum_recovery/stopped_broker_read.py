@@ -11,6 +11,7 @@ from datetime import datetime, timezone
 import hashlib
 import hmac
 import json
+import math
 from pathlib import Path
 import re
 import subprocess
@@ -25,7 +26,8 @@ REASONS = frozenset(('account_binding_invalid', 'account_mismatch', 'login_faile
     'book_schema_invalid', 'book_too_large', 'row_invalid', 'position_quantity_invalid',
     'position_identity_invalid', 'position_duplicate', 'historical_identity_mismatch',
     'order_identity_invalid', 'order_duplicate', 'order_status_invalid',
-    'order_status_conflict', 'order_quantity_invalid', 'unexpected_exposure',
+    'order_status_conflict', 'order_quantity_invalid', 'order_side_invalid',
+    'order_price_invalid', 'unexpected_exposure',
     'historical_exposure_present', 'unresolved_broker_orders'))
 ERROR_TYPES = frozenset(('ValueError', 'TypeError', 'KeyError', 'AttributeError',
     'ImportError', 'ModuleNotFoundError', 'OSError', 'RuntimeError', 'TimeoutError',
@@ -33,8 +35,12 @@ ERROR_TYPES = frozenset(('ValueError', 'TypeError', 'KeyError', 'AttributeError'
     'HTTPError', 'JSONDecodeError', 'TokenException', 'OtherError'))
 RECEIPT_KEYS = frozenset(('started_at', 'checked_at', 'books_complete', 'flat',
     'readiness', 'historical_contract_absent', 'permitted_manual_holding_observed',
-    'position_rows', 'order_rows', 'pending_orders', 'nonzero_positions',
+    'position_rows', 'order_rows', 'pending_orders', 'pending_order_details', 'nonzero_positions',
     'nonzero_position_count', 'error'))
+PENDING_DETAIL_KEYS = frozenset(('exchange', 'tradingsymbol', 'symboltoken', 'producttype', 'variety',
+    'orderid', 'transactiontype', 'status', 'quantity', 'filled_quantity',
+    'remaining_quantity', 'price', 'trigger_price'))
+TERMINAL = frozenset(('complete', 'completed', 'filled', 'cancelled', 'canceled', 'rejected'))
 
 
 class Blocked(RuntimeError):
@@ -62,7 +68,7 @@ stage = 'account'
 report = dict(started_at=datetime.now(timezone.utc).isoformat(), checked_at=None,
     books_complete=False,flat=None,readiness=False,historical_contract_absent=None,
     permitted_manual_holding_observed=False,position_rows=None,order_rows=None,
-    pending_orders=None,nonzero_positions=[],nonzero_position_count=None,error=None)
+    pending_orders=None,pending_order_details=[],nonzero_positions=[],nonzero_position_count=None,error=None)
 
 def fail(value):
     global reason
@@ -112,10 +118,18 @@ def positions(items, historical):
             nonzero.append(dict(exchange=exchange,producttype=product,tradingsymbol=symbol,symboltoken=token,netqty=qty))
     return nonzero,historical_absent
 
+def optional_price(value):
+    if value is None or value=='': return None
+    if isinstance(value,bool) or type(value) not in (int,float,str): fail('order_price_invalid')
+    if isinstance(value,str) and (len(value)>32 or not re.fullmatch(r'[+]?\d+(?:\.\d+)?',value)): fail('order_price_invalid')
+    number=float(value)
+    if not math.isfinite(number) or not 0<=number<=1000000000: fail('order_price_invalid')
+    return number
+
 def orders(items):
-    seen, pending=set(),0
+    seen, pending, details=set(),0,[]
     for row in items:
-        identity(row,'order_identity_invalid')
+        exchange,symbol,token=identity(row,'order_identity_invalid')
         order_id=row.get('orderid')
         if type(order_id) is int: order_id=str(order_id)
         if not isinstance(order_id,str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,64}',order_id): fail('order_identity_invalid')
@@ -130,13 +144,29 @@ def orders(items):
         if not states or not states[0]: fail('order_status_invalid')
         if len(set(states))!=1: fail('order_status_conflict')
         quantity=integer(row.get('quantity'),'order_quantity_invalid',minimum=0)
-        quantities=[]
+        quantities={}
         for key in ('filledshares','unfilledshares'):
             if key in row and row[key] is not None and row[key]!='':
-                quantities.append(integer(row[key],'order_quantity_invalid',minimum=0,maximum=quantity))
-        if sum(quantities)>quantity: fail('order_quantity_invalid')
-        if states[0] not in TERMINAL: pending+=1
-    return pending
+                quantities[key]=integer(row[key],'order_quantity_invalid',minimum=0,maximum=quantity)
+        if sum(quantities.values())>quantity: fail('order_quantity_invalid')
+        if states[0] not in TERMINAL:
+            side=row.get('transactiontype')
+            if not isinstance(side,str) or side.upper() not in ('BUY','SELL'): fail('order_side_invalid')
+            product=row.get('producttype')
+            if product=='': product=None
+            if product is not None and (not isinstance(product,str) or product not in PRODUCTS): fail('order_identity_invalid')
+            variety=row.get('variety')
+            if variety=='': variety=None
+            if variety is not None:
+                if not isinstance(variety,str) or variety.upper() not in ('NORMAL','STOPLOSS','AMO','ROBO'): fail('order_identity_invalid')
+                variety=variety.upper()
+            detail=dict(exchange=exchange,tradingsymbol=symbol,symboltoken=token,producttype=product,variety=variety,
+                orderid=order_id,transactiontype=side.upper(),status=states[0],quantity=quantity,
+                filled_quantity=quantities.get('filledshares'),remaining_quantity=quantities.get('unfilledshares'),
+                price=optional_price(row.get('price')),trigger_price=optional_price(row.get('triggerprice')))
+            pending+=1
+            if len(details)<8: details.append(detail)
+    return pending,details
 
 def error():
     import sys
@@ -169,7 +199,8 @@ try:
                     nonzero_position_count=len(nonzero),historical_contract_absent=historical_absent,
                     permitted_manual_holding_observed=(ALLOWED in nonzero))
             else:
-                report.update(order_rows=len(items),pending_orders=orders(items))
+                pending,details=orders(items)
+                report.update(order_rows=len(items),pending_orders=pending,pending_order_details=details)
             completed.add(method)
         except Exception:
             if report['error'] is None: report['error']=error()
@@ -206,6 +237,39 @@ def safe_position(value):
     return value
 
 
+def safe_pending_order(value):
+    require(isinstance(value, dict) and set(value) == PENDING_DETAIL_KEYS, 'broker_receipt_invalid')
+    require(isinstance(value['exchange'], str) and value['exchange'] in ('NSE', 'NFO', 'BSE', 'BFO', 'MCX', 'NCDEX')
+            and isinstance(value['tradingsymbol'], str)
+            and re.fullmatch(r'[A-Z0-9][A-Z0-9&_.+\-]{0,79}', value['tradingsymbol'])
+            and isinstance(value['symboltoken'], str) and re.fullmatch(r'[0-9]{1,16}', value['symboltoken']),
+            'broker_receipt_invalid')
+    require(value['producttype'] is None or (isinstance(value['producttype'], str) and
+            value['producttype'] in ('INTRADAY', 'CARRYFORWARD', 'DELIVERY', 'MARGIN', 'BO', 'CO')),
+            'broker_receipt_invalid')
+    require(value['variety'] is None or (isinstance(value['variety'], str) and
+            value['variety'] in ('NORMAL', 'STOPLOSS', 'AMO', 'ROBO')), 'broker_receipt_invalid')
+    require(isinstance(value['orderid'], str) and re.fullmatch(r'[A-Za-z0-9_-]{1,64}', value['orderid'])
+            and isinstance(value['transactiontype'], str) and value['transactiontype'] in ('BUY', 'SELL')
+            and isinstance(value['status'], str) and re.fullmatch(r'[a-z_ -]{1,64}', value['status'])
+            and value['status'].strip() == value['status'] and bool(value['status'])
+            and value['status'] not in TERMINAL, 'broker_receipt_invalid')
+    quantity = value['quantity']
+    require(type(quantity) is int and 0 <= quantity <= 1_000_000_000, 'broker_receipt_invalid')
+    quantities = []
+    for key in ('filled_quantity', 'remaining_quantity'):
+        number = value[key]
+        require(number is None or (type(number) is int and 0 <= number <= quantity), 'broker_receipt_invalid')
+        if number is not None:
+            quantities.append(number)
+    require(sum(quantities) <= quantity, 'broker_receipt_invalid')
+    for key in ('price', 'trigger_price'):
+        number = value[key]
+        require(number is None or (type(number) in (int, float) and math.isfinite(number)
+                and 0 <= number <= 1_000_000_000), 'broker_receipt_invalid')
+    return value
+
+
 def validate_receipt(value, now):
     require(isinstance(value, dict) and set(value) == RECEIPT_KEYS, 'broker_receipt_invalid')
     try:
@@ -228,6 +292,12 @@ def validate_receipt(value, now):
         safe_position(position)
     require(len({(p['exchange'], p['symboltoken'], p['producttype']) for p in positions}) == len(positions),
             'broker_receipt_invalid')
+    pending_details = value['pending_order_details']
+    require(isinstance(pending_details, list) and len(pending_details) <= 8, 'broker_receipt_invalid')
+    for detail in pending_details:
+        safe_pending_order(detail)
+    require(len({detail['orderid'] for detail in pending_details}) == len(pending_details),
+            'broker_receipt_invalid')
     error = value['error']
     if error is not None:
         require(isinstance(error, dict) and set(error) == {'stage', 'reason', 'type'} and
@@ -244,9 +314,10 @@ def validate_receipt(value, now):
                 len(positions) == min(count, 8) and type(value['historical_contract_absent']) is bool,
                 'broker_receipt_invalid')
     if value['order_rows'] is None:
-        require(value['pending_orders'] is None, 'broker_receipt_invalid')
+        require(value['pending_orders'] is None and not pending_details, 'broker_receipt_invalid')
     else:
-        require(type(value['pending_orders']) is int and value['pending_orders'] <= value['order_rows'],
+        require(type(value['pending_orders']) is int and value['pending_orders'] <= value['order_rows'] and
+                len(pending_details) == min(value['pending_orders'], 8),
                 'broker_receipt_invalid')
     require(value['books_complete'] is (value['position_rows'] is not None and value['order_rows'] is not None),
             'broker_receipt_invalid')

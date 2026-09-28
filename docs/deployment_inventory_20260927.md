@@ -2,9 +2,25 @@
 
 Verified against GitHub PR metadata, exact-head workflow runs and ancestry comparisons to PR20. AWS is not connected; GitHub checks are not evidence of installation or live fills.
 
-## Latest observation — 28 September 2026, 00:34 IST
+## Latest observation — 28 September 2026, 08:24 IST
 
-**01:00 IST follow-up:** the operator ran readiness commit
+The operator completed the virtual-environment permission correction: Ubuntu
+ownership is unchanged, mode changed from 0664 to 0644, and config contents were
+verified unchanged. Readiness then verified the installed PR24/UI sources,
+effective service context, account binding, exact historical BANKEX case and
+persisted paused controls. All five services passed the final stopped checks.
+The reviewed watchdog cron hold was verified without another crontab write.
+
+Both broker books were read successfully. The known operator-managed NIFTY
+carryforward (qty 130) was accepted, and historical BANKEX exposure was absent.
+However, **one nonterminal broker order remains** (`order_rows=1`,
+`pending_orders=1`, `readiness=false`). Its identity was not printed by the
+initial reader; the follow-up adds bounded order details. This is a broker-book
+observation distinct from the historical unresolved local SELL intent. Their
+relationship is not established. No broker order was changed or cancelled.
+Historical ledger repair, restart, runtime health and activation remain pending.
+
+**Earlier 01:00 IST follow-up:** the operator ran readiness commit
 `08a0612ebe896ab2f055e515c86bf99db5935d9a`. All five units were observed inactive;
 service-property parsing blocked before broker access. No ledger repair,
 restart or activation occurred. The check found one direct Ubuntu cron entry
@@ -13,7 +29,7 @@ reader and exact, backed-up hold of that reviewed cron line are prepared; host
 execution and complete broker-book observation remain pending. Installed source
 status below is unchanged.
 
-The operator supplied successful output from maintenance commit
+**00:34 IST source installation:** the operator supplied successful output from maintenance commit
 `87497b9a68044e749b517255c356e12ea4961ae3`. The exact final PR24 source release
 `8837cd6dc04e16123e94d8b78a3a716f83ed022c` (including PR20) installed 21 backend
 and composed UI files. All five services were left stopped: engine, universe

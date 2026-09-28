@@ -38,7 +38,7 @@ PINS = {
     'install_stopped_audit.py': '04f1a9e6c9c960ca91b4ccf7354b8a4992bd6581',
     'reconcile_contract_note.py': '931fe21de19aa8ef21c46c713836780363fe1a48',
     'stopped_context.py': '0b2fe4d36ad2b9fcc3459fcfcade0d6ddb8953a3',
-    'stopped_broker_read.py': '971e8de30d884ff0b66e745b2a06b8c3fd9c0325',
+    'stopped_broker_read.py': 'ae51568a7d4f060c7916f40adfc46796fbf5063d',
     'stopped_watchdog_hold.py': '754375590ef5b1e6d551f3eeb918d1fcdec95c2d',
 }
 

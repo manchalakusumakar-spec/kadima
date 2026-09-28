@@ -1,5 +1,16 @@
 # Read the stopped installation before historical repair and startup
 
+The 08:24 IST operator result verified the permission correction (0664 to 0644,
+same owner and bytes), source/context/account admission, paused controls and the
+historical ledger case. Both broker books completed. The manual NIFTY qty 130
+holding is permitted and BANKEX exposure is absent, but one broker order is
+nonterminal. A positive `stopped_readiness_observed` state means observation
+finished; `broker.readiness=false` still blocks repair/startup. The next reader
+prints only validated, bounded pending-order details to identify that order.
+It does not cancel or modify it or relax the pending-order gate. The local
+unknown historical SELL intent and this broker order are separate observations;
+do not assume they are the same order.
+
 At 01:00 IST on 28 September, the first host readiness run stopped at service
 property parsing before any broker call. All five units were observed inactive.
 The reader must handle systemd's repeated `EnvironmentFiles=` output and prove
