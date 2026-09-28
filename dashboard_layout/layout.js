@@ -139,7 +139,7 @@
     $('editLayout').onclick = () => {
       discover(); order = normalize(order); draft = [...order]; reset = false;
       renderList(); $('layoutAnnounce').textContent = 'Saved per browser. Your other devices keep their own layout.';
-      dialog.showModal();
+      dialog.showModal(); list.scrollTop = 0;
     };
     $('layoutClose').onclick = $('layoutCancel').onclick = close;
     dialog.addEventListener('cancel', e => { e.preventDefault(); close(); });
