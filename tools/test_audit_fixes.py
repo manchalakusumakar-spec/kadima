@@ -56,7 +56,7 @@ def _order(oid, token, status="open", tag=None):
 
 def test_reconcile_scoped():
     print("fix 3: reconcile only KADIMA-owned contracts")
-    execution_ledger.refresh = lambda positions: True
+    execution_ledger.refresh = lambda positions, ltp_fn=None: True
     execution_ledger.pending = lambda signal_id=None: []
     storage.load_open_positions = lambda: []
     kad = dict(exchange="NFO", symboltoken="111", producttype="INTRADAY", netqty="65")
@@ -93,6 +93,60 @@ def test_reconcile_scoped():
     auto_executor.fetch_broker_positions = lambda: None
     ex.reconcile_on_startup()
     check("broker unreadable: fails closed", ex._positions_verified is False and ex._reconcile_blocked is True)
+
+
+# ------------------------------------------------------------------ fix 6
+def test_exit_reprice():
+    print("fix 6: re-price unfilled exits")
+    calls, sent = [], []
+    angel_orders.modify_order = lambda oid, **kw: (calls.append((oid, kw)),
+        angel_orders.OrderResult(True, oid, "ok"))[1]
+    execution_ledger.alerts.enqueue = lambda text, **kw: sent.append(text)
+    execution_ledger._REPRICE.clear()
+    pos = position(status="exit_pending")
+    row = dict(intent="Ktest", quantity=65)
+    price = [97.5]
+    ltp = [100.0]
+
+    def status():
+        return angel_orders.OrderStatus("O1", "open", 0, None, dict(price=str(price[0])))
+
+    def run(age):
+        execution_ledger._reprice_exit(pos, row, status(), age, lambda ex, tok: ltp[0])
+        if calls:
+            price[0] = calls[-1][1]["price"]
+
+    run(10)
+    check("no re-price before 15s", not calls)
+    ltp[0] = 90.0
+    run(16)
+    check("attempt 1 at LTP-2.5%", calls and calls[-1][1]["price"] == round(90 * 0.975, 1))
+    check("modify keeps full order qty and LIMIT contract",
+          calls[-1][1]["quantity"] == 65 and calls[-1][1]["contract"]["producttype"] == "INTRADAY")
+    run(20)
+    check("waits 15s between attempts", len(calls) == 1)
+    execution_ledger._REPRICE["Ktest"]["last"] -= timedelta(seconds=16)
+    ltp[0] = 85.0
+    run(32)
+    check("attempt 2 at LTP-4%", calls[-1][1]["price"] == round(85 * 0.96, 1))
+    execution_ledger._REPRICE["Ktest"]["last"] -= timedelta(seconds=16)
+    ltp[0] = 80.0
+    run(48)
+    check("attempt 3 at LTP-6%", calls[-1][1]["price"] == round(80 * 0.94, 1))
+    check("urgent alert after 3rd attempt", any("EXIT NOT FILLING" in s for s in sent))
+    n = len(calls)
+    execution_ledger._REPRICE["Ktest"]["last"] -= timedelta(seconds=16)
+    ltp[0] = 95.0
+    run(64)
+    check("never raises a SELL limit when LTP bounces", len(calls) == n)
+    execution_ledger._REPRICE["Ktest"]["last"] -= timedelta(seconds=16)
+    ltp[0] = 70.0
+    run(80)
+    check("keeps walking down at 6% after attempt 3", calls[-1][1]["price"] == round(70 * 0.94, 1))
+    sent.clear()
+    execution_ledger._REPRICE["Ktest"]["last"] -= timedelta(seconds=16)
+    execution_ledger._reprice_exit(pos, row, status(), 96, lambda ex, tok: None)
+    check("no fresh quote: alerts, no blind modify", len(calls) == n + 1 and sent)
 
 
 if __name__ == "__main__":
