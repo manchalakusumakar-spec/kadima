@@ -329,10 +329,15 @@ def enforce(executor, ranked, direction: str, requested_lots: int):
 def get_capital_for_signal(kind: str, tier: str) -> float:
     """Allocated trading capital, capped by available funds and the source band.
     The executor applies the 15% risk fraction separately.
-    bull_shield: 25,000-30,000. gamma_blast: 50,000-62,000.
-    WATCH/unknown tier or unknown kind returns 0.0."""
+    bull_shield / bear_shield: 25,000-30,000. gamma_blast: 50,000-62,000.
+    WATCH/unknown tier or unknown kind returns 0.0.
+
+    bear_shield (PE-direction Shield) shares the bull_shield band. It was
+    missing until 2026-09-29, which gave every PE Shield signal a 0.0
+    allocation and silently rejected all of them at sizing."""
     BANDS = {
         "bull_shield": (25_000.0, 30_000.0),
+        "bear_shield": (25_000.0, 30_000.0),
         "gamma_blast": (50_000.0, 62_000.0),
     }
     band = BANDS.get(kind)
