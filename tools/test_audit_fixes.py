@@ -251,6 +251,34 @@ def test_celestial_manual_order_keeps_stops():
         os.environ.pop("KADIMA_CELESTIAL_ENABLED", None)
 
 
+# ------------------------------------------------------------------ auto-arm
+def test_auto_arm():
+    print("auto_arm: arms once each trading morning, respects kill latch")
+    from kadima import auto_arm, celestial
+    os.environ["KADIMA_CELESTIAL_ENABLED"] = "1"
+    try:
+        auto_arm.now_ist = lambda: datetime(2026, 9, 29, 9, 5, tzinfo=IST)   # Tuesday
+        auto_arm._holiday = lambda day: False
+        celestial.update_config({"auto_trade_enabled": False})
+        check("arms when off", auto_arm.main() == 0 and celestial.read_config()["auto_trade_enabled"])
+        rev = celestial.read_config()["revision"]
+        auto_arm.main()
+        check("already on: no extra write", celestial.read_config()["revision"] == rev)
+        celestial.latch_kill()
+        auto_arm.main()
+        check("kill latched: stays off", celestial.read_config()["auto_trade_enabled"] is False)
+        celestial.update_config({"auto_trade_enabled": False}, reset_kill=True)
+        auto_arm.now_ist = lambda: datetime(2026, 10, 3, 9, 5, tzinfo=IST)   # Saturday
+        auto_arm.main()
+        check("weekend: stays off", celestial.read_config()["auto_trade_enabled"] is False)
+        auto_arm.now_ist = lambda: datetime(2026, 9, 29, 9, 5, tzinfo=IST)
+        auto_arm._holiday = lambda day: True
+        auto_arm.main()
+        check("holiday: stays off", celestial.read_config()["auto_trade_enabled"] is False)
+    finally:
+        os.environ.pop("KADIMA_CELESTIAL_ENABLED", None)
+
+
 if __name__ == "__main__":
     for t in [v for k, v in list(globals().items()) if k.startswith("test_")]:
         t()
