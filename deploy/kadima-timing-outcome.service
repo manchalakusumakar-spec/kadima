@@ -1,0 +1,20 @@
+# Gamma timing outcome job (phase 1, record only). Oneshot, triggered by
+# kadima-timing-outcome.timer after the F&O close. Reads the day's timing
+# lines and the database read-only; never calls the broker.
+#
+# VERIFY BEFORE ENABLING: User, WorkingDirectory, the python path and the
+# EnvironmentFile must match kadima.service on the box
+# (`systemctl cat kadima` shows them). KADIMA_DATA_DIR must be the same
+# value the engine uses, or the job will find no records.
+[Unit]
+Description=KADIMA Gamma timing outcome job
+After=network.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/kadima-py
+EnvironmentFile=-/home/ubuntu/kadima-py/.env
+ExecStart=/home/ubuntu/kadima-py/venv/bin/python -m kadima.timing_outcome --quiet
+Nice=10
+MemoryMax=200M

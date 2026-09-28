@@ -20,6 +20,7 @@ from typing import Optional
 from . import (alerts, audit, capital_guard, entry_quality, exit_manager,
               killswitch, risk_budget, storage, strike_selector)
 from . import angel_orders, forecast_trail, execution_ledger, trade_policy
+from . import timing_recorder
 from . import celestial
 from . import fast_momentum, gap_and_go
 from .config import (DAILY_LOSS_LIMIT_INR, IST,
@@ -494,8 +495,31 @@ class AutoExecutor:
                            source_signal_id: int, tier: str, score: float,
                            candidate_id=None, manual_request=False, shield_context=None,
                            fast_context=None, gap_context=None):
+        """Entry decision, unchanged, plus a record-only timing log line
+        for Gamma signals (timing_recorder.py, phase 1). The recorder
+        never alters the result and never raises."""
+        result = self._evaluate_and_enter_core(
+            index_name, direction, chain, spot, snap, days_to_expiry, kind,
+            source_signal_id, tier, score, candidate_id=candidate_id,
+            manual_request=manual_request, shield_context=shield_context,
+            fast_context=fast_context, gap_context=gap_context)
+        if kind == 'gamma_blast':
+            timing_recorder.record_evaluation(
+                signal_id=source_signal_id, kind=kind, index_name=index_name,
+                direction=direction, tier=tier, score=score, spot=spot,
+                chain=chain, snap=snap, result=result,
+                source='celestial' if candidate_id is not None else 'engine',
+                candidate_id=candidate_id)
+        return result
+
+    def _evaluate_and_enter_core(self, index_name: str, direction: str, chain, spot: float,
+                                 snap, days_to_expiry: float, kind: str,
+                                 source_signal_id: int, tier: str, score: float,
+                                 candidate_id=None, manual_request=False, shield_context=None,
+                                 fast_context=None, gap_context=None):
         """snap: indicators.Snapshot from the calling IndexState, used for
-        real VWAP (not a stub) in the entry-quality check."""
+        real VWAP (not a stub) in the entry-quality check.
+        Only called from evaluate_and_enter(), which holds the execution lock."""
         # KADIMA SESSION AUTO ENTRY GUARD v1
         from . import market_session_gate
         session_block = market_session_gate.entry_block(chain.index.opt_exchange)
@@ -643,6 +667,9 @@ class AutoExecutor:
 
         chosen_quote = next(r.quote for r in ranked
                             if r.quote.token == verdict.candidate.token)
+        # Record-only: remember which contract was chosen for the timing log.
+        timing_recorder.note_choice(source_signal_id, kind, chosen_quote,
+                                    verdict.candidate.stop_price)
 
         proj_return = projected_return_pct(chosen_quote, spot, days_to_expiry)
         if fast is None and gap is None and proj_return is None:

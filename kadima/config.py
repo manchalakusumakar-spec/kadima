@@ -185,6 +185,14 @@ ORDER_PLACEMENT_ENABLED = True     # LIVE since 2026-08-21, trader's explicit de
 
 
 
+# --------------------------------------------------------------- timing module
+# Gamma entry/exit timing, phase 1 (record only). When True, every Gamma
+# entry evaluation writes one line to DATA_DIR/timing/{day}.jsonl for the
+# after-market outcome job. Changes no trading decision. Set False to stop
+# recording without a code change.
+TIMING_RECORDER_ENABLED = True
+
+
 # --------------------------------------------------------------- no-auto-exit window
 # 2026-09-06, trader's explicit instruction: during this window, the fixed
 # stop-loss, the giveback-trail exit, and capital_guard's deployment

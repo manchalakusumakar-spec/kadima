@@ -1,0 +1,9 @@
+[Unit]
+Description=Run the KADIMA Gamma timing outcome job after the F&O close
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 15:50:00 Asia/Kolkata
+Persistent=true
+
+[Install]
+WantedBy=timers.target
