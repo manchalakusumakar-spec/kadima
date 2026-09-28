@@ -76,6 +76,7 @@ class Boundaries(unittest.TestCase):
     def test_all_frozen_helpers_match_without_importing_runtime(self):
         for relative, pin in m.PINS.items():
             self.assertEqual(pin, m.digest((ROOT/relative).read_bytes()), relative)
+        self.assertEqual(m.STOCK_API_BLOB, m.digest((ROOT/'kadima/stock_fast_api.py').read_bytes()))
         p = m.load('momentum_recovery/start_paused_peripherals.py')
         self.assertEqual(p.START_BLOB, m.digest((ROOT/'momentum_recovery/start_repaired_paused.py').read_bytes()))
 

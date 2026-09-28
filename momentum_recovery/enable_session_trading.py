@@ -36,6 +36,7 @@ PINS = {
     'session_auto/gate.py': '5633eba4177f6ade457d6bdd32ec4e154f27e68a',
     'session_auto/policy.json': '5fe2677459f9639c621ea3fc57c8fe61bc96484c',
 }
+STOCK_API_BLOB = '57805126938637754e6fa22aa772fd132aa3a891'
 ENABLED = ('KADIMA_CELESTIAL_ENABLED', 'KADIMA_SESSION_AUTOTRADE',
            'KADIMA_FAST_MOMENTUM_LIVE', 'KADIMA_GAP_LIVE', 'KADIMA_MOVE_CAPTURE_LIVE')
 HELD = ('KADIMA_FORCE_START', 'KADIMA_MCX_LIVE', 'KADIMA_CAS_LIVE')
@@ -239,6 +240,12 @@ class Deployment:
         self.files.update(self.ready.verify_sources(installer, release, TARGET,
             PACKAGE/'momentum_recovery/reviewed_dashboard', (self.user.pw_uid, self.user.pw_gid), self.source))
         self.files.update(self.p.verify_observer_sources(self.base, release, TARGET, admitted=self.files))
+        stock_api = TARGET/'kadima/stock_fast_api.py'
+        stock_api_raw = self.base.read_file(stock_api)
+        require(digest(stock_api_raw) == STOCK_API_BLOB and
+                stock_api_raw == self.base.read_file(release/'kadima/stock_fast_api.py'),
+                'stock_control_api_source_changed')
+        self.files[stock_api] = stock_api_raw
         require(digest(self.base.read_file(TARGET/'kadima/config.py')) == self.ready.CONFIG_BLOB,
                 'installed_configuration_changed')
         self.scheduler_files = {
