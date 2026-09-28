@@ -48,6 +48,9 @@ def main():
             "SimpleNamespace(index=SimpleNamespace(opt_exchange='NFO')),100,None,1,'gamma_blast'"))
         shutil.copytree(PACKAGE/'scheduler', stage/'scheduler')
         shutil.copyfile(PACKAGE/'install.py', stage/'install.py')
+        # Exercise the immutable installer's real metadata-preserving file writer.
+        shutil.copytree(PACKAGE.parent/'stock_fast_update', stage/'stock_fast_update',
+                        ignore=shutil.ignore_patterns('__pycache__'))
         # Runtime dependencies already exist in the installed release.
         env = dict(os.environ, ORDER_PLACEMENT_ENABLED='0', KADIMA_CELESTIAL_ENABLED='0',
                    KADIMA_PRIORITY_TRADING='0', KADIMA_SESSION_AUTOTRADE='0',

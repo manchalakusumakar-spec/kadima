@@ -59,6 +59,34 @@ def load_activation():
     return module
 
 
+def runtime_metadata(item, owner, root):
+    """Preserve admitted source ownership; root-owned code is valid too.
+
+    Bind metadata and inode as well as bytes across admission and replacement.
+    Diagnostics contain only the source path and filesystem metadata.
+    """
+    relative = item.path.relative_to(root).as_posix()
+    def checked(value, reason, info=None):
+        detail = ('missing' if info is None else
+                  f'uid={info.st_uid}:gid={info.st_gid}:mode={stat.S_IMODE(info.st_mode):04o}')
+        require(value, 'runtime_source_metadata:'+relative+':'+reason+':'+detail)
+    checked(item.path.resolve(strict=False) == item.path, 'noncanonical_path')
+    if item.original is None and not item.path.exists():
+        checked((item.uid, item.gid, item.mode) == (*owner, 0o644), 'new_file_metadata_unreviewed')
+        return None
+    info = item.path.lstat()
+    checked(item.original is not None, 'source_appeared_since_plan', info)
+    checked(stat.S_ISREG(info.st_mode) and info.st_nlink == 1, 'regular_single_link_required', info)
+    mode = stat.S_IMODE(info.st_mode)
+    checked((info.st_uid, info.st_gid, mode) == (item.uid, item.gid, item.mode),
+            'metadata_changed_since_plan', info)
+    checked(info.st_uid in (0, owner[0]) and not mode & 0o7022,
+            'owner_or_mode_unreviewed', info)
+    read_bit = 0o400 if info.st_uid == owner[0] else (0o040 if info.st_gid == owner[1] else 0o004)
+    checked(mode & read_bit, 'engine_read_permission_required', info)
+    return (info.st_dev, info.st_ino, info.st_uid, info.st_gid, mode, info.st_nlink)
+
+
 def environment_bytes(env):
     """systemd EnvironmentFile double-quoted values; never shell expansion."""
     import re
@@ -222,6 +250,7 @@ class Deployment:
         require(self.contexts[self.old.ENGINE]['env'].get('KADIMA_API_TOKEN') == self.token,
                 'engine_auth_binding_changed')
         self.changes = []
+        self.runtime_metadata = {}
         manifest = json.loads((PACKAGE/'priority_trading/manifest.json').read_bytes())
         for relative, pin in manifest['runtime'].items():
             incoming = (PACKAGE/'priority_trading/runtime'/relative).read_bytes()
@@ -231,7 +260,7 @@ class Deployment:
                     'priority_source_base_changed:'+relative)
             compile(incoming, relative, 'exec')
             item = self.base.change_for(ROOT/relative, incoming, (self.user.pw_uid, self.user.pw_gid))
-            require(item.uid == self.user.pw_uid and not item.mode & 0o022, 'runtime_source_owner_or_mode_changed')
+            self.runtime_metadata[item.path] = runtime_metadata(item, (self.user.pw_uid, self.user.pw_gid), ROOT)
             self.changes.append(item)
             self.files[item.path] = original
         for relative, digest in manifest['scheduler'].items():
@@ -276,6 +305,7 @@ class Deployment:
     def guard(self, stopped=False, installed=False):
         self.old.after_hours(self.gate, self.policy, now())
         self.base.check_fingerprints(self.files)
+        self.check_runtime_metadata()
         self.hold.verify_held_cron(self.helper)
         require(self.p.inactive(self.helper.observe_unit('kadima-eod-watchdog.service')), 'legacy_watchdog_running')
         for unit, previous in self.contexts.items():
@@ -292,6 +322,13 @@ class Deployment:
             self.base.local_flat(Path('/var/lib/kadima/kadima.db'))
         if not stopped:
             self.old.activation_health(self.get, self.policies, now, fast=True)
+
+    def check_runtime_metadata(self):
+        for item in self.changes:
+            if item.path in self.runtime_metadata:
+                require(runtime_metadata(item, (self.user.pw_uid, self.user.pw_gid), ROOT) ==
+                        self.runtime_metadata[item.path],
+                        'runtime_source_identity_changed:'+item.path.relative_to(ROOT).as_posix())
 
     def broker_check(self):
         c = self.contexts[self.old.ENGINE]
@@ -337,11 +374,27 @@ class Deployment:
         self.command('stop', self.old.ENGINE)
         require(self.p.inactive(self.helper.observe_unit(self.old.ENGINE)), 'engine_stop_unverified')
 
-    def install(self):
+    def install_sources(self):
+        self.check_runtime_metadata()
         for item in self.changes:
             item.unchanged()
+            if item.path in self.runtime_metadata:
+                require(runtime_metadata(item, (self.user.pw_uid, self.user.pw_gid), ROOT) ==
+                        self.runtime_metadata[item.path],
+                        'runtime_source_identity_changed:'+item.path.relative_to(ROOT).as_posix())
             self.base.write_atomic(item, item.replacement)
             self.files[item.path] = item.replacement
+            if item.path in self.runtime_metadata:
+                # The installed object now exists even for a newly added module.
+                installed_item = self.base.change_for(item.path, item.replacement, (item.uid, item.gid))
+                require((installed_item.uid, installed_item.gid, installed_item.mode) ==
+                        (item.uid, item.gid, item.mode), 'installed_runtime_metadata_changed')
+                self.runtime_metadata[item.path] = runtime_metadata(
+                    installed_item, (self.user.pw_uid, self.user.pw_gid), ROOT)
+                item.original = item.replacement
+
+    def install(self):
+        self.install_sources()
         self.old.replace_file(self.old.LIVE_ENV, self.new_env, self.helper, mode=0o600)
         self.old.replace_file(self.start.DROPIN, self.dropin, self.helper)
         self.files[self.old.LIVE_ENV], self.files[self.start.DROPIN] = self.new_env, self.dropin
@@ -447,7 +500,8 @@ def main(argv=None):
             ops.__init__(args, locks)
             report = transaction(ops, args.apply)
     except Exception as exc:
-        report = getattr(exc, 'report', dict(state='blocked', scheduler_enabled=False, watchdog_enabled=False))
+        report = getattr(exc, 'report', dict(state='blocked', scheduler_enabled=None, watchdog_enabled=None,
+            deployment_performed=False, service_changes_requested=False, attempt_claimed=False))
         # Raw exceptions may contain provider/auth text; publish only authored reasons.
         report['blocked'] = str(exc) if isinstance(exc, (Blocked,)+getattr(ops, 'safe_errors', ())) else type(exc).__name__
         if hasattr(exc, 'broker_readiness'): report['broker_readiness'] = exc.broker_readiness

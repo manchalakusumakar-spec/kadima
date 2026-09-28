@@ -60,6 +60,18 @@ Expected completed installation state: `priority_trading_installed_scheduled`.
 The report includes the actual scheduler reasons for equity and MCX. A waiting
 reason is not an execution failure or proof of a live fill.
 
+The 28 September 21:21 IST operator output stopped during admission with
+`runtime_source_owner_or_mode_changed`, before an attempt claim or service
+change. The earlier check accepted only engine-owned source, although the
+pinned prior installers preserve existing root ownership. The corrected
+admission accepts root or the verified engine owner, requires engine-readable
+regular single-link files without group/other write or special mode bits, and
+preserves UID, GID and mode. It also binds inode/metadata through replacement
+and reports the relative filename and nonsecret metadata on refusal. The old
+output did not identify the file or its metadata, so the host diagnosis is
+conditional on this check; no recursive ownership/permission change is needed.
+An initial refusal leaves the existing scheduler state unobserved, not disabled.
+
 Any incomplete attempt retains its backups and revokes entry permission. It
 does not roll back a trading database, manufacture a broker fill, reset a kill
 latch, overwrite unknown source, or automatically repeat an uncertain install.
