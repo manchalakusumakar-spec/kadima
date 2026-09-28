@@ -254,6 +254,12 @@ class AutoExecutor:
         # never adopted into executor state. Their underlyings are entry-blocked
         # until a later successful reconciliation no longer sees them.
         self._manual_carryforward_underlyings = set()
+        # Non-Celestial reconciliation (2026-09-29): exits are verified per
+        # position, not globally, so a manual trade in some other contract
+        # can no longer switch off KADIMA's stop-loss monitoring.
+        self._exit_verified = set()          # str(signal_id) safe to exit
+        self._external_contracts = set()     # (exchange, token) held outside KADIMA
+        self._external_logged = None
         self.fast_rows = {}
         self.cas_rows = {}
         self.entry_diagnostics = deque(maxlen=100)
@@ -387,11 +393,10 @@ class AutoExecutor:
             self._reconcile_blocked = not healthy
             celestial.health('reconciliation',dict(ok=healthy,positions=observations))
             return
-        if any(o.status not in execution_ledger.TERMINAL and
-               o.order_id not in own_ids and o.raw.get('ordertag') not in own_tags for o in book):
-            self._positions_verified = False
-            audit.log('reconcile_external_pending_orders')
-            return
+        # Only contracts KADIMA owns are reconciled (2026-09-29). Previously any
+        # manual position or manual pending order anywhere in the account set
+        # _positions_verified=False, which made check_exits() return early and
+        # left KADIMA's own open trades with NO stop-loss monitoring.
         live = {}
         for row in broker_positions:
             qty = float(row.get('netqty') or 0)
@@ -400,7 +405,7 @@ class AutoExecutor:
             key = (str(row.get('exchange')), str(row.get('symboltoken')),
                    str(row.get('producttype') or ''))
             live[key] = live.get(key, 0) + qty
-        expected = {}
+        expected, owners = {}, {}
         for pos in list(self.state.positions.values()):
             if pos.status == 'closed':
                 self.state.positions.pop(str(pos.signal_id), None)
@@ -408,14 +413,51 @@ class AutoExecutor:
             if pos.remaining_qty:
                 key = (pos.exchange, pos.token, 'INTRADAY')
                 expected[key] = expected.get(key, 0) + pos.remaining_qty
-        if live != expected:
-            # Never turn an external/manual quantity change into an assumed fill.
-            self._positions_verified = False
+                owners.setdefault(key, []).append(pos)
+        owned_contracts = {(k[0], k[1]) for k in expected}
+
+        # Positions/orders on contracts KADIMA does not hold: observe, never act.
+        self._external_contracts = {(k[0], k[1]) for k in live if k not in expected}
+        external_pending = [o for o in book if o.status not in execution_ledger.TERMINAL
+                            and o.order_id not in own_ids and o.raw.get('ordertag') not in own_tags]
+        external_on_owned = [o for o in external_pending
+                             if (str(o.raw.get('exchange')), str(o.raw.get('symboltoken')))
+                             in owned_contracts]
+        self._external_contracts |= {(str(o.raw.get('exchange')), str(o.raw.get('symboltoken')))
+                                     for o in external_pending}
+        signature = (tuple(sorted(self._external_contracts)), len(external_pending))
+        if signature != self._external_logged:
+            self._external_logged = signature
+            if self._external_contracts:
+                audit.log('reconcile_external_ignored', contracts=len(self._external_contracts),
+                          pending_orders=len(external_pending))
+
+        # Per-position exit verification: a SELL of local quantity is safe
+        # only while the broker still holds at least that much of the contract.
+        exit_ok, mismatched = set(), []
+        for key, qty in expected.items():
+            held = live.get(key, 0)
+            if held >= qty:
+                exit_ok.update(str(p.signal_id) for p in owners[key])
+            if held != qty:
+                mismatched.append(key)
+        self._exit_verified = exit_ok
+        self._positions_verified = True     # broker book was readable; exits filter per position
+
+        if mismatched or external_on_owned:
+            # New entries stay blocked until KADIMA's own contracts reconcile.
+            self._reconcile_blocked = True
             audit.log('reconcile_position_quantity_mismatch',
-                      broker_contracts=len(live), local_contracts=len(expected))
+                      mismatched_contracts=len(mismatched),
+                      external_orders_on_owned=len(external_on_owned),
+                      exits_still_monitored=len(exit_ok))
+            for key in mismatched:
+                if live.get(key, 0) < expected[key]:
+                    alerts.enqueue(f"Broker holds less than KADIMA expects for token {key[1]} - "
+                                   f"exits paused for that position. Check broker now.",
+                                   key=f"reconcile-short:{key[1]}")
             return
         self._reconcile_blocked = False
-        self._positions_verified = True
         audit.log('startup_reconcile_complete', restored=len(self.state.positions))
 
     @serialized
@@ -423,7 +465,8 @@ class AutoExecutor:
         """Manually exit one open position by signal_id, via the dashboard's
         Live Trade panel. Reuses the exact _close_position() path check_exits()
         already uses for automatic exits — no new order logic, no new risk logic."""
-        if self._reconcile_blocked and not (celestial.enabled() and str(signal_id) in self._celestial_verified):
+        verified = (self._celestial_verified if celestial.enabled() else self._exit_verified)
+        if self._reconcile_blocked and str(signal_id) not in verified:
             return {"ok": False, "reason": "startup_reconcile_not_complete"}
 
         with self._lock:
@@ -675,6 +718,9 @@ class AutoExecutor:
         # Record-only: remember which contract was chosen for the timing log.
         timing_recorder.note_choice(source_signal_id, kind, chosen_quote,
                                     verdict.candidate.stop_price)
+        if (chain.index.opt_exchange, str(chosen_quote.token)) in self._external_contracts:
+            # Never stack an engine position on a contract held/ordered manually.
+            return self._reject('contract_held_outside_kadima', index_name, direction)
 
         proj_return = projected_return_pct(chosen_quote, spot, days_to_expiry)
         if fast is None and gap is None and proj_return is None:
@@ -829,7 +875,8 @@ class AutoExecutor:
         with self._lock:
             open_positions = [p for p in self.state.positions.values()
                               if p.status in ("open", "entry_pending") and p.remaining_qty > 0
-                              and (not celestial.enabled() or str(p.signal_id) in self._celestial_verified)]
+                              and (str(p.signal_id) in self._celestial_verified if celestial.enabled()
+                                   else str(p.signal_id) in self._exit_verified)]
         if not open_positions:
             return
 
