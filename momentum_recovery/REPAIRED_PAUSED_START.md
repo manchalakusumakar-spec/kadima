@@ -1,5 +1,27 @@
 # Start the repaired engine with entries paused
 
+## Fresh broker admission diagnostic
+
+The latest operator screenshot on 28 September shows recovery commit
+`8e04eadb4ea7d74d98586b205b9b3820743616ff` blocked at
+`fresh_broker_readiness_required`, with `state=blocked`, `activation=false` and
+`start_requested=[]`. In that revision this report comes from initial admission,
+before creating or claiming the separate recovery attempt. No service start was
+requested. The printed status pathname alone does not prove a file was written.
+
+The startup helper now includes `broker_readiness` on that failure, using only
+the bounded receipt accepted by the existing strict validator. It shows book
+completeness, pending order details, nonzero positions and the redacted error
+stage/reason. Raw SDK output, provider messages and credentials are not printed;
+invalid or stale receipts are not attached. The same diagnostic is preserved if
+the second broker check blocks after the attempt is claimed.
+
+Run the updated pinned `resume_repaired_paused.sh` command to recheck and continue
+the paused start if all gates pass. An initial admission failure leaves the
+recovery attempt available; a claimed or ambiguous recovery remains one-shot.
+Do not infer the current blocker from an earlier order cancellation or manual
+position: the previous generic report did not retain that evidence.
+
 ## Recovery from the retained override
 
 At 13:16 IST the operator supplied a screenshot of the corrected command failing

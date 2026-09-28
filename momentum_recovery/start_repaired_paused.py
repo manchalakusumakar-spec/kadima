@@ -62,6 +62,18 @@ def utc_now():
     return datetime.now(timezone.utc)
 
 
+def require_broker_readiness(value, validate, now):
+    """Expose only the bounded, validated receipt when fresh admission fails."""
+    validate(value, now)
+    if not (value['books_complete'] is True and value['readiness'] is True and
+            value['pending_orders'] == 0):
+        exc = Blocked('fresh_broker_readiness_required')
+        # Copy the validated JSON so later mutation cannot change the report.
+        exc.broker_readiness = json.loads(json.dumps(value))
+        raise exc
+    return value
+
+
 def paused_environment(env):
     require(env.get('KADIMA_CELESTIAL_ENABLED') == '1' and
             env.get('KADIMA_SESSION_AUTOTRADE') == '1', 'paused_entry_gates_required')
@@ -324,6 +336,8 @@ def start_transaction(*, apply, helper, state_dir, admission, prepare_override,
         report['blocked'] = str(exc) if isinstance(exc, Blocked) else type(exc).__name__
         if hasattr(exc, 'dependency_changes'):
             report['dependency_changes'] = exc.dependency_changes
+        if hasattr(exc, 'broker_readiness'):
+            report['broker_readiness'] = exc.broker_readiness
         if report['start_command_invoked']:
             try:
                 result = invoke(['/usr/bin/systemctl', 'stop', ENGINE])
@@ -502,10 +516,7 @@ def main(argv=None):
 
             def fresh_broker():
                 value = broker.read_broker(configured[0].python, configured[0].env, user, ready.TARGET, evidence)
-                broker.validate_receipt(value, utc_now())
-                require(value['books_complete'] is True and value['readiness'] is True and
-                        value['pending_orders'] == 0, 'fresh_broker_readiness_required')
-                return value
+                return require_broker_readiness(value, broker.validate_receipt, utc_now())
 
             def admission():
                 context.guard()
@@ -592,6 +603,8 @@ def main(argv=None):
         report['blocked'] = str(exc) if isinstance(exc, Blocked) else type(exc).__name__
         if hasattr(exc, 'dependency_changes'):
             report['dependency_changes'] = exc.dependency_changes
+        if hasattr(exc, 'broker_readiness'):
+            report['broker_readiness'] = exc.broker_readiness
         print(json.dumps(report, indent=2, sort_keys=True))
         raise SystemExit(1)
     print(json.dumps(report, indent=2, sort_keys=True))

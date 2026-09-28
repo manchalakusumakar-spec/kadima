@@ -4,11 +4,12 @@ The fake service manager cannot touch host services, and health probes use
 synthetic payloads rather than a broker or network connection.
 """
 from copy import deepcopy
-from contextlib import closing
+from contextlib import closing, redirect_stdout
 from datetime import datetime, timedelta, timezone
 import hashlib
 import errno
 import importlib.util
+import io
 import json
 import os
 from pathlib import Path
@@ -28,6 +29,97 @@ m = importlib.util.module_from_spec(SPEC)
 sys.modules[SPEC.name] = m
 SPEC.loader.exec_module(m)
 NOW = datetime(2026, 9, 28, 1, 0, tzinfo=timezone.utc)
+
+
+def broker_observation(**kwargs):
+    spec = importlib.util.spec_from_file_location('_paused_broker_fixture',
+        ROOT/'tests/test_stopped_broker_read.py')
+    fixtures = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(fixtures)
+    value, _, _ = fixtures.ChildReaderTests().child(**kwargs)
+    return fixtures.m, value
+
+
+def pending_broker_failure():
+    broker, receipt = broker_observation(orders=[dict(exchange='NFO',
+        tradingsymbol='NIFTY29SEP2623250CE', symboltoken='73921', orderid='pending1',
+        orderstatus='trigger pending', quantity='130', transactiontype='SELL',
+        clientcode='PRIVATE_ACCOUNT', apikey='SECRET_KEY')])
+    try:
+        m.require_broker_readiness(receipt, broker.validate_receipt, m.utc_now())
+    except m.Blocked as exc:
+        return exc
+    raise AssertionError('Pending order was admitted')
+
+
+class BrokerDiagnosticTests(unittest.TestCase):
+    def test_pending_order_receipt_preserves_identity_and_suppresses_provider_fields(self):
+        exc = pending_broker_failure()
+        receipt = exc.broker_readiness
+        self.assertEqual(str(exc), 'fresh_broker_readiness_required')
+        self.assertEqual(receipt['pending_orders'], 1)
+        self.assertEqual(receipt['pending_order_details'][0]['orderid'], 'pending1')
+        self.assertEqual(receipt['pending_order_details'][0]['status'], 'trigger pending')
+        for secret in ('PRIVATE_ACCOUNT', 'SECRET_KEY', 'clientcode', 'apikey'):
+            self.assertNotIn(secret, json.dumps(receipt))
+
+    def test_changed_manual_quantity_reports_unexpected_exposure(self):
+        broker, _ = broker_observation()
+        broker, receipt = broker_observation(positions=[dict(broker.ALLOWED_HOLDING, netqty=65)])
+        with self.assertRaises(m.Blocked) as result:
+            m.require_broker_readiness(receipt, broker.validate_receipt, m.utc_now())
+        detail = result.exception.broker_readiness
+        self.assertEqual(detail['nonzero_positions'][0]['netqty'], 65)
+        self.assertEqual(detail['error']['reason'], 'unexpected_exposure')
+        receipt['nonzero_positions'][0]['netqty'] = 999
+        self.assertEqual(detail['nonzero_positions'][0]['netqty'], 65)
+
+    def test_incomplete_login_receipt_reports_redacted_reason(self):
+        broker, receipt = broker_observation(login_error=RuntimeError('SECRET_LOGIN_RESPONSE'))
+        with self.assertRaises(m.Blocked) as result:
+            m.require_broker_readiness(receipt, broker.validate_receipt, m.utc_now())
+        detail = result.exception.broker_readiness
+        self.assertFalse(detail['books_complete'])
+        self.assertEqual(detail['error'], dict(stage='login', reason='login_failed', type='RuntimeError'))
+        self.assertNotIn('SECRET_LOGIN_RESPONSE', json.dumps(detail))
+
+    def test_flat_or_exact_manual_holding_still_passes(self):
+        broker, _ = broker_observation()
+        for positions in ([], [broker.ALLOWED_HOLDING]):
+            with self.subTest(positions=positions):
+                broker, receipt = broker_observation(positions=positions)
+                before = deepcopy(receipt)
+                self.assertIs(m.require_broker_readiness(receipt, broker.validate_receipt, m.utc_now()), receipt)
+                self.assertEqual(receipt, before)
+
+    def test_invalid_or_stale_receipt_is_never_attached(self):
+        for kind in ('extra_field', 'stale', 'unbounded_details'):
+            with self.subTest(kind=kind):
+                broker, receipt = broker_observation()
+                if kind == 'extra_field':
+                    receipt['token'] = 'UNVALIDATED_SECRET'
+                elif kind == 'stale':
+                    receipt['started_at'] = (m.utc_now()-timedelta(minutes=2)).isoformat()
+                else:
+                    receipt['pending_order_details'] = ['UNVALIDATED_SECRET']*9
+                with self.assertRaises(broker.Blocked) as result:
+                    m.require_broker_readiness(receipt, broker.validate_receipt, m.utc_now())
+                self.assertFalse(hasattr(result.exception, 'broker_readiness'))
+                self.assertNotIn('UNVALIDATED_SECRET', str(result.exception))
+
+    def test_main_prints_validated_initial_admission_receipt(self):
+        failure = pending_broker_failure()
+        output = io.StringIO()
+        with patch.object(m, 'load_repair', side_effect=failure), \
+             patch.object(m.os, 'geteuid', return_value=0), patch.object(m.os, 'umask'), \
+             redirect_stdout(output), self.assertRaises(SystemExit) as result:
+            m.main(['--history', '/unused', '--evidence', '/unused', '--resume-before-start', '--apply'])
+        self.assertEqual(result.exception.code, 1)
+        report = json.loads(output.getvalue())
+        self.assertEqual(report['broker_readiness'], failure.broker_readiness)
+        self.assertEqual(report['start_requested'], [])
+        self.assertFalse(report['activation'])
+        self.assertEqual(report['state'], 'blocked')
 
 
 class PausedEnvironmentTests(unittest.TestCase):
@@ -593,6 +685,32 @@ class StartupTransactionTests(unittest.TestCase):
         self.assertFalse(self.state_dir.exists())
         self.assertFalse(self.dropin.exists())
         self.assertEqual(self.service_actions(), [])
+
+    def test_broker_admission_failure_keeps_receipt_without_claiming_resume(self):
+        self.dropin.write_bytes(m.DROPIN_BYTES)
+        failure = pending_broker_failure()
+        self.admission.side_effect = failure
+        with self.assertRaises(m.Blocked) as result:
+            self.run_start(reuse_override=dict(path=str(self.dropin), original_present=False, retained=True))
+        self.assertEqual(result.exception.broker_readiness, failure.broker_readiness)
+        self.assertFalse(self.state_dir.exists())
+        self.assertEqual(self.dropin.read_bytes(), m.DROPIN_BYTES)
+        self.assertEqual(self.service_actions(), [])
+        self.prepare_override.assert_not_called()
+
+    def test_prestart_broker_failure_is_recorded_without_start_or_reload_on_resume(self):
+        self.dropin.write_bytes(m.DROPIN_BYTES)
+        failure = pending_broker_failure()
+        self.prestart.side_effect = failure
+        with self.assertRaises(m.Blocked) as result:
+            self.run_start(reuse_override=dict(path=str(self.dropin), original_present=False, retained=True))
+        self.assertTrue((self.state_dir/'attempted.json').is_file())
+        self.assertEqual(self.service_actions(), [])
+        self.assertEqual(self.dropin.read_bytes(), m.DROPIN_BYTES)
+        self.assertEqual(result.exception.report['broker_readiness'], failure.broker_readiness)
+        self.assertEqual(self.statuses[-1]['broker_readiness'], failure.broker_readiness)
+        self.assertFalse(result.exception.report['start_command_invoked'])
+        self.assertEqual(result.exception.report['start_requested'], [])
 
     def test_success_orders_pause_override_before_engine_start_and_checks(self):
         report = self.run_start()

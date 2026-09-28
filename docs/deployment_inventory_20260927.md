@@ -2,7 +2,20 @@
 
 Verified against GitHub PR metadata, exact-head workflow runs and ancestry comparisons to PR20. AWS is not connected; GitHub checks are not evidence of installation or live fills.
 
-## Latest supplied result — 28 September 2026, 13:16 IST
+## Latest supplied recovery result — 28 September 2026
+
+The recovery command at `8e04eadb4ea7d74d98586b205b9b3820743616ff` passed the
+dependency and recovery-record gates, then blocked at initial fresh broker
+admission: `fresh_broker_readiness_required`, `state=blocked`,
+`activation=false`, `start_requested=[]`. It did not claim a recovery attempt or
+request a service start. Its generic message does not identify an order,
+position or broker API failure. The helper now retains the validated, bounded
+broker receipt in this failure report. The updated recovery command can check
+again and continue the same authorized paused start if all gates pass.
+Engine/peripheral runtime verification and activation remain pending; the
+historical repair remains committed.
+
+## Earlier supplied result — 28 September 2026, 13:16 IST
 
 The operator's screenshot shows the corrected startup failed at
 `engine_dependencies_changed` after retaining the paused environment override.
