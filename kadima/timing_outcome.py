@@ -45,11 +45,12 @@ from collections import Counter, defaultdict
 from datetime import datetime, time as dtime
 from typing import Optional
 
+from . import config
 from .config import DATA_DIR, DB_PATH, IST
 
 TIMING_DIR = os.path.join(DATA_DIR, "timing")
 OUTCOME_DIR = os.path.join(TIMING_DIR, "outcomes")
-WINDOW_END = dtime(15, 38)          # auto_executor.EOD_FORCE_CLOSE_HHMM
+WINDOW_END = dtime(*getattr(config, "TIMING_WINDOW_END", (15, 18)))   # EOD force-close
 DEFAULT_SPREAD_PCT = 1.0            # used only when no spread was ever recorded
 COST_RESERVE_PCT = 1.0              # trade_policy.COST_RESERVE, round trip
 SCHEMA_VERSION = "timing-outcome-v1"
