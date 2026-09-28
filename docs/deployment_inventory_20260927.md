@@ -2,7 +2,17 @@
 
 Verified against GitHub PR metadata, exact-head workflow runs and ancestry comparisons to PR20. AWS is not connected; GitHub checks are not evidence of installation or live fills.
 
-## Latest observation — 28 September 2026, 08:24 IST
+## Latest operator update — 28 September 2026, 08:34 IST
+
+The operator reports cancelling the outstanding broker order. Fresh complete
+broker books must confirm zero pending orders; cancellation is not yet verified
+from AWS output. The guarded stopped repair is prepared in
+[STOPPED_HISTORY_REPAIR.md](../momentum_recovery/STOPPED_HISTORY_REPAIR.md).
+It rechecks the broker, backs up SQLite and reconciles only the reviewed expired
+BANKEX case while preserving the manual NIFTY holding and paused controls.
+It has not yet run on AWS; service startup and runtime verification remain pending.
+
+## Latest host observation — 28 September 2026, 08:24 IST
 
 The operator completed the virtual-environment permission correction: Ubuntu
 ownership is unchanged, mode changed from 0664 to 0644, and config contents were
@@ -47,7 +57,7 @@ The operator manages the manual NIFTY carry-forward holding externally.
 | PR20 daily price references and minute history | Source installed; new capture pending startup |
 | PR24 continuous trade learning / forecast and strike review | Source installed; learner startup/heartbeat pending |
 | Custom dashboard including new panels | Source installed; dashboard service stopped |
-| Historical BANKEX ledger repair | Pending; stopped-state account/evidence/complete-book review needed |
+| Historical BANKEX ledger repair | Guarded repair prepared; fresh zero-pending-order check and execution pending |
 | Service startup and API/data checks | Pending |
 | Trading activation / automatic session deployment | Pending; no deployment timer was armed by maintenance |
 | PR7 separate CAS engine | Not deployed; integration pending |
