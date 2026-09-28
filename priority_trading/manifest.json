@@ -1,0 +1,65 @@
+{
+  "runtime": {
+    "kadima/auto_executor.py": {
+      "old": "7cfe6cf21a520ba967d6a672b2f54a99bbe81321",
+      "new": "2d9e880fee676b6e2f8b6c75bd62530ddf10cbda"
+    },
+    "kadima/cas_engine.py": {
+      "old": null,
+      "new": "ec9d23b2d6e08b6e4f37d1241f1052bb2c880efe"
+    },
+    "kadima/cas_orders.py": {
+      "old": null,
+      "new": "32988f28f0fe47a2ecb25a586b9d99cbe3f567c4"
+    },
+    "kadima/control_api.py": {
+      "old": "0e766a449e95ddcb905d4e48fb9313e7fb84f7bd",
+      "new": "74ce82c1524b4e1cb1c5d24491036199f046c723"
+    },
+    "kadima/engine.py": {
+      "old": "82c1afd9c2315b1c8fb6cf22c6ebaca0daa18421",
+      "new": "6636ff50c3a79fc1d73af6c86d1ba7b6e27b49b1"
+    },
+    "kadima/eod_watchdog.py": {
+      "old": "15b5aa8f480bc79308d7db1d93dc0f0d2a67f9b1",
+      "new": "b4b5a6aa8e0315885eedd7aa4ee536a152136832"
+    },
+    "kadima/execution_ledger.py": {
+      "old": "662b1ace43efac31df033fc1df71c3322bb21189",
+      "new": "7e3c11719d6e5efecde8b277602ae3497d62bdb5"
+    },
+    "kadima/execution_owner.py": {
+      "old": null,
+      "new": "7af98d30b86c90bc503d779b5dc7ec595f431bde"
+    },
+    "kadima/market_session_gate.py": {
+      "old": "5633eba4177f6ade457d6bdd32ec4e154f27e68a",
+      "new": "067a699555d831cbebb050c2ec192aa7f2b943ee"
+    },
+    "kadima/mcx_live.py": {
+      "old": "bbe4c65d18428505898b2b579e3c3b9dfa6a271c",
+      "new": "4080fbb4f1f678ed489e6a99f674a1fcb25b216d"
+    },
+    "kadima/option_chain.py": {
+      "old": "fe0d631935c198c3b6e51cae1f47ee79805c8e0c",
+      "new": "91b412e425acc27124d4d525e1b69f2b92bf0ee2"
+    },
+    "kadima/owned_watchdog.py": {
+      "old": null,
+      "new": "2db45fc7303335587134a90bec3a010b3a7b4754"
+    },
+    "kadima/priority_sessions.py": {
+      "old": null,
+      "new": "94fee8c80af61e31a6afba8fdd7278c309c32bc5"
+    },
+    "run.py": {
+      "old": "3dd1a763faf472831b33db0bbf21d0d2acca16f7",
+      "new": "9828f4ad0bafd77ff30d1fbed46eb9429e2fda3a"
+    }
+  },
+  "scheduler": {
+    "gate.py": "5633eba4177f6ade457d6bdd32ec4e154f27e68a",
+    "priority_sessions.py": "94fee8c80af61e31a6afba8fdd7278c309c32bc5",
+    "runner.py": "7c8c09670112d7c409b94d1edd8cf59e74a98786"
+  }
+}
