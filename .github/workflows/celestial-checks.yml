@@ -51,6 +51,7 @@ jobs:
           node tests/test_trade_audit_dashboard.cjs
           node tests/test_price_history_dashboard.cjs
           node tests/test_trade_learning_dashboard.cjs
+          node tests/test_dashboard_layout.cjs
       - name: Intercepted composed AWS dashboard
         env:
           DASHBOARD_TEST_HTML: momentum_recovery/reviewed_dashboard/dashboard.html
@@ -58,6 +59,7 @@ jobs:
           node tests/test_trade_audit_dashboard.cjs
           node tests/test_price_history_dashboard.cjs
           node tests/test_trade_learning_dashboard.cjs
+          node tests/test_dashboard_layout.cjs
           node tests/test_reviewed_dashboard.cjs
       - uses: actions/upload-artifact@v4
         if: always()
@@ -69,5 +71,7 @@ jobs:
             /tmp/kadima-price-*.png
             /tmp/kadima-learning-*.png
             /tmp/kadima-reviewed-*.png
+            /tmp/kadima-layout-*.png
           if-no-files-found: ignore
           retention-days: 7
+
