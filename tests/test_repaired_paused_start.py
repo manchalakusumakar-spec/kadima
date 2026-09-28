@@ -6,6 +6,7 @@ synthetic payloads rather than a broker or network connection.
 from copy import deepcopy
 from contextlib import closing
 from datetime import datetime, timedelta, timezone
+import hashlib
 import errno
 import importlib.util
 import json
@@ -80,7 +81,25 @@ class DependencyAdmissionTests(unittest.TestCase):
         properties = dict.fromkeys(m.DEPENDENCIES, '') | dict(
             Requires='sysinit.target system.slice -.mount', Conflicts='shutdown.target')
         raw = ''.join(f'{key}={value}\n' for key, value in properties.items())
-        self.assertEqual(m.dependency_snapshot(lambda command: raw), properties)
+        self.assertEqual(m.dependency_snapshot(lambda command: raw),
+                         properties | dict(Requires='-.mount sysinit.target system.slice'))
+
+    def test_dependency_reordering_after_reload_is_not_a_change(self):
+        properties = self.properties() | dict(Requires='sysinit.target system.slice -.mount')
+        raw = lambda p: ''.join(f'{key}={value}\n' for key, value in p.items())
+        expected = m.dependency_snapshot(lambda command: raw(properties))
+        reordered = properties | dict(Requires='-.mount   system.slice sysinit.target')
+        m.verify_dependencies(lambda command: raw(reordered), expected)
+
+    def test_real_dependency_change_still_blocks_with_names(self):
+        properties = self.properties()
+        raw = lambda p: ''.join(f'{key}={value}\n' for key, value in p.items())
+        expected = m.dependency_snapshot(lambda command: raw(properties))
+        changed = properties | dict(Wants='network-online.target local-fs.target')
+        with self.assertRaises(m.Blocked) as result:
+            m.verify_dependencies(lambda command: raw(changed), expected)
+        self.assertEqual(result.exception.dependency_changes, dict(Wants=dict(
+            before=['network-online.target'], after=['local-fs.target', 'network-online.target'])))
 
     def test_root_mount_exception_is_only_requires_and_never_a_mount_wildcard(self):
         for key, name in [('Requires', 'home.mount'), ('Requires', 'unreviewed.mount')] + [
@@ -112,6 +131,95 @@ class DependencyAdmissionTests(unittest.TestCase):
         raw = raw.replace('Triggers=\n', 'Wants=network-online.target\n')
         with self.assertRaises(m.Blocked):
             m.dependency_snapshot(lambda command: raw)
+
+
+class BeforeStartResumeTests(unittest.TestCase):
+    def setUp(self):
+        temporary = tempfile.TemporaryDirectory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name).resolve()
+        self.state = self.root/'state'
+        self.state.mkdir(mode=0o700)
+        self.dropin = self.root/'paused.conf'
+        self.dropin.write_bytes(m.DROPIN_BYTES)
+        self.dropin.chmod(0o600)
+        self.status = dict(action='repaired_paused_engine_start', activation=False,
+            state='blocked_paused_start', blocked='engine_dependencies_changed', ledger_repaired=False,
+            runtime_source_changed=False, start_command_invoked=False, start_requested=[],
+            stopped_after_failure=[], peripheral_services_started=False, peripheral_startup_pending=True,
+            override_retained=True, override_write_requested=True,
+            override=dict(path=str(self.dropin), original_present=False, retained=True),
+            observed_at=NOW.isoformat())
+        self.attempt = dict(started_at=(NOW-timedelta(seconds=5)).isoformat())
+        self.manifest = dict(path=str(self.dropin), original_present=False,
+                             replacement_sha256=hashlib.sha256(m.DROPIN_BYTES).hexdigest())
+        self.dependencies = dict.fromkeys(m.DEPENDENCIES, '') | dict(
+            Requires='-.mount sysinit.target system.slice', Conflicts='shutdown.target')
+        def private(path, directory=False):
+            path = Path(path)
+            info = path.lstat()
+            if path.is_symlink() or info.st_uid != os.geteuid() or info.st_mode & 0o077 or (
+                    not directory and (not stat.S_ISREG(info.st_mode) or info.st_nlink != 1)):
+                raise m.Blocked('root_private_path_required')
+            return path
+        self.helper = SimpleNamespace(root_parents=lambda p: None, private_path=private,
+                                      read_regular=lambda p, limit=100000: p.read_bytes())
+        self.write_records()
+
+    def write_records(self):
+        for name, value in (('status.json', self.status), ('attempted.json', self.attempt),
+                            ('override.json', self.manifest)):
+            path = self.state/name
+            path.write_text(json.dumps(value))
+            path.chmod(0o600)
+
+    def verify(self):
+        with patch.object(m, 'utc_now', return_value=NOW+timedelta(seconds=10)):
+            return m.verify_resume(self.helper, self.dependencies, self.state, self.dropin)
+
+    def test_exact_before_start_failure_is_read_only_and_preserves_records(self):
+        before = {p: p.read_bytes() for p in self.state.iterdir()}
+        records, override = self.verify()
+        self.assertEqual(records, before)
+        self.assertEqual(override, self.status['override'])
+        self.assertEqual({p: p.read_bytes() for p in self.state.iterdir()}, before)
+        self.assertEqual(self.dropin.read_bytes(), m.DROPIN_BYTES)
+
+    def test_started_unknown_or_partial_attempt_is_never_resumed(self):
+        original = deepcopy(self.status)
+        changes = [dict(start_command_invoked=True), dict(start_command_invoked=0),
+                   dict(start_requested=['kadima.service']), dict(state='starting_paused_engine'),
+                   dict(blocked='engine_api_start_timeout'), dict(status_recording_failed=True),
+                   dict(process={'pid':'1234'}), dict(health={}), dict(engine_stopped_after_failure=True),
+                   dict(override_retained=None), dict(resumed_before_start=True)]
+        for change in changes:
+            self.status = original | change
+            self.write_records()
+            with self.subTest(change=change), self.assertRaises(m.Blocked):
+                self.verify()
+
+    def test_override_manifest_bytes_or_private_permissions_must_match(self):
+        self.manifest['original_present'] = True
+        self.write_records()
+        with self.assertRaises(m.Blocked): self.verify()
+        self.manifest['original_present'] = False
+        self.write_records()
+        self.dropin.write_bytes(b'[Service]\n')
+        with self.assertRaises(m.Blocked): self.verify()
+        self.dropin.write_bytes(m.DROPIN_BYTES)
+        (self.state/'status.json').chmod(0o644)
+        with self.assertRaises(m.Blocked): self.verify()
+
+    def test_resume_requires_observed_dependencies_not_just_allowlisted_units(self):
+        self.dependencies['Wants'] = 'network-online.target'
+        with self.assertRaisesRegex(m.Blocked, 'reviewed_resume_dependencies_required'):
+            self.verify()
+
+    def test_future_or_reversed_chronology_blocks(self):
+        for at in (NOW+timedelta(minutes=1), NOW-timedelta(minutes=1)):
+            self.status['observed_at'] = at.isoformat()
+            self.write_records()
+            with self.subTest(at=at), self.assertRaises(m.Blocked): self.verify()
 
 
 class LocalGetTests(unittest.TestCase):
@@ -415,12 +523,55 @@ class StartupTransactionTests(unittest.TestCase):
             self.active = False
         return SimpleNamespace(returncode=1 if self.stop_error else 0)
 
-    def run_start(self, *, apply=True):
+    def run_start(self, *, apply=True, reuse_override=None):
         return m.start_transaction(apply=apply, helper=self.helper,
             state_dir=self.state_dir, admission=self.admission,
             prepare_override=self.prepare_override, after_reload=self.after_reload,
             prestart=self.prestart, observe=self.observe, invoke=self.invoke,
-            health=self.health, guard=self.guard, process=self.process)
+            health=self.health, guard=self.guard, process=self.process, reuse_override=reuse_override)
+
+    def test_resume_preserves_original_attempt_and_override_without_reload(self):
+        original = self.root/'original'
+        original.mkdir(mode=0o700)
+        previous = original/'attempted.json'
+        previous.write_bytes(b'original-attempt')
+        self.dropin.write_bytes(m.DROPIN_BYTES)
+        self.state_dir = original/'resume-before-start'
+        override = dict(path=str(self.dropin), original_present=False, retained=True)
+        report = self.run_start(reuse_override=override)
+        self.assertEqual(previous.read_bytes(), b'original-attempt')
+        self.assertEqual(self.dropin.read_bytes(), m.DROPIN_BYTES)
+        self.assertTrue((self.state_dir/'attempted.json').exists())
+        self.assertEqual(self.service_actions(), [('/usr/bin/systemctl', 'start', 'kadima.service')])
+        self.assertTrue(report['resumed_before_start'])
+        self.assertFalse(report['override_write_requested'])
+        self.prepare_override.assert_not_called()
+        with self.assertRaises(m.Blocked):
+            self.run_start(reuse_override=override)
+
+    def test_resume_failed_prestart_retains_override_without_service_action(self):
+        self.dropin.write_bytes(m.DROPIN_BYTES)
+        self.prestart.side_effect = m.Blocked('fresh_broker_readiness_required')
+        with self.assertRaises(m.Blocked) as result:
+            self.run_start(reuse_override=dict(path=str(self.dropin), original_present=False, retained=True))
+        self.assertFalse(self.active)
+        self.assertEqual(self.service_actions(), [])
+        self.assertEqual(self.dropin.read_bytes(), m.DROPIN_BYTES)
+        self.assertTrue(result.exception.report['override_retained'])
+        self.prepare_override.assert_not_called()
+
+    def test_resume_health_failure_stops_only_engine_and_cannot_retry(self):
+        self.dropin.write_bytes(m.DROPIN_BYTES)
+        self.health.side_effect = m.Blocked('runtime_broker_reconciliation_failed')
+        override = dict(path=str(self.dropin), original_present=False, retained=True)
+        with self.assertRaises(m.Blocked):
+            self.run_start(reuse_override=override)
+        self.assertFalse(self.active)
+        self.assertEqual(self.service_actions(), [('/usr/bin/systemctl', 'start', 'kadima.service'),
+                                                 ('/usr/bin/systemctl', 'stop', 'kadima.service')])
+        with self.assertRaises(FileExistsError):
+            self.run_start(reuse_override=override)
+        self.assertEqual(self.dropin.read_bytes(), m.DROPIN_BYTES)
 
     def service_actions(self):
         return [event for event in self.events if isinstance(event, tuple)]

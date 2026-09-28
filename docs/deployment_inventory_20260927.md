@@ -2,7 +2,18 @@
 
 Verified against GitHub PR metadata, exact-head workflow runs and ancestry comparisons to PR20. AWS is not connected; GitHub checks are not evidence of installation or live fills.
 
-## Latest host observation — 28 September 2026, 09:29 IST
+## Latest supplied result — 28 September 2026, 13:16 IST
+
+The operator's screenshot shows the corrected startup failed at
+`engine_dependencies_changed` after retaining the paused environment override.
+`start_command_invoked=false` and `start_requested=[]`: this attempt did not
+start the engine. Historical repair remains committed. Dependency comparison is
+corrected to use relation sets, with a separate one-attempt recovery path that
+requires the exact recorded before-start failure and current reviewed dependency
+sets. The recovery is prepared but has not run on AWS. Dashboard, scanner, macro,
+runtime health and trading activation remain pending.
+
+## Earlier host observation — 28 September 2026, 09:29 IST
 
 The engine remains inactive with PID 0. Paused startup stopped before mutation
 because the guard omitted the host's exact root mount dependency `-.mount`.

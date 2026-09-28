@@ -1,5 +1,36 @@
 # Start the repaired engine with entries paused
 
+## Recovery from the retained override
+
+At 13:16 IST the operator supplied a screenshot of the corrected command failing
+at `engine_dependencies_changed`, with the pause override retained and both
+`start_command_invoked=false` and `start_requested=[]`. This is an observed
+startup failure, not a failed or reversed historical repair.
+
+The old helper compared dependency lists as raw strings. Such comparison can
+mistake display reordering after daemon reload for a dependency change. It now
+compares canonical relation sets; real changes still block and include the
+before/after unit names. The screenshot did not retain those lists, so reordering
+is a supported explanation, not a proven host-side diff.
+
+`resume_repaired_paused.sh` selects a narrow recovery path. It requires the exact
+recorded before-start failure, private original attempt/status/override records,
+the exact unchanged override bytes and manifest, stopped services, and the
+complete dependency sets reported by the operator at 09:29. It also verifies
+the override is already loaded with the required pause environment. It neither
+deletes original attempt records nor rewrites/removes the override nor reloads
+systemd. All existing source, repair, pause, fresh broker and runtime gates still
+apply.
+
+The recovery has its own one-attempt marker and status under
+`/var/lib/kadima-paused-start-20260928/resume-before-start/`. Original records in
+the parent directory remain unchanged and are fingerprinted throughout. Any
+ambiguous, already-started or different failure is refused. A recovery failure
+cannot be blindly retried. Later peripheral startup must read this recovery
+status if recovery succeeds; the original status remains the historical failure.
+
+## Initial startup
+
 The first startup attempt blocked before any start or override change because
 its dependency allowlist omitted `-.mount`. At 09:29 IST the operator supplied
 the actual host properties: `Requires=sysinit.target system.slice -.mount`,

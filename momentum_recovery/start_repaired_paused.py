@@ -28,6 +28,7 @@ import urllib.request
 PACKAGE = Path(__file__).resolve().parents[1]
 ENGINE = 'kadima.service'
 STATE = Path('/var/lib/kadima-paused-start-20260928')
+RESUME_STATE = STATE/'resume-before-start'
 DROPIN = Path('/etc/systemd/system/kadima.service.d/zzzz-kadima-paused-start.conf')
 BACKUP_ROOT = Path('/var/backups')
 REPAIR_BLOB = '04e8a5508fb34badb15be2b343fefd2e71d5e702'
@@ -91,7 +92,52 @@ def dependency_snapshot(invoke):
             'complete_dependency_properties_required')
     values = dict(rows)
     dependency_admission(values)
-    return values
+    # systemd relations are sets. daemon-reload may change their display order.
+    return {key: ' '.join(sorted(set(value.split()))) for key, value in values.items()}
+
+
+def verify_dependencies(invoke, expected):
+    current = dependency_snapshot(invoke)
+    if current != expected:
+        exc = Blocked('engine_dependencies_changed')
+        exc.dependency_changes = {key: dict(before=expected[key].split(), after=current[key].split())
+                                  for key in DEPENDENCIES if expected[key] != current[key]}
+        raise exc
+
+
+def verify_resume(helper, dependencies, state_dir=STATE, path=DROPIN):
+    """Admit only the recorded failure before any start; preserve its records."""
+    helper.root_parents(state_dir)
+    helper.private_path(state_dir, directory=True)
+    records = {state_dir/name: helper.read_regular(helper.private_path(state_dir/name), 100_000)
+               for name in ('status.json', 'attempted.json', 'override.json')}
+    status, attempt, manifest = (json.loads(records[state_dir/name])
+                                for name in ('status.json', 'attempted.json', 'override.json'))
+    expected = dict(action='repaired_paused_engine_start', activation=False,
+        state='blocked_paused_start', blocked='engine_dependencies_changed', ledger_repaired=False,
+        runtime_source_changed=False, start_command_invoked=False, start_requested=[],
+        stopped_after_failure=[], peripheral_services_started=False, peripheral_startup_pending=True,
+        override_retained=True, override_write_requested=True)
+    require(isinstance(status, dict) and all(type(status.get(k)) is type(v) and status[k] == v
+            for k, v in expected.items()), 'reviewed_before_start_failure_required')
+    require(not any(k in status for k in ('process', 'health', 'engine_stopped_after_failure',
+            'status_recording_failed', 'resumed_before_start')), 'ambiguous_start_attempt_not_resumable')
+    override = dict(path=str(path), original_present=False, retained=True)
+    same = lambda a, b: json.dumps(a, sort_keys=True, allow_nan=False) == json.dumps(b, sort_keys=True, allow_nan=False)
+    require(same(status.get('override'), override), 'reviewed_retained_override_required')
+    require(isinstance(attempt, dict) and set(attempt) == {'started_at'}, 'startup_attempt_invalid')
+    started, observed = datetime.fromisoformat(attempt['started_at']), datetime.fromisoformat(status['observed_at'])
+    require(started.tzinfo is not None and observed.tzinfo is not None and started <= observed <= utc_now(),
+            'startup_attempt_chronology_invalid')
+    require(same(manifest, dict(path=str(path), original_present=False,
+            replacement_sha256=hashlib.sha256(DROPIN_BYTES).hexdigest())), 'paused_override_manifest_changed')
+    require(helper.read_regular(helper.private_path(path)) == DROPIN_BYTES, 'paused_override_changed')
+    # Original failure did not retain its before/after dependency lists. Require
+    # the complete relation set supplied by the operator, not merely an allowlist.
+    expected_dependencies = dict.fromkeys(DEPENDENCIES, '') | dict(
+        Requires='-.mount sysinit.target system.slice', Conflicts='shutdown.target')
+    require(dependencies == expected_dependencies, 'reviewed_resume_dependencies_required')
+    return records, override
 
 
 class NoRedirect(urllib.request.HTTPRedirectHandler):
@@ -228,7 +274,8 @@ def inactive(value):
 
 
 def start_transaction(*, apply, helper, state_dir, admission, prepare_override,
-                      after_reload, prestart, observe, invoke, health, guard, process):
+                      after_reload, prestart, observe, invoke, health, guard, process,
+                      reuse_override=None):
     admission()
     require(inactive(observe(ENGINE)), 'engine_must_be_stopped_before_start')
     report = dict(action='repaired_paused_engine_start' if apply else 'repaired_paused_start_plan',
@@ -245,12 +292,17 @@ def start_transaction(*, apply, helper, state_dir, admission, prepare_override,
     def record():
         helper.record_status(state_dir, report)
     try:
-        report['state'] = 'preparing_paused_override'
-        report['override_write_requested'] = True
-        record()
-        report['override'] = prepare_override()
-        require(invoke(['/usr/bin/systemctl', 'daemon-reload']).returncode == 0,
-                'paused_override_reload_failed')
+        if reuse_override is None:
+            report['state'] = 'preparing_paused_override'
+            report['override_write_requested'] = True
+            record()
+            report['override'] = prepare_override()
+            require(invoke(['/usr/bin/systemctl', 'daemon-reload']).returncode == 0,
+                    'paused_override_reload_failed')
+        else:
+            report.update(state='verifying_retained_override', resumed_before_start=True,
+                          override_write_requested=False, override=dict(reuse_override), override_retained=True)
+            record()
         after_reload()
         prestart()
         require(inactive(observe(ENGINE)), 'engine_started_outside_operation')
@@ -270,6 +322,8 @@ def start_transaction(*, apply, helper, state_dir, admission, prepare_override,
     except BaseException as exc:
         report['state'] = 'blocked_paused_start'
         report['blocked'] = str(exc) if isinstance(exc, Blocked) else type(exc).__name__
+        if hasattr(exc, 'dependency_changes'):
+            report['dependency_changes'] = exc.dependency_changes
         if report['start_command_invoked']:
             try:
                 result = invoke(['/usr/bin/systemctl', 'stop', ENGINE])
@@ -376,6 +430,7 @@ def main(argv=None):
     parser.add_argument('--history', type=Path, required=True)
     parser.add_argument('--evidence', type=Path, required=True)
     parser.add_argument('--apply', action='store_true')
+    parser.add_argument('--resume-before-start', action='store_true')
     args = parser.parse_args(argv)
     require(os.geteuid() == 0, 'sudo_required')
     os.umask(0o077)
@@ -401,6 +456,14 @@ def main(argv=None):
             source.ensure_stopped(ready.UNITS, helper.observe_unit)
             context = context_module.inspect_context(user=user, target=ready.TARGET)
             dependencies = dependency_snapshot(context_module.invoke)
+            retained_override = None
+            operation_state = RESUME_STATE if args.resume_before_start else STATE
+            if args.resume_before_start:
+                resume_records, retained_override = verify_resume(helper, dependencies)
+                fingerprints.update(resume_records)
+                paused_environment(context.env)
+                require(DROPIN in context.fingerprints and context.fingerprints[DROPIN].raw == DROPIN_BYTES,
+                        'retained_override_not_loaded')
             raw = ready.private_evidence(args.evidence, helper, user.pw_uid)
             require(hashlib.sha256(raw).hexdigest() == repair.EVIDENCE_SHA256, 'exact_reviewed_evidence_required')
             evidence = note.evidence(json.loads(raw), utc_now())
@@ -435,7 +498,7 @@ def main(argv=None):
                 require(ready.private_evidence(args.evidence, helper, user.pw_uid) == raw, 'reviewed_evidence_changed')
                 current_policies, _ = verify_repair(helper, repair, broker, context.db_path, evidence)
                 require(current_policies == policies, 'persisted_policies_changed')
-                require(dependency_snapshot(context_module.invoke) == dependencies, 'engine_dependencies_changed')
+                verify_dependencies(context_module.invoke, dependencies)
 
             def fresh_broker():
                 value = broker.read_broker(configured[0].python, configured[0].env, user, ready.TARGET, evidence)
@@ -518,15 +581,17 @@ def main(argv=None):
                             next_progress = time.monotonic()+20
                         time.sleep(0.5)
 
-            print('STATUS: '+str(STATE/'status.json'), flush=True)
-            report = start_transaction(apply=args.apply, helper=helper, state_dir=STATE, admission=admission,
+            print('STATUS: '+str(operation_state/'status.json'), flush=True)
+            report = start_transaction(apply=args.apply, helper=helper, state_dir=operation_state, admission=admission,
                 prepare_override=lambda: prepare_dropin(helper, STATE), after_reload=after_reload,
                 prestart=prestart, observe=helper.observe_unit,
                 invoke=lambda command: subprocess.run(command, capture_output=True, text=True, timeout=30),
-                health=health, guard=running_guard, process=process)
+                health=health, guard=running_guard, process=process, reuse_override=retained_override)
     except Exception as exc:
         report.update(getattr(exc, 'report', {}))
         report['blocked'] = str(exc) if isinstance(exc, Blocked) else type(exc).__name__
+        if hasattr(exc, 'dependency_changes'):
+            report['dependency_changes'] = exc.dependency_changes
         print(json.dumps(report, indent=2, sort_keys=True))
         raise SystemExit(1)
     print(json.dumps(report, indent=2, sort_keys=True))
