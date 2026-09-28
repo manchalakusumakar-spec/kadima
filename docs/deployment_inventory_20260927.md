@@ -2,6 +2,29 @@
 
 Verified against GitHub PR metadata, exact-head workflow runs and ancestry comparisons to PR20. AWS is not connected; GitHub checks are not evidence of installation or live fills.
 
+## Auto-trading restoration prepared — 28 September 2026
+
+Operator screenshots at 16:38 IST confirm `paused_peripherals_running`: engine,
+dashboard, scanner and macro watcher are running; global/stock intent remains
+paused and watchdog/session automation held. The historical repair and source
+admission passed the completed helper. This supersedes the earlier pending
+startup statuses below. It does not establish fresh in-session market coverage.
+
+The operator now explicitly requests auto-trading deployment. The procedure in
+[SESSION_TRADING.md](../momentum_recovery/SESSION_TRADING.md) restores normal
+NSE/BSE session automation, including installed stock-fast, Gap and integrated
+Move Capture. It admits the current paused rollout, source and exact manual
+PE65-or-flat broker books; restarts only the engine after hours with intents
+paused; then enables the existing reviewed scheduler. No strategy source, score,
+capital, stops, ledger or broker order is changed. MCX, CAS and the standalone
+watchdog remain held; divergent feature branches below remain pending.
+
+The command must still run on AWS. Success means a verified enabled timer,
+loaded flags and paused healthy APIs waiting for the next eligible session.
+At that session the scheduler needs fresh reconciliation, news and stock-worker
+health before requesting global and stock activation; per-entry gates remain.
+The shipped calendar ends 31 December 2026. No live fill is claimed.
+
 ## Reviewed engine restart — 28 September 2026, 16:25 IST
 
 The operator's systemd output records a successful engine exit at 15:40:03 IST
