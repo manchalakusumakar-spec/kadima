@@ -65,29 +65,37 @@ def test_reconcile_scoped():
     ex = auto_executor.AutoExecutor()
     ex.state.positions["1"] = position()
     _reconcile(ex, [kad, manual], [_order("M1", "888")])
-    check("manual position + order elsewhere: exits monitored", "1" in ex._exit_verified and ex._positions_verified)
+    check("manual position + order elsewhere: exits monitored", "1" not in ex._exit_paused and ex._positions_verified)
     check("manual position elsewhere: entries allowed", ex._reconcile_blocked is False)
     check("manual contracts recorded", ("NFO", "999") in ex._external_contracts and ("NFO", "888") in ex._external_contracts)
 
     ex = auto_executor.AutoExecutor()
     ex.state.positions["1"] = position()
     _reconcile(ex, [dict(kad, netqty="130")], [])
-    check("broker holds MORE of our contract: exits run", "1" in ex._exit_verified)
+    check("broker holds MORE of our contract: exits run", "1" not in ex._exit_paused)
     check("broker holds MORE of our contract: entries blocked", ex._reconcile_blocked is True)
 
     ex = auto_executor.AutoExecutor()
     ex.state.positions["1"] = position()
     auto_executor.alerts.enqueue = lambda *a, **k: None
     _reconcile(ex, [dict(kad, netqty="0")], [])
-    check("broker holds LESS: exits paused for that position (no oversell)", "1" not in ex._exit_verified)
+    check("broker holds LESS: exits paused for that position (no oversell)", "1" in ex._exit_paused)
     check("broker holds LESS: entries blocked", ex._reconcile_blocked is True)
 
     ex = auto_executor.AutoExecutor()
     ex.state.positions["1"] = position()
     _reconcile(ex, [kad], [_order("M2", "111")])
     check("manual order on OUR contract blocks entries", ex._reconcile_blocked is True)
-    check("manual order on our contract: exits still run", "1" in ex._exit_verified)
+    check("manual order on our contract: exits still run", "1" not in ex._exit_paused)
 
+    ex = auto_executor.AutoExecutor()
+    ex.state.positions["1"] = position()
+    auto_executor.fetch_broker_positions = lambda: None
+    ex.reconcile_on_startup()
+    ex._exit_paused.clear()
+    ex.state.positions["2"] = position(sid=2, token="222")
+    check("position filled after reconcile is monitored immediately",
+          ex._positions_verified is False or "2" not in ex._exit_paused)
     ex = auto_executor.AutoExecutor()
     ex.state.positions["1"] = position()
     auto_executor.fetch_broker_positions = lambda: None
