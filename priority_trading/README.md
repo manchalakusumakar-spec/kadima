@@ -91,6 +91,27 @@ Any incomplete attempt retains its backups and revokes entry permission. It
 does not roll back a trading database, manufacture a broker fill, reset a kill
 latch, overwrite unknown source, or automatically repeat an uncertain install.
 
+The 22:19 IST host diagnostics identify the 22:12 failure as the initial
+`kadima-owned-watchdog.service` check: its request to the engine raised
+`HTTPError`, with the response status/detail omitted by the installed runner.
+The engine is active; the old scheduler's last successful observation predates
+this attempt. Its earlier `outside_scheduled_window` result is not evidence that
+the new priority scheduler started. Both timers were disabled by cleanup.
+
+For this installed-but-held state, run `probe_watchdog.py` from a pinned archive
+with its adjacent unchanged `manifest.json`. It preserves the original attempt
+and backups, obtains the existing maintenance locks, checks installed runtime
+hashes, inactive services/disabled timers, matching watchdog/engine API tokens,
+a revoked permit, fresh paused controls and no managed positions. It calls the
+existing guarded watchdog endpoint once and reports its HTTP status plus only
+allowlisted detail, followed by pause/process/permit checks. The engine journal
+is reduced to traceback file/line/function and exception types. Credentials,
+provider bodies and exception messages are omitted. This endpoint ordinarily
+performs reconciliation and owned exit handling; the probe is not described as
+a generic read-only broker operation. It never enables a timer, restarts a
+service, installs source or retries the original installer. An observed HTTP
+response is diagnostic evidence, not completed activation or verified fills.
+
 Offline verification: `python3 priority_trading/verify.py`. Existing base tests
 also run unchanged in CI. The composed suite includes CAS staged fills and
 rejections, MCX budget/freshness checks, manual-holding exclusions, watchdog

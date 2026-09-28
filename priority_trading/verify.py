@@ -49,6 +49,7 @@ def main():
         shutil.copytree(PACKAGE/'scheduler', stage/'scheduler')
         shutil.copyfile(PACKAGE/'install.py', stage/'install.py')
         shutil.copyfile(PACKAGE/'normalize_source_modes.py', stage/'normalize_source_modes.py')
+        shutil.copyfile(PACKAGE/'probe_watchdog.py', stage/'probe_watchdog.py')
         # Exercise the immutable installer's real metadata-preserving file writer.
         shutil.copytree(PACKAGE.parent/'stock_fast_update', stage/'stock_fast_update',
                         ignore=shutil.ignore_patterns('__pycache__'))
