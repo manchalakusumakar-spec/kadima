@@ -38,6 +38,7 @@ jobs:
           sudo "$(command -v python)" -m unittest discover -s tests -p 'test_stopped_history_repair.py' -v
           sudo "$(command -v python)" -m unittest discover -s tests -p 'test_repaired_paused_start.py' -v
           sudo "$(command -v python)" -m unittest discover -s tests -p 'test_paused_peripheral_start.py' -v
+          sudo "$(command -v python)" -m unittest discover -s tests -p 'test_session*py' -v
       - name: Intercepted desktop and mobile dashboard
         run: |
           node tests/test_celestial_dashboard.cjs
