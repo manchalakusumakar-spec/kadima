@@ -758,6 +758,7 @@ class AutoExecutor:
             direction=direction,
             spread_pct=chosen_quote.spread_pct,
             stop_override=verdict.candidate.stop_price,
+            chase_gates=kind != 'gamma_blast',
         )
         eq_verdict = entry_quality.evaluate_entry(ctx)
         if fast is None and gap is None and not eq_verdict.allowed:
