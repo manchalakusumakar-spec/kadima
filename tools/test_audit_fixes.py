@@ -212,6 +212,45 @@ def test_gamma_skips_chase_gates():
     check("gamma still rejects an invalid stop", not bad.allowed and bad.reason == "invalid_structural_stop")
 
 
+# ------------------------------------------------------------------ fix 3b
+def test_celestial_manual_order_keeps_stops():
+    print("fix 3b: Celestial - a manual pending order no longer stops all exits")
+    from kadima import celestial_adoption
+    import kadima.external_reconciliation as ext
+    os.environ["KADIMA_CELESTIAL_ENABLED"] = "1"
+    try:
+        execution_ledger.refresh = lambda positions, ltp_fn=None: True
+        execution_ledger.pending = lambda signal_id=None: []
+        storage.load_open_positions = lambda: []
+        ext.reconcile = lambda ex, rows, book: set()
+        celestial_adoption.adopt = lambda ex, proposals: None
+        kad = dict(exchange="NFO", symboltoken="111", producttype="INTRADAY", netqty="65")
+
+        def run(book):
+            ex = auto_executor.AutoExecutor()
+            ex.celestial_master = object()
+            ex.state.positions["1"] = position()
+            live = {("NFO", "111", "INTRADAY"): 65}
+            obs = [dict(source="KADIMA_AUTO", managed=True)]
+            if any(o.status == "open" for o in book):
+                obs.append(dict(source="BROKER_EXTERNAL", managed=False, reason="external_pending_orders"))
+            celestial_adoption.inspect = lambda *a: (live, dict(live), obs, [])
+            _reconcile(ex, [kad], book)
+            return ex
+
+        ex = run([_order("M1", "888")])
+        check("manual order on another contract: our stops keep running",
+              "1" in ex._celestial_verified and ex._positions_verified)
+        check("manual order pending: entries still blocked", ex._reconcile_blocked is True)
+        ex = run([_order("M2", "111")])
+        check("manual order on OUR contract: that position paused", "1" not in ex._celestial_verified)
+        ex = run([])
+        check("no manual order: verified and entries allowed",
+              "1" in ex._celestial_verified and ex._reconcile_blocked is False)
+    finally:
+        os.environ.pop("KADIMA_CELESTIAL_ENABLED", None)
+
+
 if __name__ == "__main__":
     for t in [v for k, v in list(globals().items()) if k.startswith("test_")]:
         t()
