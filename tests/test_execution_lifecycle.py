@@ -28,6 +28,7 @@ NOW = datetime(2026, 9, 14, 12, tzinfo=timezone.utc)
 config = stub('config', DAILY_LOSS_LIMIT_INR=500, IST=timezone.utc,
               MAX_CONCURRENT_POSITIONS=1, MAX_LOTS_PER_SIGNAL=1,
               ORDER_PLACEMENT_ENABLED=True, in_no_auto_exit_window=lambda:False,
+              MARKET_OPEN=(9,15), MARKET_CLOSE=(15,40),
               DATA_DIR='', DB_PATH='')
 audit = stub('audit', log=Mock())
 alerts = stub('alerts', enqueue=Mock())

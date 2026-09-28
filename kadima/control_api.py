@@ -38,7 +38,7 @@ from .forecast_observer import read_report as read_forecast_report
 from fastapi import FastAPI, Header, HTTPException
 from pydantic import BaseModel
 
-from kadima import audit
+from kadima import audit, trade_audit, price_history
 
 app = FastAPI(title="KADIMA Control API", version="1.0")
 
@@ -458,10 +458,12 @@ def celestial_top20(authorization: Optional[str] = Header(None)):
                 if p.status=='closed': continue
                 quote = EXECUTOR._celestial_quotes.get(p.exchange+':'+p.token) or {}
                 ltp = quote.get('ltp') if celestial.fresh(quote.get('ts')) else None
+                strategy = trade_audit.strategy_for_position(p)
                 positions.append(dict(signal_id=p.signal_id,symbol=p.symbol,exchange=p.exchange,token=p.token,
                     ltp=ltp,quote_at=quote.get('ts'),unrealized_pnl_inr=(ltp-p.entry_price)*p.remaining_qty if ltp is not None else None,
                     direction=p.direction,status=p.status,remaining_qty=p.remaining_qty,entry_price=p.entry_price,
                     source='MANUAL_ADOPTED' if p.kind=='MANUAL_ADOPTED' else 'KADIMA_AUTO',
+                    strategy=strategy, strategy_label=trade_audit.STRATEGIES[strategy],
                     effective_stop=p.effective_stop,trail_active=p.trail_active,
                     entry_order_id=p.order_id,exit_order_id=p.exit_order_id,exit_reason=p.exit_reason,
                     protection='engine_managed_not_broker_hosted'))
@@ -604,3 +606,82 @@ def celestial_news(body: dict = Body(...), authorization: Optional[str] = Header
                       covered_symbols=body['covered_symbols'])
     except (ValueError,TypeError,KeyError) as exc:
         raise HTTPException(422,str(exc))
+
+
+@app.get('/api/kadima/audit')
+def trade_audit_report(day: Optional[str] = None, strategy: Optional[str] = None,
+                       status: Optional[str] = None, symbol: Optional[str] = None,
+                       limit: int = 50, offset: int = 0,
+                       authorization: Optional[str] = Header(None)):
+    _check_auth(authorization)
+    try:
+        return trade_audit.report(day, strategy, status, symbol, limit, offset)
+    except ValueError:
+        raise HTTPException(422, 'audit_invalid_filter') from None
+    except Exception:
+        raise HTTPException(503, 'audit_unavailable') from None
+
+
+@app.get('/api/kadima/learning')
+def trade_learning_report(day: Optional[str] = None, strategy: Optional[str] = None,
+                          limit: int = 50, offset: int = 0,
+                          authorization: Optional[str] = Header(None)):
+    _check_auth(authorization)
+    from . import trade_learning
+    try:
+        return trade_learning.report(day, strategy, limit, offset)
+    except ValueError:
+        raise HTTPException(422, 'learning_invalid_filter') from None
+    except Exception:
+        raise HTTPException(503, 'learning_unavailable') from None
+
+
+@app.get('/api/kadima/prices')
+def price_history_report(day: Optional[str] = None, asset: Optional[str] = None,
+                         symbol: str = '', limit: int = 50, offset: int = 0,
+                         authorization: Optional[str] = Header(None)):
+    _check_auth(authorization)
+    try:
+        return price_history.report(day, asset, symbol, limit, offset)
+    except ValueError:
+        raise HTTPException(422, 'price_history_invalid_filter') from None
+    except Exception:
+        raise HTTPException(503, 'price_history_unavailable') from None
+
+
+@app.get('/api/kadima/prices/minutes')
+def price_history_minutes(day: str, key: str, authorization: Optional[str] = Header(None)):
+    _check_auth(authorization)
+    try:
+        return price_history.history(day, key)
+    except ValueError:
+        raise HTTPException(422, 'price_history_invalid_identity') from None
+    except Exception:
+        raise HTTPException(503, 'price_history_unavailable') from None
+
+
+@app.get('/api/kadima/prices/export')
+def price_history_export(day: Optional[str] = None, asset: Optional[str] = None,
+                         symbol: str = '', authorization: Optional[str] = Header(None)):
+    _check_auth(authorization)
+    try:
+        return price_history.export(day, asset, symbol)
+    except ValueError as exc:
+        message = str(exc)
+        raise HTTPException(422, 'narrow_price_export_filters' if message.startswith('narrow_')
+                            else 'price_history_invalid_filter') from None
+    except Exception:
+        raise HTTPException(503, 'price_history_unavailable') from None
+
+
+@app.get('/api/kadima/audit/export')
+def trade_audit_export(day: Optional[str] = None, strategy: Optional[str] = None,
+                       status: Optional[str] = None, symbol: Optional[str] = None,
+                       authorization: Optional[str] = Header(None)):
+    _check_auth(authorization)
+    try:
+        return trade_audit.export_report(day, strategy, status, symbol)
+    except ValueError:
+        raise HTTPException(422, 'audit_invalid_filter_or_export_limit') from None
+    except Exception:
+        raise HTTPException(503, 'audit_unavailable') from None

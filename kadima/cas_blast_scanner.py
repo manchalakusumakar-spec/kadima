@@ -143,6 +143,12 @@ class CasBlastScanner:
                 candidate = self._check_trigger(quote, hist)
                 if candidate is not None:
                     triggered.append(candidate)
+                    from . import trade_audit
+                    trade_audit.safe_call(trade_audit.record, dict(
+                        ts=now_ist().isoformat(), underlying=chain.index.name,
+                        exchange=chain.index.opt_exchange, token=candidate.token,
+                        symbol=candidate.symbol, strike=candidate.strike, direction=candidate.option_type,
+                        ltp=candidate.ltp, stage='OBSERVATION_ONLY'), 'CAS', 'cas_blast')
                     hist.last_alerted_at = now_ist()
 
         return triggered

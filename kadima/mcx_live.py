@@ -352,6 +352,11 @@ class Worker:
                           error_type=type(exc).__name__)
         candidates.sort(key=lambda row: row["score"], reverse=True)
         self.rows = candidates
+        from . import trade_audit
+        for candidate in candidates:
+            trade_audit.safe_call(trade_audit.record, dict(candidate, exchange='MCX',
+                underlying=candidate['root'], entry=candidate['ask'], quote_at=candidate['ts']),
+                'MCX', 'mcx_momentum')
         result = None
         if candidates:
             result = self._enter(candidates[0],now)

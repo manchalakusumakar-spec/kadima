@@ -11,6 +11,7 @@ jobs:
     env:
       ORDER_PLACEMENT_ENABLED: '0'
       KADIMA_CELESTIAL_ENABLED: '0'
+      KADIMA_PRICE_HISTORY_DISABLED: '1'
     steps:
       - uses: actions/checkout@v7
         with:
@@ -30,13 +31,37 @@ jobs:
       - name: Python regressions and compilation
         run: |
           python -m unittest discover -s tests -v
-          python -m compileall -q kadima dashboard_live tools
+          python -m compileall -q kadima dashboard_live tools trade_audit_update momentum_recovery
+          bash -n momentum_recovery/install_stopped_source.sh momentum_recovery/install_stopped_audit.sh momentum_recovery/check_stopped_readiness.sh momentum_recovery/prepare_stopped_restart.sh momentum_recovery/repair_stopped_history.sh momentum_recovery/start_repaired_paused.sh momentum_recovery/resume_repaired_paused.sh momentum_recovery/start_paused_peripherals.sh momentum_recovery/enable_session_trading.sh
+      - name: Root SQLite sidecar ownership regressions
+        run: |
+          sudo "$(command -v python)" -m unittest discover -s tests -p 'test_stopped_history_repair.py' -v
+          sudo "$(command -v python)" -m unittest discover -s tests -p 'test_repaired_paused_start.py' -v
+          sudo "$(command -v python)" -m unittest discover -s tests -p 'test_paused_peripheral_start.py' -v
+          sudo "$(command -v python)" -m unittest discover -s tests -p 'test_session*py' -v
       - name: Intercepted desktop and mobile dashboard
-        run: node tests/test_celestial_dashboard.cjs
+        run: |
+          node tests/test_celestial_dashboard.cjs
+          node tests/test_trade_audit_dashboard.cjs
+          node tests/test_price_history_dashboard.cjs
+          node tests/test_trade_learning_dashboard.cjs
+      - name: Intercepted composed AWS dashboard
+        env:
+          DASHBOARD_TEST_HTML: momentum_recovery/reviewed_dashboard/dashboard.html
+        run: |
+          node tests/test_trade_audit_dashboard.cjs
+          node tests/test_price_history_dashboard.cjs
+          node tests/test_trade_learning_dashboard.cjs
+          node tests/test_reviewed_dashboard.cjs
       - uses: actions/upload-artifact@v4
         if: always()
         with:
           name: celestial-fixture-screenshots
-          path: /tmp/kadima-celestial-*.png
+          path: |
+            /tmp/kadima-celestial-*.png
+            /tmp/kadima-audit-*.png
+            /tmp/kadima-price-*.png
+            /tmp/kadima-learning-*.png
+            /tmp/kadima-reviewed-*.png
           if-no-files-found: ignore
           retention-days: 7

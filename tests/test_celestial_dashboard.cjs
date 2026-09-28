@@ -8,13 +8,13 @@ const assert=require('assert');
   const browser=await chromium.launch({headless:true,args:['--no-sandbox']});
   const page=await browser.newPage({viewport:{width:1440,height:1050}});
   const errors=[];page.on('pageerror',e=>errors.push(e.message));
-  const now=new Date().toISOString();
+  const fixtureTime=Date.now(),now=new Date(fixtureTime).toISOString();
   const fixture={ts:now,config:{rollout_enabled:true,auto_trade_enabled:false,kill_latched:false,
     broker_orders_enabled:false,score_threshold:65,revision:0},
     system:{news:{ok:true,ts:now},reconciliation:{ok:true,positions:[]},
       stock_universe:{priced:207,expected:208,option_chains_tracked:208,option_chain_limit:null,option_chains_fresh:207,missing:[]}},
     candidates:[{id:'NFO:1',rank:1,symbol:'TEST26SEP25000CE',underlying:'NIFTY',direction:'CE',
-      expiry:'2099-09-16',baseline_at:new Date(Date.now()-300000).toISOString(),best_strike:25000,option_ltp:125,premium_move_pct:12.5,gamma_score:80,bull_shield_score:75,
+      expiry:'2099-09-16',baseline_at:new Date(fixtureTime-300000).toISOString(),best_strike:25000,option_ltp:125,premium_move_pct:12.5,gamma_score:80,bull_shield_score:75,
       bear_shield_score:null,news_available:true,news_score:10,final_score:90,tier:'BLAST',volume_ratio:2.4,
       oi_support:true,spread_status:'CLEAN',action:'RADAR',last_updated:now,blocked_reasons:['auto_paused']}],
     positions:[{signal_id:7,symbol:'FIXTURE26SEP100CE',source:'MANUAL_ADOPTED',status:'open',remaining_qty:10,
@@ -83,7 +83,10 @@ const assert=require('assert');
   assert.ok((await page.locator('#candidates tbody tr').first().locator('td').nth(4).innerText()).includes('25,000 CE'));
   assert.strictEqual(await page.locator('#legacy-universe th').nth(2).textContent(),'Price time');
   const expiry='2099-09-16';
-  legacyFeeds.universe_snapshot.tracked[0].best_contract={symbol:'STOCK0TEST100CE',strike:100,type:'CE',expiry,ltp:5,updated_at:new Date().toISOString(),baseline_at:new Date(Date.now()-300000).toISOString(),premium_move_pct:10,pace_status:'ready'};
+  // Both ends must share one clock read: a 1ms difference makes this 4m59.999s,
+  // correctly below the production five-minute evidence requirement.
+  const contractTime=Date.now();
+  legacyFeeds.universe_snapshot.tracked[0].best_contract={symbol:'STOCK0TEST100CE',strike:100,type:'CE',expiry,ltp:5,updated_at:new Date(contractTime).toISOString(),baseline_at:new Date(contractTime-300000).toISOString(),premium_move_pct:10,pace_status:'ready'};
   await page.click('#legacy-refresh');
   await page.screenshot({path:process.env.KADIMA_SCREENSHOT || '/tmp/kadima-celestial-desktop.png',fullPage:true});
   fixture.candidates=[];fixture.positions=[];
