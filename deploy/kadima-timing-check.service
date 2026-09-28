@@ -1,0 +1,15 @@
+# Gamma timing recorder health check -> one Telegram message. Read only.
+[Unit]
+Description=KADIMA Gamma timing recorder check (Telegram)
+After=network.target
+
+[Service]
+Type=oneshot
+User=ubuntu
+WorkingDirectory=/home/ubuntu/kadima-py
+EnvironmentFile=-/etc/kadima/auto-execution.env
+EnvironmentFile=-/etc/kadima/session-auto.env
+EnvironmentFile=-/var/lib/kadima-autotrading-20260928/trading.env
+ExecStart=/home/ubuntu/kadima-py/venv/bin/python3 -m kadima.timing_report check
+Nice=10
+MemoryMax=150M

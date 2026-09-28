@@ -1,0 +1,9 @@
+[Unit]
+Description=KADIMA Gamma timing recorder check at 11:30 and 14:30 IST
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 11:30:00 Asia/Kolkata
+OnCalendar=Mon..Fri *-*-* 14:30:00 Asia/Kolkata
+
+[Install]
+WantedBy=timers.target

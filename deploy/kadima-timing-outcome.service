@@ -15,5 +15,6 @@ EnvironmentFile=-/etc/kadima/auto-execution.env
 EnvironmentFile=-/etc/kadima/session-auto.env
 EnvironmentFile=-/var/lib/kadima-autotrading-20260928/trading.env
 ExecStart=/home/ubuntu/kadima-py/venv/bin/python3 -m kadima.timing_outcome --quiet
+ExecStart=/home/ubuntu/kadima-py/venv/bin/python3 -m kadima.timing_report outcome
 Nice=10
 MemoryMax=200M
