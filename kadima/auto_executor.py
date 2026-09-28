@@ -399,10 +399,21 @@ class AutoExecutor:
                     self._celestial_verified.add(str(p.signal_id))
             healthy = all(r.get('managed') is True for r in observations)
             if any(r.get('reason')=='external_pending_orders' for r in observations):
-                self._celestial_verified.clear()
-                self._positions_verified = False
-            else:
-                self._positions_verified = bool(self._celestial_verified) or healthy
+                # 2026-09-29: a manual pending order used to clear verification
+                # for EVERY position, switching off all KADIMA stops until it
+                # cleared. Now only positions on the same contract as a manual
+                # pending order are paused (their exit could collide with it);
+                # entries and adoption stay blocked via `healthy` as before.
+                clash = {(str(o.raw.get('exchange')), str(o.raw.get('symboltoken')))
+                         for o in book if o.status not in execution_ledger.TERMINAL
+                         and o.order_id not in own_ids and o.raw.get('ordertag') not in own_tags}
+                for p in list(self.state.positions.values()):
+                    if (p.exchange, str(p.token)) in clash:
+                        self._celestial_verified.discard(str(p.signal_id))
+                if clash:
+                    audit.log('reconcile_external_orders_paused_contracts',
+                              contracts=len(clash), still_monitored=len(self._celestial_verified))
+            self._positions_verified = bool(self._celestial_verified) or healthy
             self._reconcile_blocked = not healthy
             celestial.health('reconciliation',dict(ok=healthy,positions=observations))
             return
