@@ -31,3 +31,20 @@ assets into that artifact in memory and intercept every request. CI covers both
 source and composed pages, desktop/mouse and mobile/touch interaction, keyboard,
 persistence, reset/cancel, sign-out, disabled trading controls, handler/input
 preservation, late panels and storage failure. AWS deployment remains separate.
+
+## Static webpage installation
+
+From an exact reviewed checkout, run `sudo -n python3 -I -B
+dashboard_layout/install.py` for a plan, or append `--apply` to install.
+The target is fixed to `/var/www/html/dashboard.html`. Only the two reviewed
+standard/composed predecessor pages and the exact installed overlay are accepted.
+Unknown page content is preserved and blocks installation. CSS/JS are hash-pinned.
+
+Apply holds the existing webpage-maintenance locks, writes a private original
+HTML backup and receipt under `/var/backups/kadima-layout-*`, rechecks the current
+page and assets, then atomically replaces the HTML while preserving ownership
+and permissions. Readback verifies the exact installed bytes. Repeat application
+is a no-op. Refresh the browser after success; served-page behavior still needs
+the operator's browser check. There are no service restarts, API/broker requests,
+database changes, trading flags or automatic activation. An unknown failure after
+replacement is reported as unverified and keeps its original backup for review.
