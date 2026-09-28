@@ -164,6 +164,31 @@ def test_exit_fallback_price():
     check("never the peak", ex._exit_fallback_price(pos) != 160.0)
 
 
+# ------------------------------------------------------------------ fix 2
+def _bars(now, lows, skip=()):
+    out, t = [], datetime(2026, 9, 28, 10, 0, tzinfo=IST)
+    for i, low in enumerate(lows):
+        ts = t + timedelta(minutes=5 * i)
+        if ts + timedelta(minutes=5) > now:
+            break
+        if i not in skip:
+            out.append(dict(start_ts=ts.isoformat(), low=low, high=low + 5))
+    return out
+
+
+def test_swing_gap_tolerant():
+    print("fix 2: one missing candle no longer blocks the day")
+    now = datetime(2026, 9, 28, 11, 0, 5, tzinfo=IST)
+    lows = [100, 98, 95, 97, 99, 101, 103, 102, 104, 106, 108, 110]
+    check("no gap: pivot 95", trade_policy.swing(_bars(now, lows), "CE", 112, now) == 95)
+    check("gap away from the pivot: still 95",
+          trade_policy.swing(_bars(now, lows, skip={9}), "CE", 112, now) == 95)
+    got = trade_policy.swing(_bars(now, lows, skip={1}), "CE", 112, now)
+    check("gap inside the 95 pivot window: that pivot skipped (not invented)", got != 95)
+    check("stale last bar still rejected",
+          trade_policy.swing(_bars(now, lows), "CE", 112, now + timedelta(minutes=10)) is None)
+
+
 if __name__ == "__main__":
     for t in [v for k, v in list(globals().items()) if k.startswith("test_")]:
         t()

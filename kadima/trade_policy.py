@@ -55,7 +55,8 @@ def eligible(kind, tier, score, direction, snap, spot, minimum=None, shield_evid
 def swing(rows, direction, spot, now):
     """Latest unbroken 2-left/2-right confirmed pivot in fresh closed 5m bars.
 
-    No future bars, previous-day pivots, missing bars or intra-bar guesses.
+    No future bars, previous-day pivots, intra-bar guesses, or pivots whose
+    five-bar window has a missing bar. Gaps elsewhere in the day are allowed.
     start_ts denotes bar OPEN; five minutes are added for its close.
     """
     if direction not in ('CE', 'PE') or not positive(spot):
@@ -70,10 +71,14 @@ def swing(rows, direction, spot, now):
         age = (now - (bars[-1][0] + timedelta(minutes=5))).total_seconds()
         if not 0 <= age <= 360:
             return None
-        if any((b[0] - a[0]).total_seconds() != 300 for a, b in zip(bars, bars[1:])):
-            return None
+        # 2026-09-29: only the five bars forming a pivot must be contiguous.
+        # Requiring the WHOLE day to be gap-free meant one missing bar (feed
+        # drop, restart, deploy) blocked every entry until the next session.
         idx = 1 if direction == 'CE' else 2
         for i in range(len(bars) - 3, 1, -1):
+            window = bars[i-2:i+3]
+            if any((b[0] - a[0]).total_seconds() != 300 for a, b in zip(window, window[1:])):
+                continue
             level = bars[i][idx]
             neighbours = [bars[j][idx] for j in (i-2, i-1, i+1, i+2)]
             later = [b[idx] for b in bars[i+1:]] + [spot]
