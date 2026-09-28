@@ -40,7 +40,7 @@ GIVEBACK_TRAIL_PCT = exit_manager.GIVEBACK_PCT * 100.0          # exit once this
 FIXED_STOPLOSS_PCT = exit_manager.INITIAL_SL_PCT * 100.0        # legacy restored positions only
 
 # Existing settings retained; these are not exchange-calendar assertions.
-EOD_FORCE_CLOSE_HHMM = (15, 18)
+EOD_FORCE_CLOSE_HHMM = (15, 38)  # 2026-09-29: trader set back to 15:38 (was 15:18)
 LIMIT_ORDER_BUFFER_PCT = 2.5
 POSITION_MONITOR_INTERVAL_SEC = 10
 
