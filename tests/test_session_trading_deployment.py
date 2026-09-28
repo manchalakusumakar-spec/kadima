@@ -279,6 +279,142 @@ class Health(unittest.TestCase):
             value[key]=True
 
 
+class ObserverHealth(unittest.TestCase):
+    def setUp(self):
+        self.started = NOW.replace(hour=11, minute=8)  # 16:38 IST, successful paused startup.
+        self.startup = dict(dashboard_gateway_health_verified=True,
+                            scanner_snapshot_at=self.started.isoformat(),
+                            macro_snapshot_at=self.started.isoformat())
+        self.values = {
+            (8082, '/health'): dict(ok=True),
+            (8081, '/universe_snapshot'): dict(ts=self.started.isoformat(), tracked=[], prices={},
+                                              execution='central_executor_gated'),
+            (8081, '/macro_snapshot'): dict(ts=NOW.isoformat(), news=[], economic_calendar=[]),
+        }
+
+    def get(self, port, path):
+        return self.values[(port, path)]
+
+    def check(self, current=NOW):
+        return m.deployment_observer_health(self.get, self.startup, gate, POLICY, current)
+
+    def test_same_day_idle_snapshot_passes_without_claiming_fresh_market_data(self):
+        before = deepcopy(self.values)
+        result = self.check()
+        self.assertEqual(result['scanner_snapshot_age_seconds'], 5220)
+        self.assertFalse(result['scanner_snapshot_recent'])
+        self.assertFalse(result['scanner_progress_verified'])
+        self.assertFalse(result['live_feed_verified'])
+        self.assertTrue(result['market_data_verification_pending'])
+        self.assertEqual(self.values, before)  # No timestamp rewriting.
+
+    def test_recent_snapshot_still_does_not_prove_market_readiness(self):
+        self.values[(8081, '/universe_snapshot')]['ts'] = NOW.isoformat()
+        result = self.check()
+        self.assertTrue(result['scanner_snapshot_recent'])
+        self.assertFalse(result['live_feed_verified'])
+        self.assertTrue(result['market_data_verification_pending'])
+
+    def test_snapshot_regression_and_future_timestamp_block(self):
+        for at in (self.started-timedelta(seconds=1), NOW+timedelta(seconds=1)):
+            self.values[(8081, '/universe_snapshot')]['ts'] = at.isoformat()
+            with self.subTest(at=at), self.assertRaisesRegex(m.Blocked, 'before_startup_or_future'):
+                self.check()
+
+    def test_retained_snapshot_from_previous_local_day_blocks(self):
+        at = datetime.fromisoformat('2026-09-29T00:01:00+05:30')
+        self.values[(8081, '/macro_snapshot')]['ts'] = at.isoformat()
+        with self.assertRaisesRegex(m.Blocked, 'not_current_local_day'):
+            self.check(at)
+
+    def test_new_local_day_snapshot_from_daily_reinitialization_is_admitted(self):
+        at = datetime.fromisoformat('2026-09-29T00:01:00+05:30')
+        for route in ('/universe_snapshot', '/macro_snapshot'):
+            self.values[(8081, route)]['ts'] = at.isoformat()
+        self.assertTrue(self.check(at)['market_data_verification_pending'])
+
+    def test_macro_still_requires_continuous_fresh_publication(self):
+        for at in (NOW-timedelta(seconds=181), NOW+timedelta(seconds=1), self.started-timedelta(seconds=1)):
+            self.values[(8081, '/macro_snapshot')]['ts'] = at.isoformat()
+            with self.subTest(at=at), self.assertRaisesRegex(m.Blocked, 'macro_snapshot_not_fresh'):
+                self.check()
+
+    def test_missing_naive_or_invalid_timestamps_block_for_both_observers(self):
+        for route in ('/universe_snapshot', '/macro_snapshot'):
+            original = self.values[(8081, route)]['ts']
+            for stamp in (None, 'bad', NOW.replace(tzinfo=None).isoformat(), 123, {}):
+                self.values[(8081, route)]['ts'] = stamp
+                with self.subTest(route=route, stamp=stamp), self.assertRaisesRegex(m.Blocked, 'timestamp_invalid'):
+                    self.check()
+            del self.values[(8081, route)]['ts']
+            with self.assertRaisesRegex(m.Blocked, 'timestamp_invalid'):
+                self.check()
+            self.values[(8081, route)]['ts'] = original
+
+    def test_no_after_hours_exception_during_daytime_even_with_fresh_snapshots(self):
+        for clock in ('08:30', '09:15', '15:35', '15:59'):
+            at = datetime.fromisoformat('2026-09-28T'+clock+':00+05:30')
+            for route in ('/universe_snapshot', '/macro_snapshot'):
+                self.values[(8081, route)]['ts'] = at.isoformat()
+            with self.subTest(clock=clock), self.assertRaisesRegex(m.Blocked, 'after_hours'):
+                self.check(at)
+
+    def test_unhealthy_gateway_blocks(self):
+        for value in (dict(ok=False), {}, [], None):
+            self.values[(8082, '/health')] = value
+            with self.subTest(value=value), self.assertRaisesRegex(m.Blocked, 'gateway_health'):
+                self.check()
+
+    def test_observer_schemas_remain_required(self):
+        for route, key, bad in (('/universe_snapshot', 'tracked', {}),
+                ('/universe_snapshot', 'prices', []), ('/universe_snapshot', 'execution', 'direct'),
+                ('/macro_snapshot', 'news', {}), ('/macro_snapshot', 'economic_calendar', {})):
+            value = self.values[(8081, route)]; old = value[key]; value[key] = bad
+            with self.subTest(key=key), self.assertRaisesRegex(m.Blocked, 'schema_invalid'):
+                self.check()
+            value[key] = old
+
+    def test_successful_startup_health_receipt_is_required(self):
+        for value in (None, {}, dict(dashboard_gateway_health_verified=False)):
+            self.startup = value
+            with self.subTest(value=value), self.assertRaisesRegex(m.Blocked, 'startup_health_receipt'):
+                self.check()
+
+    def test_startup_timestamp_must_be_valid_and_cannot_be_newer_than_observation(self):
+        for key in ('scanner_snapshot_at', 'macro_snapshot_at'):
+            original = self.startup[key]
+            for value in (None, 'bad', NOW.replace(tzinfo=None).isoformat(),
+                          (NOW+timedelta(seconds=1)).isoformat()):
+                self.startup[key] = value
+                with self.subTest(key=key, value=value), self.assertRaises(m.Blocked):
+                    self.check()
+            self.startup[key] = original
+
+    def test_receipt_clock_is_sampled_after_all_http_reads(self):
+        received = NOW+timedelta(seconds=1)
+        self.values[(8081, '/macro_snapshot')]['ts'] = received.isoformat()
+        calls = []
+        def get(port, path):
+            calls.append(path)
+            return self.get(port, path)
+        def clock():
+            self.assertEqual(calls, ['/health', '/universe_snapshot', '/macro_snapshot'])
+            return received
+        result = m.deployment_observer_health(get, self.startup, gate, POLICY, clock)
+        self.assertEqual(result['macro_snapshot_age_seconds'], 0)
+
+    def test_post_restart_health_reports_the_retained_snapshot_and_does_not_refresh_it(self):
+        ops = m.Deployment.__new__(m.Deployment)
+        ops.get = self.get; ops.policies = {}; ops.observer_startup_health = self.startup
+        ops.gate = gate; ops.policy = POLICY
+        ops.p = SimpleNamespace(Blocked=RuntimeError)
+        with patch.object(m, 'activation_health', return_value={'market_readiness_pending': True}), \
+                patch.object(m, 'now', return_value=NOW):
+            result = ops.wait_health()
+        self.assertEqual(result['observers']['scanner_snapshot_at'], self.started.isoformat())
+        self.assertFalse(result['observers']['scanner_snapshot_recent'])
+
+
 class Operations:
     def __init__(self, fail=None):
         self.calls=[];self.fail=fail;self.last_broker={'flat':False,'pending_orders':0}

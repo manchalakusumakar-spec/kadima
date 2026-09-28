@@ -11,6 +11,36 @@ installed learning release `8837cd6dc04e16123e94d8b78a3a716f83ed022c` for compar
 The Python default is a plan; the bootstrap selects `--apply`. Actual AWS
 execution remains the operator's step because this session has no SSH/SSM access.
 
+## 18:50 IST closed-session snapshot blocker corrected
+
+The next operator run at `704a91e9675add23c650485aaac31ba03d23a418`
+passed construction but returned `scanner_snapshot_not_fresh_after_start` from
+the initial admission guard. Scheduler and live entries remained false. The
+transaction had not claimed its attempt, stopped the engine or changed flags.
+
+The pinned `FullUniverseScanner` writes a snapshot at construction and during
+market cycles. Its closed-session loop waits without publishing; a new local
+day reconstructs the scanner and publishes again. The raw control API returns
+that file unchanged. Reusing the peripheral-start check's 180-second age limit
+hours later was incorrect for after-hours installation.
+
+Activation now has a separate observer check restricted to the existing
+16:00–08:30 IST installation window. Scanner schema and dashboard health must
+pass; the timestamp must be on the current IST date, no later than observation,
+and no earlier than the immutable successful peripheral-start snapshot. The
+unchanged scanner process, source, launch context and receipt remain mandatory.
+Macro publication continues after hours, so it must still be at most 180 seconds
+old and no earlier than its startup receipt. Missing, future, regressed and
+previous-local-day scanner timestamps block. Receipt time is sampled after HTTP
+reads. The strict original peripheral-start helper is unchanged.
+
+The installation report records the retained scanner timestamp, actual age and
+whether it is recent. It explicitly leaves scanner progress, live-feed health
+and market readiness unverified. No timestamp is rewritten, scanner restarted,
+source changed or session/entry freshness check relaxed. At the next eligible
+session the existing scheduler and execution paths still require fresh data.
+The updated bootstrap can retry this admission failure without deleting state.
+
 ## 18:39 IST installation blocker corrected
 
 The operator's 28 September screenshot from commit

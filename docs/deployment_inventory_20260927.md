@@ -2,6 +2,24 @@
 
 Verified against GitHub PR metadata, exact-head workflow runs and ancestry comparisons to PR20. AWS is not connected; GitHub checks are not evidence of installation or live fills.
 
+## Auto-trading snapshot admission corrected — 28 September 2026, 18:50 IST
+
+The operator ran `704a91e9675add23c650485aaac31ba03d23a418`. Lock admission
+passed; the initial guard returned `scanner_snapshot_not_fresh_after_start`,
+with scheduler and live entries false. No activation attempt was claimed and
+no engine stop, flag change or scheduler enable was requested by that run.
+
+The installed full-universe scanner publishes at startup and during market
+cycles, then retains its snapshot after hours. The activation-specific check
+now admits only a same-IST-day, nonfuture snapshot at or after the private
+successful startup receipt, with unchanged process/source/context and valid
+schema. Macro must still publish within 180 seconds. The report preserves the
+scanner's actual age and leaves market freshness/progress unverified; all
+session and entry freshness gates remain unchanged. This correction is prepared
+for a new pinned AWS run; automatic trading is not yet verified enabled.
+
+See [SESSION_TRADING.md](../momentum_recovery/SESSION_TRADING.md) for the procedure.
+
 ## Auto-trading attempt blocked — 28 September 2026, 18:39 IST
 
 The operator ran the activation command at `90cbd1ad0c2257824a2630f673a6879aaf9513d0`.

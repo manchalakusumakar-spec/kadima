@@ -7,7 +7,7 @@ No broker order, ledger repair, strategy threshold or runtime source is changed.
 from __future__ import annotations
 import argparse
 from contextlib import ExitStack
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timezone
 import fcntl
 import hashlib
 import importlib.util
@@ -163,6 +163,55 @@ def activation_health(get, policies, current, *, fast):
     return dict(global_auto_requested=False, stock_live_requested=False,
                 fast_master_permission=fast, api_health_verified=True,
                 market_readiness_pending=True)
+
+
+def deployment_observer_health(get, startup, gate, policy, current):
+    """Admit an idle scanner only during this after-hours installation.
+
+    The pinned FullUniverseScanner reports at construction and during market
+    cycles, not its closed-session wait. Its unchanged running process and
+    sources are separately checked by guard(). A retained same-day snapshot
+    must not predate its successful paused-start receipt. This is not evidence
+    of current quotes or forward progress; the session/entry gates still need
+    fresh market data. Macro publication continues every 30 seconds after hours.
+    """
+    dashboard = get(8082, '/health')
+    require(isinstance(dashboard, dict) and dashboard.get('ok') is True,
+            'dashboard_gateway_health_unverified')
+    scanner, macro = get(8081, '/universe_snapshot'), get(8081, '/macro_snapshot')
+    observed = current() if callable(current) else current
+    after_hours(gate, policy, observed)
+    require(isinstance(startup, dict) and startup.get('dashboard_gateway_health_verified') is True,
+            'observer_startup_health_receipt_required')
+
+    def timestamp(value, key, name):
+        try:
+            stamp = datetime.fromisoformat(value[key])
+            require(stamp.tzinfo is not None, name+'_snapshot_timestamp_invalid')
+            return stamp
+        except (KeyError, TypeError, ValueError):
+            raise Blocked(name+'_snapshot_timestamp_invalid') from None
+
+    scanner_at = timestamp(scanner, 'ts', 'scanner')
+    macro_at = timestamp(macro, 'ts', 'macro')
+    scanner_start = timestamp(startup, 'scanner_snapshot_at', 'startup_scanner')
+    macro_start = timestamp(startup, 'macro_snapshot_at', 'startup_macro')
+    require(scanner_start <= scanner_at <= observed, 'scanner_snapshot_before_startup_or_future')
+    require(scanner_at.astimezone(gate.IST).date() == observed.astimezone(gate.IST).date(),
+            'scanner_snapshot_not_current_local_day')
+    require(macro_start <= macro_at <= observed and (observed-macro_at).total_seconds() <= 180,
+            'macro_snapshot_not_fresh')
+    require(isinstance(scanner.get('tracked'), list) and isinstance(scanner.get('prices'), dict) and
+            scanner.get('execution') == 'central_executor_gated', 'scanner_snapshot_schema_invalid')
+    require(isinstance(macro.get('news'), list) and isinstance(macro.get('economic_calendar'), list),
+            'macro_snapshot_schema_invalid')
+    age = (observed-scanner_at).total_seconds()
+    return dict(dashboard_gateway_health_verified=True, scanner_snapshot_at=scanner['ts'],
+                scanner_snapshot_age_seconds=round(age, 3), scanner_snapshot_recent=age <= 180,
+                scanner_snapshot_mode='closed_session_retained', scanner_progress_verified=False,
+                macro_snapshot_at=macro['ts'], macro_snapshot_age_seconds=round((observed-macro_at).total_seconds(), 3),
+                scanner_priced_count=len(scanner['prices']), scanner_coverage=scanner.get('coverage'),
+                live_feed_verified=False, market_data_verification_pending=True)
 
 
 def replace_file(path, raw, helper, mode=0o644):
@@ -343,6 +392,7 @@ class Deployment:
         require(value.get('processes') == {u: self.identities[u] for u in self.p.UNITS} and
                 value.get('engine_validation', {}).get('process') == self.identities[ENGINE],
                 'process_changed_since_paused_rollout')
+        self.observer_startup_health = value.get('health')
         self.files[path] = raw
 
     def context(self, unit):
@@ -396,7 +446,10 @@ class Deployment:
         require(self.helper.read_regular(self.start.DROPIN) == expected, 'activation_override_changed')
         if not stopped:
             activation_health(self.get, self.policies, now, fast=fast)
-            self.p.snapshot_health(self.get, now()-timedelta(seconds=180), now)
+            self.observer_health()
+
+    def observer_health(self):
+        return deployment_observer_health(self.get, self.observer_startup_health, self.gate, self.policy, now)
 
     def broker_check(self):
         context = self.contexts[ENGINE]
@@ -463,7 +516,7 @@ class Deployment:
         while True:
             try:
                 result = activation_health(self.get, self.policies, now, fast=True)
-                self.p.snapshot_health(self.get, now()-timedelta(seconds=180), now)
+                result['observers'] = self.observer_health()
                 return result
             except (OSError, urllib.error.URLError, self.p.Blocked) as exc:
                 if isinstance(exc, self.p.Blocked) and 'snapshot_' not in str(exc):
