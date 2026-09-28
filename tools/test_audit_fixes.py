@@ -149,6 +149,21 @@ def test_exit_reprice():
     check("no fresh quote: alerts, no blind modify", len(calls) == n + 1 and sent)
 
 
+# ------------------------------------------------------------------ fix 7
+def test_exit_fallback_price():
+    print("fix 7: exit fallback price never uses the peak")
+    ex = auto_executor.AutoExecutor()
+    pos = position(entry=100.0, stop=80.0)
+    pos.peak_price = 160.0
+    check("no quote at all: min(stop, entry) = 80", ex._exit_fallback_price(pos) == 80.0)
+    ex.state.premium_tracker.record(pos.token, 72.5, datetime.now(IST))
+    check("recent chain sample used (72.5)", ex._exit_fallback_price(pos) == 72.5)
+    ex2 = auto_executor.AutoExecutor()
+    ex2.state.premium_tracker.record(pos.token, 72.5, datetime.now(IST) - timedelta(seconds=90))
+    check("sample older than 60s ignored", ex2._exit_fallback_price(pos) == 80.0)
+    check("never the peak", ex._exit_fallback_price(pos) != 160.0)
+
+
 if __name__ == "__main__":
     for t in [v for k, v in list(globals().items()) if k.startswith("test_")]:
         t()

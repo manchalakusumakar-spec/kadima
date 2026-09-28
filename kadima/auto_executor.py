@@ -101,6 +101,16 @@ class PremiumTracker:
                     break
             return h.day_high, h.day_low, base
 
+    def latest(self, token: str, max_age_sec: float = 60.0) -> Optional[float]:
+        """Most recent recorded premium if it is no older than max_age_sec."""
+        with self._lock:
+            h = self._hist.get(token)
+            if h is None or not h.samples:
+                return None
+            ts, ltp = h.samples[-1]
+            age = (now_ist() - ts).total_seconds()
+            return ltp if 0 <= age <= max_age_sec else None
+
 
 # ---------------------------------------------------------------- position
 @dataclass
@@ -486,7 +496,7 @@ class AutoExecutor:
         ltp_map = _poll_ltp(pos.exchange, [pos.token])
         ltp = ltp_map.get(pos.token)
         if ltp is None:
-            ltp = pos.peak_price or pos.entry_price
+            ltp = self._exit_fallback_price(pos)
             audit.log("manual_exit_ltp_unavailable_fallback", signal_id=signal_id,
                        token=pos.token, fallback_price=ltp)
 
@@ -944,9 +954,10 @@ class AutoExecutor:
                           token=pos.token)
                 if force_close or daily_loss_breached:
                     # EOD close must not silently skip just because this
-                    # cycle's LTP poll came back empty -- fall back to
-                    # last known peak_price so the position still exits.
-                    ltp = pos.peak_price or pos.entry_price
+                    # cycle's LTP poll came back empty. Fall back to a recent
+                    # real quote, never the peak (a peak-priced SELL limit sits
+                    # above a falling market and does not fill).
+                    ltp = self._exit_fallback_price(pos)
                 else:
                     continue
 
@@ -1015,6 +1026,18 @@ class AutoExecutor:
 
             if reason:
                 self._close_position(pos, ltp, reason)
+
+    def _exit_fallback_price(self, pos) -> float:
+        """Exit pricing when no fresh LTP is available (2026-09-29).
+        Prefer the latest chain-poll sample under 60s old; otherwise the lower
+        of the stop and the entry price. Exit re-pricing walks it down further
+        once a fresh quote returns."""
+        recent = self.state.premium_tracker.latest(pos.token, 60.0)
+        if recent is not None:
+            return recent
+        candidates = [p for p in (pos.effective_stop, pos.structural_stop, pos.entry_price)
+                      if p is not None and p > 0]
+        return min(candidates) if candidates else pos.entry_price
 
     @serialized
     def _close_position(self, pos: Position, ltp: float, reason: str) -> dict:
