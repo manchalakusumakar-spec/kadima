@@ -88,6 +88,8 @@ def submit(pos, side, quantity, price):
                   '(intent,signal_id,side,quantity,state,created_at) VALUES (?,?,?,?,?,?)',
                   (intent, pos.signal_id, side, quantity, 'submitting', now_ist().isoformat()))
         storage.upsert_position(pos, _connection=c)
+    from . import trade_audit
+    trade_audit.safe_call(trade_audit.record_submission, pos, side, quantity, price, intent)
     try:
         result = angel_orders.place_limit_order(tradingsymbol=pos.symbol,
             symboltoken=pos.token, exchange=pos.exchange, transactiontype=side,
@@ -97,7 +99,7 @@ def submit(pos, side, quantity, price):
         audit.log('order_submission_unknown', signal_id=pos.signal_id, intent=intent)
         return {'ok': False, 'reason': 'submission_unknown', 'pending': True}
     if not result.ok and not result.uncertain:
-        pos.status = 'closed' if side == 'BUY' else previous
+        pos.status = ('open' if pos.remaining_qty > 0 else 'closed') if side == 'BUY' else previous
         with c:
             c.execute("UPDATE execution_orders SET state='terminal' WHERE intent=?", (intent,))
             storage.upsert_position(pos, _connection=c)
@@ -148,8 +150,11 @@ def apply_fill(pos, row, status):
     pnl = 0.0
     if delta:
         if row['side'] == 'BUY':
-            pos.entry_price = notional / qty
+            # Incremental notional is essential for staged BUY orders. The
+            # broker average belongs to this order, not the whole position.
+            pos.entry_price = (pos.entry_price * pos.remaining_qty + amount) / (pos.remaining_qty + delta)
             pos.remaining_qty += delta
+            pos.lots = math.ceil(pos.remaining_qty / pos.lot_size)
             pos.peak_price = max(pos.peak_price or 0, pos.entry_price)
             pos.order_id = status.order_id
         else:
@@ -177,6 +182,8 @@ def apply_fill(pos, row, status):
                 pos.exit_price = sold[0] / sold[1]
         storage.upsert_position(pos, _connection=c)
     original.__dict__.update(pos.__dict__)
+    from . import trade_learning
+    trade_learning.guarded(trade_learning.mark_dirty, pos.signal_id)
     if delta:
         audit.log('execution_fill_confirmed', signal_id=pos.signal_id, side=row['side'],
                   quantity=delta, remaining_qty=pos.remaining_qty, price=amount/delta,
@@ -230,4 +237,3 @@ def refresh(positions):
                            f"check broker order {status.order_id}",
                            key=f"pending-exit:{status.order_id}")
     return healthy
-
