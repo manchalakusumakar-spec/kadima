@@ -186,7 +186,8 @@ def apply_fill(pos, row, status):
                        key=f"fill:{row['intent']}:{qty}")
 
 
-def refresh(positions):
+def refresh(positions, ltp_fn=None):
+    """ltp_fn(exchange, token) -> fresh LTP or None; used to re-price exits."""
     rows = pending()
     if not rows:
         return True
@@ -223,11 +224,63 @@ def refresh(positions):
         age = (now_ist() - datetime.fromisoformat(row['created_at'])).total_seconds()
         if row['side'] == 'BUY' and pos.status == 'entry_pending' and (age >= 30 or pos.remaining_qty > 0 or pos.exit_reason):
             angel_orders.cancel_order(status.order_id)
-        if row['side'] == 'SELL' and pos.status == 'exit_pending' and age >= 30:
-            audit.log('execution_exit_still_pending', signal_id=pos.signal_id,
-                      order_id=status.order_id, age_seconds=round(age))
-            alerts.enqueue(f"Exit still pending: {pos.symbol}, remaining {pos.remaining_qty}; "
-                           f"check broker order {status.order_id}",
-                           key=f"pending-exit:{status.order_id}")
+        if row['side'] == 'SELL' and pos.status == 'exit_pending':
+            _reprice_exit(pos, row, status, age, ltp_fn)
+        elif row['side'] == 'SELL':
+            _REPRICE.pop(row['intent'], None)
     return healthy
+
+
+# ------------------------------------------------------------ exit re-pricing
+# 2026-09-29: an unfilled exit LIMIT used to sit forever (alert only) while the
+# premium kept falling. Now it is walked down to fresh LTP minus a widening
+# buffer, via modify (same order id, so fills keep reconciling normally).
+REPRICE_FIRST_AFTER_SEC = 15
+REPRICE_EVERY_SEC = 15
+REPRICE_BUFFERS = (0.025, 0.04, 0.06)   # attempt 1, 2, 3+ (last one repeats)
+_REPRICE: dict = {}                      # intent -> {'attempts', 'last', 'alerted'}
+
+
+def _reprice_exit(pos, row, status, age, ltp_fn):
+    state = _REPRICE.setdefault(row['intent'], dict(attempts=0, last=None, alerted=False))
+    now = now_ist()
+    due = (age >= REPRICE_FIRST_AFTER_SEC and
+           (state['last'] is None or (now - state['last']).total_seconds() >= REPRICE_EVERY_SEC))
+    if not due:
+        return
+    ltp = None
+    if callable(ltp_fn):
+        try:
+            ltp = ltp_fn(pos.exchange, pos.token)
+        except Exception:                           # noqa: BLE001
+            ltp = None
+    state['last'] = now
+    if ltp is None or not math.isfinite(ltp) or ltp <= 0:
+        audit.log('execution_exit_reprice_no_quote', signal_id=pos.signal_id,
+                  order_id=status.order_id, age_seconds=round(age))
+        alerts.enqueue(f"Exit still pending: {pos.symbol}, remaining {pos.remaining_qty}; "
+                       f"no fresh quote to re-price. Check broker order {status.order_id}",
+                       key=f"pending-exit:{status.order_id}")
+        return
+    buffer = REPRICE_BUFFERS[min(state['attempts'], len(REPRICE_BUFFERS) - 1)]
+    new_price = max(0.05, round(ltp * (1 - buffer), 1))
+    try:
+        current = float(status.raw.get('price'))
+    except (TypeError, ValueError):
+        current = None
+    if current is not None and math.isfinite(current) and new_price >= current:
+        return      # existing limit is already at or below the re-priced level
+    result = angel_orders.modify_order(status.order_id, price=new_price,
+        quantity=row['quantity'], contract=dict(tradingsymbol=pos.symbol,
+        symboltoken=pos.token, exchange=pos.exchange, producttype='INTRADAY'))
+    state['attempts'] += 1
+    audit.log('execution_exit_repriced', signal_id=pos.signal_id, order_id=status.order_id,
+              attempt=state['attempts'], ltp=ltp, buffer_pct=buffer * 100,
+              old_price=current, new_price=new_price, accepted=result.ok, reason=result.reason)
+    if state['attempts'] >= len(REPRICE_BUFFERS) and not state['alerted']:
+        state['alerted'] = True
+        alerts.enqueue(f"\U0001F6A8 EXIT NOT FILLING: {pos.symbol} remaining {pos.remaining_qty} "
+                       f"after {state['attempts']} re-prices (now {new_price}). "
+                       f"Order {status.order_id} - check broker NOW.",
+                       key=f"exit-not-filling:{status.order_id}", bypass=True)
 

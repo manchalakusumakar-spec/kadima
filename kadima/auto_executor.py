@@ -187,6 +187,11 @@ def _poll_ltp(exchange: str, tokens: list[str]) -> dict[str, float]:
     return out
 
 
+def _fresh_ltp(exchange: str, token: str) -> Optional[float]:
+    """Single-contract fresh LTP for exit re-pricing (execution_ledger)."""
+    return _poll_ltp(exchange, [token]).get(token)
+
+
 def fetch_broker_positions() -> Optional[list[dict]]:
     """Ground truth from the broker, for startup reconciliation. Returns
     None if unreadable -- callers must NOT treat that as 'no positions',
@@ -343,7 +348,7 @@ class AutoExecutor:
                 row['trail_active'] = bool(row['trail_active'])
                 self.state.positions[str(row['signal_id'])] = Position(**row)
             self._restored = True
-        if not execution_ledger.refresh(self.state.positions):
+        if not execution_ledger.refresh(self.state.positions, _fresh_ltp):
             return
         broker_positions = fetch_broker_positions()
         if broker_positions is None:
@@ -960,7 +965,7 @@ class AutoExecutor:
 
     @serialized
     def refresh_orders(self):
-        healthy = execution_ledger.refresh(self.state.positions)
+        healthy = execution_ledger.refresh(self.state.positions, _fresh_ltp)
         if not healthy:
             self._reconcile_blocked = True
         for key, pos in list(self.state.positions.items()):

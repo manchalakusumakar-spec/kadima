@@ -166,10 +166,15 @@ def cancel_order(order_id: str, variety: str = "NORMAL") -> OrderResult:
 
 # ---------------------------------------------------------------- status
 def modify_order(order_id: str, *, price: float | None = None,
-                  quantity: int | None = None, variety: str = "NORMAL") -> OrderResult:
+                  quantity: int | None = None, variety: str = "NORMAL",
+                  contract: dict | None = None) -> OrderResult:
     """Modify price and/or quantity on a pending LIMIT/DAY order. Does NOT
     accept an order-type or duration override — Market/IOC orders remain
-    prohibited for algo trading under SEBI's framework (see module docstring)."""
+    prohibited for algo trading under SEBI's framework (see module docstring).
+
+    contract: optional tradingsymbol/symboltoken/exchange/producttype for the
+    order. SmartAPI's modify endpoint documents these as part of the request;
+    when given they are sent with ordertype LIMIT and duration DAY forced."""
     if price is None and quantity is None:
         return OrderResult(False, order_id, "invalid_modification_no_fields")
     if price is not None and price <= 0:
@@ -186,6 +191,12 @@ def modify_order(order_id: str, *, price: float | None = None,
         return OrderResult(False, order_id, "rate_limited")
 
     modparams = {"variety": variety, "orderid": order_id}
+    if contract:
+        for key in ("tradingsymbol", "symboltoken", "exchange", "producttype"):
+            if contract.get(key) is not None:
+                modparams[key] = str(contract[key])
+        modparams["ordertype"] = "LIMIT"
+        modparams["duration"] = "DAY"
     if price is not None:
         modparams["price"] = str(round(price, 1))
     if quantity is not None:
