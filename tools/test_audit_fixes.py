@@ -189,6 +189,21 @@ def test_swing_gap_tolerant():
           trade_policy.swing(_bars(now, lows), "CE", 112, now + timedelta(minutes=10)) is None)
 
 
+# ------------------------------------------------------------------ fix 12
+def test_gamma_skips_chase_gates():
+    print("fix 12: gamma skips chase gates, Shield keeps them")
+    blast = dict(ltp=90, premium_day_high=90, premium_day_low=40, premium_base_30min=55,
+                 spot=24150, vwap=24000, swing_level=70, target_premium=None,
+                 direction="CE", stop_override=70)
+    shield = entry_quality.evaluate_entry(entry_quality.EntryContext(**blast))
+    gamma = entry_quality.evaluate_entry(entry_quality.EntryContext(**blast, chase_gates=False))
+    check("Shield still rejects a chased premium", not shield.allowed)
+    check("gamma allows the same blast", gamma.allowed)
+    bad = entry_quality.evaluate_entry(entry_quality.EntryContext(
+        **dict(blast, stop_override=95), chase_gates=False))
+    check("gamma still rejects an invalid stop", not bad.allowed and bad.reason == "invalid_structural_stop")
+
+
 if __name__ == "__main__":
     for t in [v for k, v in list(globals().items()) if k.startswith("test_")]:
         t()
