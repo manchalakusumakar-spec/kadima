@@ -1,54 +1,9 @@
-"""
-eod_watchdog.py — independent, last-resort safety net against overnight
-carry. Genuinely separate from the main kadima engine: its own process,
-its own cron/systemd trigger, its own direct broker query.
+"""Legacy intraday watchdog plus CAS ownership-scoped exit requests.
 
-UPDATED 2026-08-23: order placement reverted NRML -> INTRADAY (see
-angel_orders.py's module docstring — Angel One was rejecting NRML orders
-outright, confirmed via live testing; root cause still unknown). This
-means Angel One's own MIS auto-square-off for F&O (3:20 PM, confirmed on
-their support page) is the PRIMARY backstop against overnight carry
-again — this script's original job. It stays deployed anyway, retimed to
-run AFTER that broker-side cutoff rather than before: not the primary
-safety net anymore, but independent verification that both
-auto_executor's own close AND the broker's MIS backstop actually did
-their job, catching the case where either one silently didn't.
-
-WHY THIS CANNOT LIVE INSIDE auto_executor.py's OWN PROCESS:
-    The entire point of a backup is that it doesn't share a failure mode
-    with the thing it's backing up. If this were just another function
-    called from the same event loop, a hang or crash that stops
-    auto_executor's own EOD close from firing would stop this from
-    firing too — exactly the scenario it exists to guard against.
-    Deploy as its own systemd oneshot unit (kadima-eod-watchdog.service),
-    triggered by its own cron entry, independent of whether kadima.service
-    is even alive when it runs.
-
-WHEN THIS SHOULD FIRE:
-    A few minutes AFTER Angel One's own 3:20 PM MIS auto-square-off —
-    both that and auto_executor's own EOD_FORCE_CLOSE_HHMM (3:15 PM) get
-    a real chance to act first; this is verification, not a race with
-    either. Suggested cron: 15:25 IST, weekdays.
-
-WHAT IT DOES, IN ORDER:
-    1. Logs in fresh — its own process, its own session. It cannot borrow
-       the main engine's in-memory SESSION even if that process happens
-       to still be alive; sharing it would reintroduce the exact
-       dependency this script exists to avoid.
-    2. Queries the broker's position() endpoint directly — ground truth,
-       same source and same fail-closed philosophy as
-       auto_executor.reconcile_on_startup(): if the broker call itself
-       fails, this sends an urgent alert and stops, rather than silently
-       assuming there's nothing to close.
-    3. For any non-zero F&O position found, places an aggressively-priced
-       LIMIT sell (still LIMIT — market orders remain prohibited even
-       here, no exception for an emergency). Priced favourably for a
-       fast fill rather than a good one: by this point in the session,
-       certainty of exit matters far more than a few rupees of slippage.
-    4. Sends an urgent alert regardless of outcome. This script finding
-       ANY open position at all means the primary mechanism did not do
-       its job — that is itself the thing to know about and investigate,
-       not just something to quietly patch over.
+CAS never uses this process as a second broker-order writer. Unconfirmed CAS
+exposure returns nonzero and escalates; only the engine/ledger can sell it.
+The legacy non-CAS path is unchanged and must not be confused with the newer
+priority_trading owned-watchdog overlay in a separately deployed release.
 """
 
 from __future__ import annotations
@@ -68,15 +23,12 @@ from kadima.utils import now_ist
 CAS_WATCHDOG_FROM = (15, 39)
 
 
-def _owned_cas_contracts() -> set[tuple[str, str]] | None:
-    """(exchange, token) of KADIMA's own open CAS positions; None if unreadable."""
+def _owned_cas_contracts():
     try:
-        from kadima import storage
-        from kadima.angel_orders import CAS_KIND
-        return {(str(r["exchange"]), str(r["token"]))
-                for r in storage.load_open_positions() if r.get("kind") == CAS_KIND}
-    except Exception as exc:                        # noqa: BLE001
-        audit.log("eod_watchdog_cas_ownership_unreadable", error=str(exc))
+        from kadima.cas_watchdog import owned_positions
+        return owned_positions()
+    except Exception as exc:
+        audit.log('eod_watchdog_cas_ownership_unreadable',error_type=type(exc).__name__)
         return None
 
 AGGRESSIVE_PRICE_OFFSET_PCT = 3.0   # price the exit this far from LTP, in
@@ -191,20 +143,40 @@ def main() -> int:
     owned_cas = _owned_cas_contracts()
     now = now_ist()
     late = (now.hour, now.minute) >= CAS_WATCHDOG_FROM
+    unresolved_cas = False
     for pos in open_positions:
         if str(pos.get("producttype") or "").upper() == "CARRYFORWARD":
             key = (str(pos.get("exchange")), str(pos.get("symboltoken")))
-            if owned_cas is None or key not in owned_cas:
-                audit.log("eod_watchdog_skip_manual_carryforward",
-                          symbol=pos.get("tradingsymbol"))
+            if owned_cas is None:
+                unresolved_cas = True
+                audit.log('cas_watchdog_ownership_unknown',symbol=pos.get('tradingsymbol'))
+                alerts.send('CAS watchdog ownership unavailable; check broker exposure manually.',bypass=True)
+                continue
+            if key not in owned_cas:
+                audit.log("eod_watchdog_skip_manual_carryforward",symbol=pos.get("tradingsymbol"))
                 continue
             if not late:
                 audit.log("eod_watchdog_cas_left_for_engine_eod",
                           symbol=pos.get("tradingsymbol"))
                 continue
+            owned = owned_cas[key]
+            from kadima.cas_safety import integer
+            from kadima.cas_watchdog import request_exit
+            if (integer(pos.get('netqty'),positive=True) != owned['quantity']
+                    or pos.get('tradingsymbol') != owned['symbol']):
+                audit.log('cas_watchdog_manual_quantity_collision',signal_id=owned['signal_id'])
+                unresolved_cas = True
+                continue
+            accepted = request_exit(owned['signal_id'])
+            audit.log('cas_watchdog_exit_requested',signal_id=owned['signal_id'],accepted=accepted)
+            alerts.send(f"CAS watchdog: {owned['symbol']} exit request "
+                        f"{'accepted; fill unconfirmed' if accepted else 'UNCONFIRMED; check engine/broker now'}.",
+                        bypass=True)
+            unresolved_cas = True  # An accepted request is still not a reconciled flat position.
+            continue
         _close_position(pos)
 
-    return 0
+    return 1 if unresolved_cas else 0
 
 
 if __name__ == "__main__":

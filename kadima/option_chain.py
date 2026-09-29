@@ -49,6 +49,11 @@ class OptionQuote:
     vega: float | None = None
     bid: float | None = None
     ask: float | None = None
+    # Original exchange evidence retained for CAS; never restamped by the scanner.
+    quote_at: str | None = None
+    trade_at: str | None = None
+    bid_qty: int | None = None
+    ask_qty: int | None = None
 
     @property
     def spread_pct(self) -> float | None:
@@ -227,6 +232,11 @@ class OptionChain:
             buy, sell = depth.get("buy") or [], depth.get("sell") or []
             q.bid = _f(buy[0].get("price")) if buy else None
             q.ask = _f(sell[0].get("price")) if sell else None
+            q.quote_at = row.get("exchFeedTime")
+            q.trade_at = row.get("exchTradeTime")
+            from .cas_safety import integer
+            q.bid_qty = integer(buy[0].get("quantity"), positive=True) if buy else None
+            q.ask_qty = integer(sell[0].get("quantity"), positive=True) if sell else None
             if (q.ltp is None or not math.isfinite(q.ltp) or q.ltp <= 0
                     or q.oi is None or q.volume is None or q.oi < 0 or q.volume < 0):
                 self.velocity.mark_degraded()

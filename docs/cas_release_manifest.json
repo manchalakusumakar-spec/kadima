@@ -1,0 +1,318 @@
+{
+  "schema": 1,
+  "baseline": "43763e5d622a330c3f6d6770370fabcc30376dc5",
+  "files": {
+    ".github/workflows/cas-safety-review.yml": {
+      "before": "30880b7919e3092203c9b3210a15d55a6f97816248268f4eae167b7708baa668",
+      "after": "e21549bc3674d5039668e8eb682f198b61b18a4e4e54305df49573f9d55bcfa2"
+    },
+    "docs/cas-safety-review.md": {
+      "before": null,
+      "after": "2397048d149d8594bac71998e0ef2bb62be8b52028bc5e791026dfeb25839262"
+    },
+    "kadima/__init__.py": {
+      "before": "e9beff616dcc1416e900630cc27282df777bdb46001ae52d7f1485ae1f3ccb77",
+      "after": "e9beff616dcc1416e900630cc27282df777bdb46001ae52d7f1485ae1f3ccb77"
+    },
+    "kadima/alerts.py": {
+      "before": "1c04921f63e3e11c8b447745d3f8e7b5f819b5dc486c06b4edb7bdced8354d45",
+      "after": "1c04921f63e3e11c8b447745d3f8e7b5f819b5dc486c06b4edb7bdced8354d45"
+    },
+    "kadima/angel_orders.py": {
+      "before": "ad2b7482d5d1c18077fb24661c6f583cf26ffde2aa6e0a01bc8a7ec8fa8ba456",
+      "after": "495cade0c0cd73d0e5caeff4f011632f2d501013b4fb0f660a23571775e0d6c8"
+    },
+    "kadima/api.py": {
+      "before": "e38de8a505253abff0b074ee8da0e3223fce38c38aef932ddd9faad65988aa00",
+      "after": "e38de8a505253abff0b074ee8da0e3223fce38c38aef932ddd9faad65988aa00"
+    },
+    "kadima/audit.py": {
+      "before": "1034ba1b7ba48b2b41d36b34691648bb76ab2e9d92d59b514106546ae060ad98",
+      "after": "1034ba1b7ba48b2b41d36b34691648bb76ab2e9d92d59b514106546ae060ad98"
+    },
+    "kadima/auto_executor.py": {
+      "before": "e252c88b420ea69b1cb7db1af0b480d9e11caa31206927d7473de0d0814c38ff",
+      "after": "082be5c056b63d440ed2dd1984979b395f5ce538670b05c103abdd113be0ea60"
+    },
+    "kadima/candles.py": {
+      "before": "c26ff4f5f314ce6c5166694ce0d351eb64062beb22b01dba897af5bdcc8e8ed2",
+      "after": "c26ff4f5f314ce6c5166694ce0d351eb64062beb22b01dba897af5bdcc8e8ed2"
+    },
+    "kadima/capital_guard.py": {
+      "before": "5141f361513b668a0382485537be5d2108127a6c9006e5bdf58fcd82d2988dab",
+      "after": "5141f361513b668a0382485537be5d2108127a6c9006e5bdf58fcd82d2988dab"
+    },
+    "kadima/cas_blast_scanner.py": {
+      "before": "9cc06eb80ebd1de6d0ba16803a20444a29caed45f79d8071033abf870c647129",
+      "after": "fea56a718e8e6370d8207071a170a1bafa68498f7be0c3faec69c2d28fe304f6"
+    },
+    "kadima/cas_executor.py": {
+      "before": "22ac77482e5a790b63c4d1c3ebcf76262692ec93707ee2ad14ed5b552ec94354",
+      "after": "1da01a376aa87efd45829ba2721cff24cfac9c9371390d801f34fb9ad895f456"
+    },
+    "kadima/cas_safety.py": {
+      "before": null,
+      "after": "b05f1311dc40c7d77658a1f166e30f33d73678ec542a608ebc5aafd3533aefa0"
+    },
+    "kadima/cas_watchdog.py": {
+      "before": null,
+      "after": "e31cb4888f9207a1ce0feb693abb3d725bf9ca37ade3d9064c8096972886d165"
+    },
+    "kadima/celestial.py": {
+      "before": "48d41bb95365723d80d81e831c08bd604b43504c4a376958336149783cbb1b92",
+      "after": "48d41bb95365723d80d81e831c08bd604b43504c4a376958336149783cbb1b92"
+    },
+    "kadima/celestial_adoption.py": {
+      "before": "c9aec8455563188f4310496669c4db0188f6ab908291de78b8ca955b85c21cc6",
+      "after": "c9aec8455563188f4310496669c4db0188f6ab908291de78b8ca955b85c21cc6"
+    },
+    "kadima/celestial_exit.py": {
+      "before": "1609944da509ee9a9165549a70419c6862195be8ebc38c942df4072c99c0a54c",
+      "after": "1609944da509ee9a9165549a70419c6862195be8ebc38c942df4072c99c0a54c"
+    },
+    "kadima/celestial_scanner.py": {
+      "before": "a15f66c700deb26583aaed908bbf303daa30bf8907467812a7310359726430ef",
+      "after": "a15f66c700deb26583aaed908bbf303daa30bf8907467812a7310359726430ef"
+    },
+    "kadima/celestial_universe.py": {
+      "before": "a54d107ce9d546ad9208c4073ed923e1511a657fde82cf4102c049e2abaf082e",
+      "after": "a54d107ce9d546ad9208c4073ed923e1511a657fde82cf4102c049e2abaf082e"
+    },
+    "kadima/checklist_forecast.py": {
+      "before": "89baa43199effac9a7c0d8fecfe5f355da7152d23d7a2cf3ee68f7f3b1f2c941",
+      "after": "89baa43199effac9a7c0d8fecfe5f355da7152d23d7a2cf3ee68f7f3b1f2c941"
+    },
+    "kadima/commodity_watch.py": {
+      "before": "218d89dc5751c5ebfc1fe9ff421c609bb8e1b8d1fb7f7da2f9d483891eb6165f",
+      "after": "218d89dc5751c5ebfc1fe9ff421c609bb8e1b8d1fb7f7da2f9d483891eb6165f"
+    },
+    "kadima/config.py": {
+      "before": "bf5bbd5c203201935e350c6234572d743eefc1b7bc6edeaa3c71543491bc3f1e",
+      "after": "bf5bbd5c203201935e350c6234572d743eefc1b7bc6edeaa3c71543491bc3f1e"
+    },
+    "kadima/control_api.py": {
+      "before": "06c199c00cb99178b41ea2e3f6df21700c9c4fbac89346d7c4b49c016a7c131c",
+      "after": "06c199c00cb99178b41ea2e3f6df21700c9c4fbac89346d7c4b49c016a7c131c"
+    },
+    "kadima/dynamic_stop.py": {
+      "before": "f4134491c7cd655db504e5ede7432769e64753739235c73fac884de1a3931065",
+      "after": "f4134491c7cd655db504e5ede7432769e64753739235c73fac884de1a3931065"
+    },
+    "kadima/engine.py": {
+      "before": "c3f579187985db96066c95a3b1bf8365e6a5782ba5f98681cf218f011fb215b4",
+      "after": "01fff26991539becb3071c6db60a97b016ba5fa9473f5801ed82d11de8c9b766"
+    },
+    "kadima/entry_quality.py": {
+      "before": "036e8f1890a254f5e185cb06bd5e7577ebe1c08852994504996342c4f300d8ff",
+      "after": "036e8f1890a254f5e185cb06bd5e7577ebe1c08852994504996342c4f300d8ff"
+    },
+    "kadima/eod_watchdog.py": {
+      "before": "88e27c791fa1757e239d4e9110ea0da780097157e5ebfe63949fbd788fde7897",
+      "after": "031650afd1f5a5f4a8e730bc17b9426c0fbd3f2adfa62aefa3983f2abaf55d5e"
+    },
+    "kadima/execution_ledger.py": {
+      "before": "c575203f3b4388814e20b5490f84e2030b1a934fcc096028fd0aacb81fe719d7",
+      "after": "1c9890d1b67b50e8960b08b2f41b5beb140c076afcdef7ac1a5e49f398277ded"
+    },
+    "kadima/execution_pricing.py": {
+      "before": "9e7be07b122040bc439583ae869415578be4b488974ff93fcc49a1e0ab43cf8e",
+      "after": "9e7be07b122040bc439583ae869415578be4b488974ff93fcc49a1e0ab43cf8e"
+    },
+    "kadima/exit_manager.py": {
+      "before": "ad062c7be873bcb8fa315fee31f371030ff5766bd75a7781feb2b20dde70e331",
+      "after": "ad062c7be873bcb8fa315fee31f371030ff5766bd75a7781feb2b20dde70e331"
+    },
+    "kadima/external_reconciliation.py": {
+      "before": "56fb5f42dcb80159d461739ffe9ba3afd3c3f5ce03ba820646ddb778874453b3",
+      "after": "df6bfb3d902b9629e37f75b9d8371b213eb88a91d6d6e0e9fd827de986a45006"
+    },
+    "kadima/fast_momentum.py": {
+      "before": "0ee3729c78175a48bde026ea0f9e86f6cee33afe28eb3347bddab9907c716704",
+      "after": "0ee3729c78175a48bde026ea0f9e86f6cee33afe28eb3347bddab9907c716704"
+    },
+    "kadima/feed.py": {
+      "before": "9ac0d6ffa06c71d0122df3b14bf7005d6d1173981098ca5818fb88d672d7e344",
+      "after": "9ac0d6ffa06c71d0122df3b14bf7005d6d1173981098ca5818fb88d672d7e344"
+    },
+    "kadima/forecast_connection.py": {
+      "before": "9eae0ebd31ff013fce552265e3914eb11dd905111e75c9c6563260665f6f9abb",
+      "after": "9eae0ebd31ff013fce552265e3914eb11dd905111e75c9c6563260665f6f9abb"
+    },
+    "kadima/forecast_observer.py": {
+      "before": "dd53e6515fe91a7602c9bd93de745fddb908e5fb04c680c6464a524d33ff0269",
+      "after": "dd53e6515fe91a7602c9bd93de745fddb908e5fb04c680c6464a524d33ff0269"
+    },
+    "kadima/forecast_trail.py": {
+      "before": "3f47e92010b46690ce2650b11fc970d05775ee7882391819da4dba61b1df2125",
+      "after": "3f47e92010b46690ce2650b11fc970d05775ee7882391819da4dba61b1df2125"
+    },
+    "kadima/full_universe_scanner.py": {
+      "before": "adf6ec0ed57caec11f791201a4ac014f171cdb85ca6f3dfd518469227fec1dcd",
+      "after": "adf6ec0ed57caec11f791201a4ac014f171cdb85ca6f3dfd518469227fec1dcd"
+    },
+    "kadima/gamma_blast_scanner.py": {
+      "before": "02010d88d0c0a9afb9a0d10ce72fc35f368e49685d1e5a2319e0d0752cd9cc8c",
+      "after": "02010d88d0c0a9afb9a0d10ce72fc35f368e49685d1e5a2319e0d0752cd9cc8c"
+    },
+    "kadima/gap_and_go.py": {
+      "before": "89610854afe17d2035cece9b32a57399b7ab71ee7c4103bbb79b19e42975c1fa",
+      "after": "89610854afe17d2035cece9b32a57399b7ab71ee7c4103bbb79b19e42975c1fa"
+    },
+    "kadima/gap_baseline.py": {
+      "before": "f336806221ea4c37a4cdcd2e96f266ca4db906b2f0c3677abfd373192095a36e",
+      "after": "f336806221ea4c37a4cdcd2e96f266ca4db906b2f0c3677abfd373192095a36e"
+    },
+    "kadima/gap_live.py": {
+      "before": "fa10c1d96d9920c9b31f6f0c0c61fba4b318d7bbe19a736759616b6cfd01e26f",
+      "after": "fa10c1d96d9920c9b31f6f0c0c61fba4b318d7bbe19a736759616b6cfd01e26f"
+    },
+    "kadima/greeks.py": {
+      "before": "68b042e835a5a1d5524befcc1b236d5f210c56b0fba52cf759c3d93d2601b0b3",
+      "after": "68b042e835a5a1d5524befcc1b236d5f210c56b0fba52cf759c3d93d2601b0b3"
+    },
+    "kadima/indicators.py": {
+      "before": "666bdb238c8efcf6ff9b0087ed1b57f81434e532f941484ba39e6bf563c8b5b8",
+      "after": "666bdb238c8efcf6ff9b0087ed1b57f81434e532f941484ba39e6bf563c8b5b8"
+    },
+    "kadima/instrument_master.py": {
+      "before": "d3891bd60f8e3ed10868f80f8ae412ca9892178b8c219577e2f4398ddb8247f9",
+      "after": "d3891bd60f8e3ed10868f80f8ae412ca9892178b8c219577e2f4398ddb8247f9"
+    },
+    "kadima/killswitch.py": {
+      "before": "fda43fd315d048d1df46a5290dbb8710830ca064e93f43b5ad7891ed55d46b34",
+      "after": "fda43fd315d048d1df46a5290dbb8710830ca064e93f43b5ad7891ed55d46b34"
+    },
+    "kadima/last_known.py": {
+      "before": "842d168f18c2d3407786f521098ce8723ee0bbae511269f9194e6c61a6197f7f",
+      "after": "842d168f18c2d3407786f521098ce8723ee0bbae511269f9194e6c61a6197f7f"
+    },
+    "kadima/macro_watch.py": {
+      "before": "7855b3f0fcbf04015bade1083743be89535fca8de1d85a18f7610d4b463767ec",
+      "after": "7855b3f0fcbf04015bade1083743be89535fca8de1d85a18f7610d4b463767ec"
+    },
+    "kadima/market_session_gate.py": {
+      "before": "c74c37e2038509874ffcbca8769746bb510605eddbc488bd4d10a0c4d855cb7f",
+      "after": "c74c37e2038509874ffcbca8769746bb510605eddbc488bd4d10a0c4d855cb7f"
+    },
+    "kadima/mcx_live.py": {
+      "before": "07a848d2c40308cbc340423ddc0948090ddcd7aec3c33081713e4717bddc8ebe",
+      "after": "07a848d2c40308cbc340423ddc0948090ddcd7aec3c33081713e4717bddc8ebe"
+    },
+    "kadima/news_catalysts.py": {
+      "before": "0cfe1df0fe3e2eb2a8f2eaa464500b5d85ce0efb29143c85de889d9b370c8a13",
+      "after": "0cfe1df0fe3e2eb2a8f2eaa464500b5d85ce0efb29143c85de889d9b370c8a13"
+    },
+    "kadima/news_collector.py": {
+      "before": "fd748c0ed0b15003f0934fc051fb4f7e5e7f7cdd86f0e0f6a79cdf936b377811",
+      "after": "fd748c0ed0b15003f0934fc051fb4f7e5e7f7cdd86f0e0f6a79cdf936b377811"
+    },
+    "kadima/news_context.py": {
+      "before": "1df8d9ddbec04394c2ae1b0b2ffca994c8ee1aedd1ae253bbbbf102676da8140",
+      "after": "1df8d9ddbec04394c2ae1b0b2ffca994c8ee1aedd1ae253bbbbf102676da8140"
+    },
+    "kadima/option_chain.py": {
+      "before": "fb512db81688ea25287d5c3e39671c9d331e7f03dd9fd20097fdf21710dc3b3b",
+      "after": "7142a1aad5353ccd7814e0477c82cb70c8400bd30d7ee12a6bff1efbd13181f5"
+    },
+    "kadima/portfolio_capacity.py": {
+      "before": "cfabf66cdc3981def06b1f0302462bc7b75a13156e31c42a3483cc1acfb4f066",
+      "after": "c474f1397998c04e436b3b6f47591872695d5bd9ff0fffecd4cac35b9ef34a50"
+    },
+    "kadima/rate_limiter.py": {
+      "before": "f3a6ca03ca0feb7c74941fc544ea3bbebde6ef4a58d9e40caa459d5b3877101f",
+      "after": "f3a6ca03ca0feb7c74941fc544ea3bbebde6ef4a58d9e40caa459d5b3877101f"
+    },
+    "kadima/risk_budget.py": {
+      "before": "20bd0cdb7e5c7296315324bd1d4970812a63dd67fd6a7096b64daf07f715fa6c",
+      "after": "20bd0cdb7e5c7296315324bd1d4970812a63dd67fd6a7096b64daf07f715fa6c"
+    },
+    "kadima/scrip_master.py": {
+      "before": "147f82ea870083e47da84740a02c6d3d71576d9ed08906d9323cec846bebf162",
+      "after": "147f82ea870083e47da84740a02c6d3d71576d9ed08906d9323cec846bebf162"
+    },
+    "kadima/session.py": {
+      "before": "6b8ade289949ebcb00eb5460852cee7682f7c55591d021d72b612fc6612303f4",
+      "after": "6b8ade289949ebcb00eb5460852cee7682f7c55591d021d72b612fc6612303f4"
+    },
+    "kadima/shield_confirmation.py": {
+      "before": "0e5e8ef5370088caf2d29c38d6283723493ee4357bda4fac1da709e0d80d5cdb",
+      "after": "0e5e8ef5370088caf2d29c38d6283723493ee4357bda4fac1da709e0d80d5cdb"
+    },
+    "kadima/stock_execution.py": {
+      "before": "44a7756fc7137504282060268326d8b63f69b456fefb4bdf20bf31a38b61703e",
+      "after": "44a7756fc7137504282060268326d8b63f69b456fefb4bdf20bf31a38b61703e"
+    },
+    "kadima/stock_fast.py": {
+      "before": "5ea1519e705219fbc20e3bbc261fe3f77762354406fb1ef1a948557785da85c5",
+      "after": "5ea1519e705219fbc20e3bbc261fe3f77762354406fb1ef1a948557785da85c5"
+    },
+    "kadima/stock_fast_api.py": {
+      "before": "43974005490f89ba816ed42f25a26fd45f1d2a358aa415ed1ea1295eb0a5487b",
+      "after": "43974005490f89ba816ed42f25a26fd45f1d2a358aa415ed1ea1295eb0a5487b"
+    },
+    "kadima/stock_handoff.py": {
+      "before": "7fd39688b76d4b77035c8cdaac77ef0897c6eb5da81c4326672f72761410af85",
+      "after": "7fd39688b76d4b77035c8cdaac77ef0897c6eb5da81c4326672f72761410af85"
+    },
+    "kadima/stock_universe_scanner.py": {
+      "before": "6456988065e212ac3726abc95c28098ff2fcee9246f073bc28943c0882671b72",
+      "after": "6456988065e212ac3726abc95c28098ff2fcee9246f073bc28943c0882671b72"
+    },
+    "kadima/stops.py": {
+      "before": "7975a6fde4c191530b6b8cd349df80717339d117a6b957de9bb5bcab69cc7ad1",
+      "after": "7975a6fde4c191530b6b8cd349df80717339d117a6b957de9bb5bcab69cc7ad1"
+    },
+    "kadima/storage.py": {
+      "before": "62122473b18867bfea3a1e11b6459c7706ab315929a8d6208d01703a0781aa05",
+      "after": "62122473b18867bfea3a1e11b6459c7706ab315929a8d6208d01703a0781aa05"
+    },
+    "kadima/strike_selector.py": {
+      "before": "12d3f20ebf3376ef1a88cf965f8495f6d17c557eea43d2f9f8ce074a8b13bd1c",
+      "after": "12d3f20ebf3376ef1a88cf965f8495f6d17c557eea43d2f9f8ce074a8b13bd1c"
+    },
+    "kadima/test_order_pathway.py": {
+      "before": "462768706a16f8973b1e024167220a3936ec34050389817a188215169fc35b15",
+      "after": "462768706a16f8973b1e024167220a3936ec34050389817a188215169fc35b15"
+    },
+    "kadima/trade_policy.py": {
+      "before": "a8ff5f5f11549c02de0202229f77e975bd0637ede77a1d6b3b69edb532040bdc",
+      "after": "a8ff5f5f11549c02de0202229f77e975bd0637ede77a1d6b3b69edb532040bdc"
+    },
+    "kadima/universe_api.py": {
+      "before": "5009c4efd3753c6624dfc66dd5cc610548389e2b8a8f49fbf3ab4716a8aaa08b",
+      "after": "5009c4efd3753c6624dfc66dd5cc610548389e2b8a8f49fbf3ab4716a8aaa08b"
+    },
+    "kadima/universe_display.py": {
+      "before": "508b809609854f0a047070a062a8c7d66611b9bde4c70ba901b9d4dc0b37332d",
+      "after": "508b809609854f0a047070a062a8c7d66611b9bde4c70ba901b9d4dc0b37332d"
+    },
+    "kadima/utils.py": {
+      "before": "6701d127ed790e16a3526dbbe059c8acb6eefb0b70abe5296a6c805dc2e66278",
+      "after": "6701d127ed790e16a3526dbbe059c8acb6eefb0b70abe5296a6c805dc2e66278"
+    },
+    "requirements.txt": {
+      "before": "951c29f93666af115d9086eac86985f6b1c1d614de40cd0967fbf58213dd2bcc",
+      "after": "951c29f93666af115d9086eac86985f6b1c1d614de40cd0967fbf58213dd2bcc"
+    },
+    "run.py": {
+      "before": "0b7ec041e507426cebf7b334b7df5143c9c4bfbf05859efbd290fe579996cba4",
+      "after": "0b7ec041e507426cebf7b334b7df5143c9c4bfbf05859efbd290fe579996cba4"
+    },
+    "tools/check_cas_release.py": {
+      "before": null,
+      "after": "fb88824e0684497ef2bd29f7ce21ce868ebe43450c54ae8373389131100dd53b"
+    },
+    "tools/run_cas_regressions.py": {
+      "before": null,
+      "after": "e9a59a859d4a515e48f6dfea859bec6c5039352641dfe9af895d4c0d861396c9"
+    },
+    "tools/test_cas_executor.py": {
+      "before": "10e238b3bd1eaf6400a425875a627568493817a932b0585f6c2a66b0b04593d3",
+      "after": "99bbcc3e852743f1eacf950c0dd9f4a923393962e761225a4cf34d66026d475c"
+    },
+    "tools/test_cas_safety.py": {
+      "before": null,
+      "after": "3fa3072d48f197d6a6c9403a3d87f7814c766964afcfa387fcc0e3ffd5574b2d"
+    }
+  }
+}
