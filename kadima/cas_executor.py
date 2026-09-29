@@ -152,7 +152,7 @@ def exit_reason(pos, ltp: float, daily_loss_breached: bool, force_close: bool) -
     if peak >= entry * (1 + CAS_TRAIL_ARM_PCT / 100.0):
         if not pos.trail_active:
             pos.trail_active = True
-            pos.effective_stop = round(peak * (1 - CAS_TRAIL_GIVEBACK_PCT / 100.0), 2)
+            pos.effective_stop = round(max(entry, peak * (1 - CAS_TRAIL_GIVEBACK_PCT / 100.0)), 2)
             storage.upsert_position(pos)
             audit.log("cas_trail_armed", signal_id=pos.signal_id, entry=entry, peak=peak)
             alerts.enqueue(f"CAS trail armed {pos.symbol}: entry {entry:.2f}, peak {peak:.2f}",
