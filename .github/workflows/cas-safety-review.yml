@@ -1,0 +1,27 @@
+name: CAS safety review
+on:
+  push:
+    branches: [codex/cas-safety-refinement]
+permissions:
+  contents: read
+jobs:
+  source-review:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Capture committed source only (no application execution)
+        run: |
+          git rev-parse HEAD > source-commit.txt
+          git archive --format=zip --output=source.zip HEAD
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: cas-review-source
+          path: |
+            source.zip
+            source-commit.txt
+          if-no-files-found: error
+          retention-days: 1
