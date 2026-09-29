@@ -91,7 +91,8 @@ def submit(pos, side, quantity, price):
     try:
         result = angel_orders.place_limit_order(tradingsymbol=pos.symbol,
             symboltoken=pos.token, exchange=pos.exchange, transactiontype=side,
-            quantity=quantity, price=price, ordertag=intent, signal_id=pos.signal_id)
+            quantity=quantity, price=price, ordertag=intent, signal_id=pos.signal_id,
+            producttype=angel_orders.product_for(pos))
     except Exception:
         # Includes unexpected wrapper errors after an HTTP request may have left.
         audit.log('order_submission_unknown', signal_id=pos.signal_id, intent=intent)
@@ -210,7 +211,8 @@ def refresh(positions, ltp_fn=None):
         # Validate contract and side when supplied by the broker.
         if any(status.raw.get(k) is not None and str(status.raw[k]) != str(v)
                for k, v in [('symboltoken', pos.token), ('exchange', pos.exchange),
-                            ('transactiontype', row['side']), ('producttype', 'INTRADAY')]):
+                            ('transactiontype', row['side']),
+                            ('producttype', angel_orders.product_for(pos))]):
             healthy = False
             continue
         try:
@@ -272,7 +274,7 @@ def _reprice_exit(pos, row, status, age, ltp_fn):
         return      # existing limit is already at or below the re-priced level
     result = angel_orders.modify_order(status.order_id, price=new_price,
         quantity=row['quantity'], contract=dict(tradingsymbol=pos.symbol,
-        symboltoken=pos.token, exchange=pos.exchange, producttype='INTRADAY'))
+        symboltoken=pos.token, exchange=pos.exchange, producttype=angel_orders.product_for(pos)))
     state['attempts'] += 1
     audit.log('execution_exit_repriced', signal_id=pos.signal_id, order_id=status.order_id,
               attempt=state['attempts'], ltp=ltp, buffer_pct=buffer * 100,

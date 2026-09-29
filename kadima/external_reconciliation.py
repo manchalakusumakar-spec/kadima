@@ -8,6 +8,7 @@ import copy
 import json
 import math
 from . import celestial, execution_ledger, storage
+from .angel_orders import product_for
 from .utils import now_ist
 
 
@@ -41,7 +42,7 @@ def reconcile(executor, broker_rows, book):
     for original in list(executor.state.positions.values()):
         if original.status != 'open' or execution_ledger.pending(original.signal_id):
             continue
-        key = original.exchange, original.token, 'INTRADAY'
+        key = original.exchange, original.token, product_for(original)
         current_qty = live.get(key, 0)
         if current_qty < 0 or current_qty % original.lot_size:
             continue

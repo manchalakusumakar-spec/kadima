@@ -26,6 +26,7 @@ from .shield_confirmation import (SHIELD_MIN_SCORE, BANK_NAMES, ShieldEvidence,
 from .stock_execution import StockExecutionWorker
 from .forecast_observer import ForecastObserver
 from . import gamma_blast_scanner as gamma
+from . import cas_blast_scanner
 from .candles import Candle, CandleBuilder
 from .config import (EMA_FAST, EMA_SLOW, GAMMA_EXPIRY_ONLY, GAMMA_INDICES,
                       GAMMA_SIGNAL_CUTOFF, IST, INDICES,
@@ -376,6 +377,12 @@ class Engine:
                                 # Separate price-led lane consumes the same successful poll.
                                 # Observation by default; never dispatch from the tick callback.
                                 self._scan_fast(st)
+                                # CAS blast lane: same fresh sample, own gates
+                                # and execution (cas_executor). Never raises.
+                                try:
+                                    cas_blast_scanner.SCANNER.on_chain(st.name, st.chain, st.spot)
+                                except Exception as exc:  # noqa: BLE001
+                                    audit.log("cas_scan_error", index=st.name, error=str(exc))
                             if polled:
                                 auto_executor.EXECUTOR.update_structure(st.name, st.chain, st.spot)
                                 self._score_gamma(st)

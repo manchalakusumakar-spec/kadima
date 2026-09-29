@@ -12,9 +12,19 @@ from dataclasses import dataclass
 from typing import Optional
 
 from . import audit
-from .config import ORDER_PLACEMENT_ENABLED
+from .config import CAS_PRODUCT_TYPE, ORDER_PLACEMENT_ENABLED
 from .rate_limiter import ORDER_STATUS, ORDER_WRITE
 from .session import SESSION
+
+CAS_KIND = "cas_blast"
+
+
+def product_for(pos) -> str:
+    """Broker producttype a position's orders must use. Every order, fill
+    check and reconciliation for a position goes through this, so a
+    CARRYFORWARD CAS entry is never exited with an INTRADAY SELL (which
+    Angel would treat as a separate, new short position)."""
+    return CAS_PRODUCT_TYPE if getattr(pos, "kind", None) == CAS_KIND else "INTRADAY"
 
 
 @dataclass

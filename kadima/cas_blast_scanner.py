@@ -1,246 +1,194 @@
 """
-cas_blast_scanner.py -- CAS (Closing Session, 15:15 IST+) far-OTM premium
+cas_blast_scanner.py -- CAS (Closing Session, 15:15 IST+) cheap-premium
 acceleration scanner.
 
 WHY THIS EXISTS:
-    Kusumakar identified that KADIMA's main entry logic (Bull Shield /
-    Gamma Blast) is delta-filtered to 0.45-0.60 by design -- correctly,
-    for that strategy. But that means it will NEVER look at far-OTM,
-    single-digit-premium strikes that occasionally move hundreds of
-    percent in the closing session as spot approaches a strike late in
-    the day. This is a deliberately separate, smaller, higher-variance
-    strategy to catch those moves -- NOT a replacement for or
-    modification of the main engine.
+    KADIMA's main entry logic (Bull Shield / Gamma Blast) is delta-filtered
+    to 0.45-0.60 by design, so it never looks at the cheap OTM strikes that
+    move hundreds of percent in the closing session (e.g. NIFTY 22650 CE,
+    Rs 5 -> Rs 66 on 2026-09-29, after 15:20). This is a separate, smaller,
+    higher-variance strategy for those moves -- not a change to the main
+    engine.
 
-DEFAULTS CHOSEN FOR THIS FIRST VERSION (flag any to change):
-    - Watchlist: the 5 existing indices only (NIFTY, BANKNIFTY, SENSEX,
-      MIDCPNIFTY, BANKEX), far-OTM band delta 0.05-0.20 -- NOT the full
-      F&O stock universe yet. Start small, expand once proven.
-    - Trigger: premium up >=40% over the last 2 one-minute candles,
-      AND volume >= 3x its own trailing 20-candle average.
-    - Position size: always exactly 1 lot (no tier-based sizing).
-    - Exit: book 50% at +50% gain, trail remainder; hard time-cut exit
-      if no favorable move within 2 candles of entry.
-    - Runs only 15:15 IST to market close.
-
-SAFETY DESIGN -- OBSERVE AND ALERT ONLY (this version):
-    This module does NOT call auto_executor.py or place any live order.
-    It scores candidates and sends an alert + audit log entry the
-    moment one triggers. This is deliberate: this is new, unreviewed
-    code touching real-money decision logic, and it has not yet run
-    against a single real session. Wiring it to actually place orders
-    is a follow-up step, once you've watched it flag real candidates
-    and agree its trigger logic is sound.
-
-    To go from observe-only to live execution later, the hook point is
-    marked below (see `_maybe_execute`) -- it currently only logs.
-
-RUNS AS A SEPARATE PROCESS/SERVICE, matching the existing
-stock_universe_scanner.py pattern -- deliberately isolated from the
-main kadima.service for failure-domain isolation (per this box's
-documented OOM history, though RAM is now 2GB).
+2026-09-29 REWRITE (trader's decisions, see cas_executor.py for execution):
+    - Fed in-process by engine._oi_loop after every successful chain poll
+      (on_chain), reusing the same REST sample -- no extra broker load.
+      The previous version was never started and called a chain method
+      (far_otm_quotes) that does not exist.
+    - Candidates are selected by premium band and strike distance, not by
+      delta: chain quotes carry no computed delta, and on expiry day delta
+      bands are unstable anyway.
+    - Volume uses per-poll traded volume (tradeVolume is cumulative for the
+      day; the old trigger compared cumulative totals and could not fire).
+    - Direction must agree with spot: CE only when spot rose over the
+      trigger window, PE only when it fell.
+    - A triggered candidate is handed to cas_executor, which applies every
+      execution gate and places the order. With CAS_EXECUTION_ENABLED off,
+      this module only alerts and logs, as before.
 """
 
 from __future__ import annotations
 
-import time
+import threading
 from collections import deque
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
 from . import alerts, audit
-from .config import IST
-from .instrument_master import get_lot_size
-from .session import SESSION
+from .config import (CAS_ENTRY_END, CAS_ENTRY_START, CAS_MAX_PREMIUM,
+                     CAS_MIN_PREMIUM, CAS_STRIKES_OTM, CAS_TRIGGER_POLLS,
+                     CAS_TRIGGER_PREMIUM_PCT, CAS_TRIGGER_VOLUME_MULT,
+                     CAS_VOLUME_TRAILING_POLLS)
 from .utils import now_ist
 
-# ---------------------------------------------------------------- config
-CAS_START_HOUR = 15
-CAS_START_MINUTE = 15
-
-MIN_DELTA = 0.05
-MAX_DELTA = 0.20          # far-OTM band -- deliberately below the main
-                          # engine's 0.45-0.60 filter
-
-TRIGGER_PREMIUM_PCT = 40.0        # premium up >= this %, over...
-TRIGGER_CANDLE_WINDOW = 2         # ...this many 1-min candles
-TRIGGER_VOLUME_MULT = 3.0         # AND volume >= this x trailing avg
-VOLUME_TRAILING_WINDOW = 20       # candles for the trailing average
-
-FIXED_LOTS = 1                    # always exactly 1 lot -- no tier sizing
-PROFIT_BOOK_PCT = 50.0            # book this % of position at...
-PROFIT_BOOK_TRIGGER_PCT = 50.0    # ...this % gain
-TIME_CUT_CANDLES = 2              # exit if no favorable move within N
-                                   # candles of entry
-
-INDICES = ["NIFTY", "BANKNIFTY", "SENSEX", "MIDCPNIFTY", "BANKEX"]
-
-POLL_INTERVAL_SEC = 15
+MIN_VOLUME_SAMPLES = 5      # per-poll volume increments needed before a volume test
 
 
-# --------------------------------------------------------------- state
 @dataclass
 class StrikeHistory:
-    """Rolling premium/volume history for one far-OTM strike, used to
-    detect acceleration relative to its OWN recent behaviour, not an
-    absolute threshold (a Rs 2 option's normal noise looks huge in
-    absolute terms; relative-to-self is what actually signals a real
-    move)."""
-    symbol: str
-    token: str
-    premiums: deque = field(default_factory=lambda: deque(maxlen=TRIGGER_CANDLE_WINDOW + 1))
-    volumes: deque = field(default_factory=lambda: deque(maxlen=VOLUME_TRAILING_WINDOW))
-    last_alerted_at: Optional[datetime] = None
+    premiums: deque = field(default_factory=lambda: deque(maxlen=CAS_TRIGGER_POLLS + 1))
+    vol_increments: deque = field(default_factory=lambda: deque(maxlen=CAS_VOLUME_TRAILING_POLLS + 1))
+    last_cum_volume: Optional[int] = None
+    triggered: bool = False
 
 
 @dataclass
 class CasCandidate:
+    index: str
     symbol: str
     token: str
+    exchange: str
     strike: float
     option_type: str
     ltp: float
+    bid: Optional[float]
+    ask: Optional[float]
     premium_change_pct: float
     volume: int
     volume_avg: float
-    delta: Optional[float]
+    spot: float
+    spot_change: float
+    detected_at: datetime
+
+
+def in_cas_window(dt: Optional[datetime] = None) -> bool:
+    n = dt or now_ist()
+    return CAS_ENTRY_START <= (n.hour, n.minute) < CAS_ENTRY_END
+
+
+def select_strikes(quotes, spot: float, strike_step: float) -> list:
+    """Cheap OTM strikes near the money: CE at/above ATM, PE at/below ATM,
+    up to CAS_STRIKES_OTM steps away, premium inside the CAS band."""
+    if not spot or not strike_step:
+        return []
+    atm = round(spot / strike_step) * strike_step
+    reach = CAS_STRIKES_OTM * strike_step
+    out = []
+    for q in quotes:
+        if q.ltp is None or not (CAS_MIN_PREMIUM <= q.ltp <= CAS_MAX_PREMIUM):
+            continue
+        if q.opt_type == "CE" and atm <= q.strike <= atm + reach:
+            out.append(q)
+        elif q.opt_type == "PE" and atm - reach <= q.strike <= atm:
+            out.append(q)
+    return out
 
 
 class CasBlastScanner:
-    def __init__(self) -> None:
+    def __init__(self, executor_hook=None) -> None:
         self._history: dict[str, StrikeHistory] = {}
-        self._running = False
+        self._spot: dict[str, deque] = {}
+        self._day: Optional[str] = None
+        self._lock = threading.Lock()
+        self._executor_hook = executor_hook   # tests inject; default is cas_executor.submit
 
-    # ------------------------------------------------------------ window
-    def in_cas_window(self) -> bool:
-        n = now_ist()
-        return (n.hour > CAS_START_HOUR
-                or (n.hour == CAS_START_HOUR and n.minute >= CAS_START_MINUTE))
+    def _roll_day(self, now: datetime) -> None:
+        day = now.date().isoformat()
+        if day != self._day:
+            self._day = day
+            self._history.clear()
+            self._spot.clear()
 
-    # ------------------------------------------------------------- scan
-    def scan_once(self, chains: dict) -> list[CasCandidate]:
-        """
-        chains: {index_name: OptionChain}, one per watched index, as
-        supplied by the caller (this module does not fetch its own
-        chain data -- it reuses whatever the main engine's IndexState
-        objects already hold, to avoid a second redundant Angel One
-        WebSocket/REST load).
-
-        Returns the list of candidates that triggered THIS scan.
-        """
-        triggered: list[CasCandidate] = []
-
-        for index_name, chain in chains.items():
-            for quote in chain.far_otm_quotes(MIN_DELTA, MAX_DELTA):
-                key = quote.token
-                hist = self._history.setdefault(
-                    key, StrikeHistory(symbol=quote.symbol, token=quote.token))
-
-                hist.premiums.append(quote.ltp)
-                hist.volumes.append(quote.volume or 0)
-
-                candidate = self._check_trigger(quote, hist)
-                if candidate is not None:
-                    triggered.append(candidate)
-                    hist.last_alerted_at = now_ist()
-
+    # --------------------------------------------------------------- feed
+    def on_chain(self, index_name: str, chain, spot: Optional[float]) -> list[CasCandidate]:
+        """Called after every successful poll of `chain`. Updates history for
+        all CAS-band strikes every poll (so history exists when the window
+        opens) and returns the candidates that triggered on this poll."""
+        now = now_ist()
+        if not spot:
+            return []
+        with self._lock:
+            self._roll_day(now)
+            spots = self._spot.setdefault(index_name, deque(maxlen=CAS_TRIGGER_POLLS + 1))
+            spots.append(float(spot))
+            triggered = []
+            for q in select_strikes(chain.quotes.values(), spot, chain.index.strike_step):
+                hist = self._history.setdefault(q.token, StrikeHistory())
+                hist.premiums.append(q.ltp)
+                cum = q.volume or 0
+                if hist.last_cum_volume is not None and cum >= hist.last_cum_volume:
+                    hist.vol_increments.append(cum - hist.last_cum_volume)
+                hist.last_cum_volume = cum
+                if not in_cas_window(now):
+                    continue
+                cand = self._check(index_name, chain, q, hist, spots, now)
+                if cand is not None:
+                    hist.triggered = True
+                    triggered.append(cand)
+        if triggered:
+            best = max(triggered, key=lambda c: c.premium_change_pct)
+            for c in triggered:
+                audit.log("cas_blast_candidate_triggered", index=c.index, symbol=c.symbol,
+                          strike=c.strike, option_type=c.option_type, ltp=c.ltp,
+                          premium_change_pct=c.premium_change_pct, volume=c.volume,
+                          volume_avg=c.volume_avg, spot_change=c.spot_change,
+                          selected=c is best)
+            alerts.enqueue(
+                f"\U0001F680 <b>CAS BLAST</b> — {best.symbol}\n"
+                f"Premium {best.ltp} (+{best.premium_change_pct}%)\n"
+                f"Volume {best.volume} (avg {best.volume_avg}) | spot {best.spot_change:+.1f}",
+                key=f"cas_blast:{best.symbol}")
+            self._dispatch(best, chain)
         return triggered
 
-    def _check_trigger(self, quote, hist: StrikeHistory) -> Optional[CasCandidate]:
-        if len(hist.premiums) < TRIGGER_CANDLE_WINDOW + 1:
-            return None  # not enough history yet for this strike
-
-        # Debounce: don't re-alert the same strike every poll once it's
-        # already triggered once.
-        if hist.last_alerted_at is not None:
+    def _check(self, index_name, chain, q, hist, spots, now) -> Optional[CasCandidate]:
+        if hist.triggered or len(hist.premiums) < CAS_TRIGGER_POLLS + 1:
             return None
-
-        old_premium = hist.premiums[0]
-        new_premium = hist.premiums[-1]
-        if old_premium is None or old_premium <= 0:
+        old, new = hist.premiums[0], hist.premiums[-1]
+        if not old or old <= 0:
             return None
-
-        premium_change_pct = (new_premium - old_premium) / old_premium * 100.0
-        if premium_change_pct < TRIGGER_PREMIUM_PCT:
+        change = (new - old) / old * 100.0
+        if change < CAS_TRIGGER_PREMIUM_PCT:
             return None
-
-        if len(hist.volumes) < VOLUME_TRAILING_WINDOW:
-            return None  # not enough volume history to compute a trailing avg
-
-        volume_avg = sum(hist.volumes) / len(hist.volumes)
-        current_volume = hist.volumes[-1]
-        if volume_avg <= 0 or current_volume < volume_avg * TRIGGER_VOLUME_MULT:
+        if len(hist.vol_increments) < MIN_VOLUME_SAMPLES:
             return None
+        latest = hist.vol_increments[-1]
+        prior = list(hist.vol_increments)[:-1]
+        avg = sum(prior) / len(prior)
+        if avg <= 0 or latest < avg * CAS_TRIGGER_VOLUME_MULT:
+            return None
+        if len(spots) < 2:
+            return None
+        spot_change = spots[-1] - spots[0]
+        if (q.opt_type == "CE" and spot_change <= 0) or (q.opt_type == "PE" and spot_change >= 0):
+            return None
+        return CasCandidate(
+            index=index_name, symbol=q.symbol, token=q.token,
+            exchange=chain.index.opt_exchange, strike=q.strike, option_type=q.opt_type,
+            ltp=new, bid=q.bid, ask=q.ask, premium_change_pct=round(change, 1),
+            volume=latest, volume_avg=round(avg, 1), spot=spots[-1],
+            spot_change=round(spot_change, 2), detected_at=now)
 
-        candidate = CasCandidate(
-            symbol=quote.symbol, token=quote.token, strike=quote.strike,
-            option_type=quote.opt_type, ltp=new_premium,
-            premium_change_pct=round(premium_change_pct, 1),
-            volume=current_volume, volume_avg=round(volume_avg, 1),
-            delta=quote.delta,
-        )
-
-        audit.log(
-            "cas_blast_candidate_triggered",
-            symbol=candidate.symbol, strike=candidate.strike,
-            option_type=candidate.option_type, ltp=candidate.ltp,
-            premium_change_pct=candidate.premium_change_pct,
-            volume=candidate.volume, volume_avg=candidate.volume_avg,
-            delta=candidate.delta,
-        )
-        alerts.send(
-            f"\U0001F680 <b>CAS BLAST</b> — {candidate.symbol}\n"
-            f"Premium {candidate.ltp} (+{candidate.premium_change_pct}%%)\n"
-            f"Volume {candidate.volume} (avg {candidate.volume_avg})\n"
-            f"Delta {candidate.delta}",
-            key=f"cas_blast:{candidate.symbol}",
-        )
-
-        self._maybe_execute(candidate)
-        return candidate
-
-    # ------------------------------------------------------- execution hook
-    def _maybe_execute(self, candidate: CasCandidate) -> None:
-        """
-        OBSERVE-ONLY in this version. Logs the sizing this WOULD have
-        used, but places no order. To go live later: call
-        auto_executor.EXECUTOR's order-placement path here directly
-        (NOT evaluate_and_enter -- that function's gates are built for
-        the main strategy's quality filters, which far-OTM CAS
-        candidates will never pass; a CAS-specific execution path
-        needs its own, separate, explicit entry function).
-        """
-        lot_size = get_lot_size(candidate.symbol, candidate.token)
-        audit.log(
-            "cas_blast_would_execute_dry_run",
-            symbol=candidate.symbol, strike=candidate.strike,
-            lots=FIXED_LOTS, lot_size=lot_size,
-            note="OBSERVE-ONLY: no live order placed. Wire in explicitly "
-                 "once trigger logic is confirmed against real sessions.",
-        )
-
-    # -------------------------------------------------------------- loop
-    def run_forever(self, get_chains) -> None:
-        """
-        get_chains: a zero-arg callable returning {index_name: OptionChain}
-        -- supplied by the caller (e.g. a thin wrapper reading the same
-        IndexState objects engine.py already maintains).
-        """
-        self._running = True
-        audit.log("cas_blast_scanner_starting")
-        while self._running:
-            try:
-                if self.in_cas_window():
-                    chains = get_chains()
-                    self.scan_once(chains)
-            except Exception as exc:  # noqa: BLE001
-                audit.log("cas_blast_scanner_loop_exception", error=str(exc))
-            time.sleep(POLL_INTERVAL_SEC)
-
-    def stop(self) -> None:
-        self._running = False
-        audit.log("cas_blast_scanner_stopped")
+    def _dispatch(self, candidate: CasCandidate, chain) -> None:
+        hook = self._executor_hook
+        if hook is None:
+            from . import cas_executor
+            hook = cas_executor.submit
+        try:
+            hook(candidate, chain)
+        except Exception as exc:                        # noqa: BLE001
+            audit.log("cas_blast_dispatch_failed", symbol=candidate.symbol, error=str(exc))
 
 
 SCANNER = CasBlastScanner()

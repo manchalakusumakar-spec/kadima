@@ -5,6 +5,7 @@ External pending orders and changes to managed quantities are never assumed fill
 import json
 import math
 from . import celestial, storage
+from .angel_orders import product_for
 from .celestial_universe import active_contracts
 from .utils import now_ist
 
@@ -14,7 +15,7 @@ def inspect(executor, broker_rows, book, owned_ids, owned_tags, master):
     expected = {}
     for p in executor.state.positions.values():
         if p.remaining_qty and p.status!='closed':
-            key = p.exchange,p.token,'INTRADAY'
+            key = p.exchange,p.token,product_for(p)
             expected[key] = expected.get(key,0)+p.remaining_qty
     from .execution_ledger import TERMINAL
     external_pending = [o for o in book if o.status not in TERMINAL and

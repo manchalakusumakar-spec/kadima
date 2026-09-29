@@ -394,7 +394,7 @@ class AutoExecutor:
                 observations.append(dict(source='BROKER_EXTERNAL', managed=False,
                     reason='external_fill_history_unresolved', signal_ids=sorted(unresolved_external)))
             for p in self.state.positions.values():
-                key = p.exchange,p.token,'INTRADAY'
+                key = p.exchange,p.token,angel_orders.product_for(p)
                 if p.remaining_qty>0 and live.get(key)==p.remaining_qty and str(p.signal_id) not in unresolved_external:
                     self._celestial_verified.add(str(p.signal_id))
             healthy = all(r.get('managed') is True for r in observations)
@@ -424,7 +424,7 @@ class AutoExecutor:
                 self.state.positions.pop(str(pos.signal_id), None)
                 continue
             if pos.remaining_qty:
-                key = (pos.exchange, pos.token, 'INTRADAY')
+                key = (pos.exchange, pos.token, angel_orders.product_for(pos))
                 expected[key] = expected.get(key, 0) + pos.remaining_qty
                 owners.setdefault(key, []).append(pos)
         owned_contracts = {(k[0], k[1]) for k in expected}
@@ -854,14 +854,17 @@ class AutoExecutor:
 
     # -------------------------------------------------------- exit
     @serialized
-    def check_exits(self) -> None:
+    def check_exits(self, kinds=None) -> None:
         """Call periodically (e.g. every POSITION_MONITOR_INTERVAL_SEC)
-        from a dedicated thread. Independent of any OptionChain's ladder."""
+        from a dedicated thread. Independent of any OptionChain's ladder.
+        kinds: optional set of Position.kind values to check (the CAS
+        watcher calls this every few seconds for its own positions only)."""
         if not self._positions_verified:
             return
         with self._lock:
             open_positions = [p for p in self.state.positions.values()
                               if p.status in ("open", "entry_pending") and p.remaining_qty > 0
+                              and (kinds is None or getattr(p, 'kind', None) in kinds)
                               and (str(p.signal_id) in self._celestial_verified if celestial.enabled()
                                    else str(p.signal_id) not in self._exit_paused)]
         if not open_positions:
@@ -908,6 +911,14 @@ class AutoExecutor:
             pos.peak_price = ltp if pos.peak_price is None else max(pos.peak_price, ltp)
             if pos.peak_price != previous_peak:
                 storage.upsert_position(pos)
+            if getattr(pos, 'kind', None) == angel_orders.CAS_KIND:
+                # CAS positions follow only their own rules (trader, 2026-09-29):
+                # no stop-loss at entry, peak-trailing exit, loss limit, EOD.
+                from . import cas_executor
+                reason = cas_executor.exit_reason(pos, ltp, daily_loss_breached, force_close)
+                if reason:
+                    self._close_position(pos, ltp, reason)
+                continue
             gain_pct = ((ltp - pos.entry_price) / pos.entry_price * 100.0
                        if pos.entry_price else 0.0)
             peak_gain = (pos.peak_price - pos.entry_price) if pos.peak_price else 0.0
