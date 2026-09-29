@@ -37,7 +37,7 @@ from . import alerts, angel_orders, audit, capital_guard, execution_ledger, exit
 from . import killswitch, market_session_gate, storage
 from .angel_orders import CAS_KIND
 from .config import (CAS_ENTRY_MAX_STEPS, CAS_ENTRY_PRICE_CAP_MULT, CAS_ENTRY_STEP_SEC,
-                     CAS_EXECUTION_ENABLED, CAS_EXIT_WATCH_SEC, CAS_MAX_CAPITAL_INR,
+                     CAS_EXECUTION_ENABLED, CAS_EXIT_WATCH_SEC, CAS_MAX_CAPITAL_INR, CAS_MAX_SPREAD_PCT,
                      CAS_MAX_ORDER_QTY, CAS_MAX_TRADES_PER_DAY, CAS_PRODUCT_TYPE,
                      CAS_TRAIL_ARM_PCT, CAS_TRAIL_GIVEBACK_PCT, DAILY_LOSS_LIMIT_INR,
                      MARKET_CLOSE)
@@ -157,7 +157,7 @@ def exit_reason(pos, ltp: float, daily_loss_breached: bool, force_close: bool) -
             audit.log("cas_trail_armed", signal_id=pos.signal_id, entry=entry, peak=peak)
             alerts.enqueue(f"CAS trail armed {pos.symbol}: entry {entry:.2f}, peak {peak:.2f}",
                            key=f"cas-trail:{pos.signal_id}")
-        stop = round(peak * (1 - CAS_TRAIL_GIVEBACK_PCT / 100.0), 2)
+        stop = round(max(entry, peak * (1 - CAS_TRAIL_GIVEBACK_PCT / 100.0)), 2)
         if stop != pos.effective_stop:
             pos.effective_stop = stop
             storage.upsert_position(pos)
@@ -208,13 +208,12 @@ def gate(candidate, executor, now: datetime) -> Optional[str]:
         return "daily_loss_limit_breached"
     if cas_trades_today() >= CAS_MAX_TRADES_PER_DAY:
         return "cas_daily_trade_limit"
-    if any(getattr(p, "kind", None) == CAS_KIND and p.status != "closed"
-           for p in executor.state.positions.values()):
-        return "cas_position_already_open"
-    if execution_ledger.pending() and any(
-            getattr(executor.state.positions.get(str(r["signal_id"])), "kind", None) == CAS_KIND
-            for r in execution_ledger.pending()):
-        return "cas_order_already_pending"
+    # CAS remains a separate signal model, not a separate account-risk slot.
+    # Preserve the operator's one-position-across-strategies rule.
+    if any(p.status != "closed" for p in executor.state.positions.values()):
+        return "account_position_already_open"
+    if execution_ledger.pending():
+        return "portfolio_order_pending_wait"
     if candidate.index in getattr(executor, "_manual_carryforward_underlyings", set()):
         return "manual_carryforward_same_underlying"
     if (candidate.exchange, candidate.token) in getattr(executor, "_external_contracts", set()):
@@ -243,6 +242,13 @@ def enter(candidate) -> dict:
             return _reject("fresh_quote_unavailable", candidate)
         if quote["ltp"] > cap:
             return _reject("premium_ran_past_cap", candidate, ltp=quote["ltp"], cap=cap)
+        bid, ask = quote.get("bid"), quote.get("ask")
+        if not bid or not ask or ask < bid:
+            return _reject("invalid_or_missing_top_of_book", candidate)
+        mid = (bid + ask) / 2.0
+        spread_pct = (ask - bid) / mid * 100.0
+        if spread_pct > CAS_MAX_SPREAD_PCT:
+            return _reject("spread_too_wide", candidate, spread_pct=round(spread_pct, 2))
         lots, qty = size_order(candidate.index, budget, cap, lot_size)
         if lots < 1:
             return _reject("budget_below_one_lot", candidate, budget=round(budget, 2),
@@ -271,10 +277,12 @@ def enter(candidate) -> dict:
 
     alerts.enqueue(f"CAS ENTRY {candidate.symbol}: {lots} lot(s) @ {ladder[0]} "
                    f"(cap {cap}) -> {result.get('reason')}", key=f"cas-entry:{signal_id}")
+    if result.get("ok"):
+        # Start reconciliation/protection immediately. A partial fill can occur
+        # while the unfilled remainder is still being repriced.
+        start_exit_watcher()
     if result.get("ok") and result.get("pending") and result.get("order_id"):
         _step_entry(pos, result["order_id"], qty, ladder[0], cap)
-    if result.get("ok"):
-        start_exit_watcher()
     return result
 
 
