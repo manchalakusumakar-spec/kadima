@@ -1,0 +1,36 @@
+name: CAS safety regressions
+on:
+  push:
+    branches: [codex/cas-safety-refinement]
+  pull_request:
+    branches: [cas-auto-execution]
+permissions:
+  contents: read
+jobs:
+  offline-regressions:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+      - name: Check source pins and run network-denied regressions
+        run: |
+          mkdir -p /tmp/cas-review-results
+          git rev-parse HEAD > /tmp/cas-review-results/commit.txt
+          python3 -I -B tools/check_cas_release.py > /tmp/cas-review-results/source.json
+          python3 -I -B tools/test_cas_safety.py > /tmp/cas-review-results/cas-tests.txt 2>&1
+          python3 -I -B tools/run_cas_regressions.py test_offline.py > /tmp/cas-review-results/legacy-offline.txt 2>&1
+          python3 -I -B tools/run_cas_regressions.py test_audit_fixes.py > /tmp/cas-review-results/legacy-audit.txt 2>&1
+          python3 -m compileall -q kadima tools
+          tail -5 /tmp/cas-review-results/cas-tests.txt
+          tail -2 /tmp/cas-review-results/legacy-offline.txt
+          tail -2 /tmp/cas-review-results/legacy-audit.txt
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: cas-offline-results
+          path: /tmp/cas-review-results
+          if-no-files-found: error
+          retention-days: 7

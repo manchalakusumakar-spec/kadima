@@ -48,6 +48,12 @@ def reconcile(executor, broker_rows, book):
             continue
         orders = [o for o in book if o.order_id not in owned and
                   (o.raw.get('exchange'), str(o.raw.get('symboltoken')), o.raw.get('producttype')) == key]
+        if original.kind == 'cas_blast':
+            # Never absorb manual scale-ins/outs into an automatic CAS holding.
+            if current_qty != original.remaining_qty or any(
+                    o.status not in execution_ledger.TERMINAL or o.filled_qty for o in orders):
+                unresolved.add(str(original.signal_id))
+            continue
         if any(o.status not in execution_ledger.TERMINAL for o in orders):
             continue
         current = {o.order_id: dict(q=o.filled_qty, n=o.filled_qty*(o.avg_price or 0),

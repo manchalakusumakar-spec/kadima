@@ -208,6 +208,14 @@ def refresh(positions, ltp_fn=None):
             audit.log('execution_order_unresolved', signal_id=pos.signal_id, intent=row['intent'])
             continue
         status = matches[0]
+        # CAS ownership is strict: missing identity is not verified exposure.
+        if pos.kind == angel_orders.CAS_KIND and any(str(status.raw.get(k)) != str(v)
+                for k,v in [('symboltoken',pos.token),('exchange',pos.exchange),
+                            ('tradingsymbol',pos.symbol),('transactiontype',row['side']),
+                            ('producttype',angel_orders.product_for(pos))]):
+            audit.log('cas_fill_identity_unverified', signal_id=pos.signal_id, intent=row['intent'])
+            healthy = False
+            continue
         # Validate contract and side when supplied by the broker.
         if any(status.raw.get(k) is not None and str(status.raw[k]) != str(v)
                for k, v in [('symboltoken', pos.token), ('exchange', pos.exchange),
@@ -246,12 +254,16 @@ _REPRICE: dict = {}                      # intent -> {'attempts', 'last', 'alert
 def _reprice_exit(pos, row, status, age, ltp_fn):
     state = _REPRICE.setdefault(row['intent'], dict(attempts=0, last=None, alerted=False))
     now = now_ist()
-    due = (age >= REPRICE_FIRST_AFTER_SEC and
-           (state['last'] is None or (now - state['last']).total_seconds() >= REPRICE_EVERY_SEC))
+    first = every = 3.0 if pos.kind == angel_orders.CAS_KIND else None
+    due = (age >= (first or REPRICE_FIRST_AFTER_SEC) and
+           (state['last'] is None or (now - state['last']).total_seconds() >= (every or REPRICE_EVERY_SEC)))
     if not due:
         return
     ltp = None
-    if callable(ltp_fn):
+    if pos.kind == angel_orders.CAS_KIND:
+        from .cas_executor import exit_bid
+        ltp = exit_bid(pos)
+    elif callable(ltp_fn):
         try:
             ltp = ltp_fn(pos.exchange, pos.token)
         except Exception:                           # noqa: BLE001
@@ -265,7 +277,7 @@ def _reprice_exit(pos, row, status, age, ltp_fn):
                        key=f"pending-exit:{status.order_id}")
         return
     buffer = REPRICE_BUFFERS[min(state['attempts'], len(REPRICE_BUFFERS) - 1)]
-    new_price = max(0.05, round(ltp * (1 - buffer), 1))
+    new_price = ltp if pos.kind == angel_orders.CAS_KIND else max(0.05, round(ltp * (1 - buffer), 1))
     try:
         current = float(status.raw.get('price'))
     except (TypeError, ValueError):

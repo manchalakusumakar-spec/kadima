@@ -53,6 +53,8 @@ def entry_block(positions, pending):
             return 'portfolio_order_pending_wait'
         if status != 'open' or qty == 0:
             return 'portfolio_position_state_unknown'
+        if getattr(position, 'kind', None) == 'cas_blast':
+            return 'cas_owns_account_slot'
         try:
             key = _identity(position)
         except ValueError as exc:

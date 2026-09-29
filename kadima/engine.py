@@ -247,6 +247,9 @@ class Engine:
         st = self.states[name]
         st.spot = tick["ltp"]
         st.chain._spot_received_at = time.monotonic()
+        # Reception time is explicit; this is not invented exchange-time evidence.
+        st.chain._cas_spot_at = now_ist()
+        st.chain._cas_spot = st.spot
         st.last_updated = now_ist()
         st.is_live_tick = True
         self._invalidate_shield(st)

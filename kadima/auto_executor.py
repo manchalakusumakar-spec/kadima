@@ -398,11 +398,20 @@ class AutoExecutor:
                 if p.remaining_qty>0 and live.get(key)==p.remaining_qty and str(p.signal_id) not in unresolved_external:
                     self._celestial_verified.add(str(p.signal_id))
             healthy = all(r.get('managed') is True for r in observations)
-            if any(r.get('reason')=='external_pending_orders' for r in observations):
+            # Unrelated pending orders block NEW entries, not exactly reconciled
+            # owned exits. Missing identity or a same-contract collision stays blocked.
+            external_pending = [o for o in book if o.status not in execution_ledger.TERMINAL
+                and o.order_id not in own_ids and o.raw.get('ordertag') not in own_tags]
+            ambiguous = any(not o.raw.get('exchange') or not o.raw.get('symboltoken')
+                            for o in external_pending)
+            conflicts = {(str(o.raw.get('exchange')),str(o.raw.get('symboltoken')))
+                         for o in external_pending}
+            if ambiguous:
                 self._celestial_verified.clear()
-                self._positions_verified = False
             else:
-                self._positions_verified = bool(self._celestial_verified) or healthy
+                self._celestial_verified.difference_update(str(p.signal_id)
+                    for p in self.state.positions.values() if (p.exchange,p.token) in conflicts)
+            self._positions_verified = bool(self._celestial_verified) or healthy
             self._reconcile_blocked = not healthy
             celestial.health('reconciliation',dict(ok=healthy,positions=observations))
             return
@@ -454,6 +463,12 @@ class AutoExecutor:
             held = live.get(key, 0)
             if held < qty:
                 paused.update(str(p.signal_id) for p in owners[key])
+            for p in owners[key]:
+                if p.kind == angel_orders.CAS_KIND and (held != qty or any(
+                        not o.raw.get('exchange') or not o.raw.get('symboltoken') or
+                        (str(o.raw.get('exchange')),str(o.raw.get('symboltoken'))) == key[:2]
+                        for o in external_pending)):
+                    paused.add(str(p.signal_id))
             if held != qty:
                 mismatched.append(key)
         self._exit_paused = paused
@@ -480,6 +495,10 @@ class AutoExecutor:
         """Manually exit one open position by signal_id, via the dashboard's
         Live Trade panel. Reuses the exact _close_position() path check_exits()
         already uses for automatic exits — no new order logic, no new risk logic."""
+        cas_pos = self.state.positions.get(str(signal_id))
+        if cas_pos is not None and cas_pos.kind == angel_orders.CAS_KIND:
+            from . import cas_executor
+            return cas_executor.request_exit(self, cas_pos, reason)
         verified = (str(signal_id) in self._celestial_verified if celestial.enabled()
                     else self._positions_verified and str(signal_id) not in self._exit_paused)
         if self._reconcile_blocked and not verified:
@@ -530,7 +549,7 @@ class AutoExecutor:
         if not 0 <= time.monotonic() - getattr(chain, '_last_poll', 0) <= 30:
             return
         for pos in list(self.state.positions.values()):
-            if pos.index != index_name or pos.status != 'open':
+            if pos.kind == angel_orders.CAS_KIND or pos.index != index_name or pos.status != 'open':
                 continue
             result = self._structure(chain, pos.direction, spot)
             quote = chain.quotes.get(pos.token)
@@ -859,11 +878,17 @@ class AutoExecutor:
         from a dedicated thread. Independent of any OptionChain's ladder.
         kinds: optional set of Position.kind values to check (the CAS
         watcher calls this every few seconds for its own positions only)."""
+        from . import cas_executor
+        if kinds is None or angel_orders.CAS_KIND in kinds:
+            cas_executor.check_exits(self)
+        if kinds is not None and set(kinds) == {angel_orders.CAS_KIND}:
+            return
         if not self._positions_verified:
             return
         with self._lock:
             open_positions = [p for p in self.state.positions.values()
-                              if p.status in ("open", "entry_pending") and p.remaining_qty > 0
+                              if p.kind != angel_orders.CAS_KIND
+                              and p.status in ("open", "entry_pending") and p.remaining_qty > 0
                               and (kinds is None or getattr(p, 'kind', None) in kinds)
                               and (str(p.signal_id) in self._celestial_verified if celestial.enabled()
                                    else str(p.signal_id) not in self._exit_paused)]
@@ -911,14 +936,6 @@ class AutoExecutor:
             pos.peak_price = ltp if pos.peak_price is None else max(pos.peak_price, ltp)
             if pos.peak_price != previous_peak:
                 storage.upsert_position(pos)
-            if getattr(pos, 'kind', None) == angel_orders.CAS_KIND:
-                # CAS positions follow only their own rules (trader, 2026-09-29):
-                # no stop-loss at entry, peak-trailing exit, loss limit, EOD.
-                from . import cas_executor
-                reason = cas_executor.exit_reason(pos, ltp, daily_loss_breached, force_close)
-                if reason:
-                    self._close_position(pos, ltp, reason)
-                continue
             gain_pct = ((ltp - pos.entry_price) / pos.entry_price * 100.0
                        if pos.entry_price else 0.0)
             peak_gain = (pos.peak_price - pos.entry_price) if pos.peak_price else 0.0
@@ -994,7 +1011,10 @@ class AutoExecutor:
         if execution_ledger.pending(pos.signal_id):
             return {'ok': False, 'reason': 'order_already_pending'}
         pos.exit_reason = reason
-        limit_price = round(ltp * (1 - LIMIT_ORDER_BUFFER_PCT / 100.0), 1)
+        # CAS receives a fresh executable bid. Preserve its native paise price,
+        # including a 0.05 bid; never turn it into a zero/above-market rounded sell.
+        limit_price = (ltp if pos.kind == angel_orders.CAS_KIND else
+                       round(ltp * (1 - LIMIT_ORDER_BUFFER_PCT / 100.0), 1))
         result = execution_ledger.submit(pos, 'SELL', pos.remaining_qty, limit_price)
         if pos.status == 'closed':
             self.state.positions.pop(str(pos.signal_id), None)
@@ -1015,6 +1035,9 @@ class AutoExecutor:
     def start_monitor_thread(self) -> None:
         threading.Thread(target=self._monitor_loop, daemon=True,
                          name="auto-executor-monitor").start()
+        # Recovery monitoring is independent of new-entry enablement.
+        from .cas_executor import start_exit_watcher
+        start_exit_watcher(self)
 
     def _monitor_loop(self) -> None:
         while not self._stop.is_set():
