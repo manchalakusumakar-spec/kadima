@@ -1,27 +1,51 @@
-name: CAS safety review
+name: Publish tested CAS source
 on:
   push:
     branches: [codex/cas-safety-refinement]
 permissions:
   contents: read
+concurrency:
+  group: cas-source-publication
+  cancel-in-progress: false
 jobs:
-  source-review:
+  publish-reviewed-source:
+    if: github.repository == 'manchalakusumakar-spec/kadima' && github.ref == 'refs/heads/codex/cas-safety-refinement'
     runs-on: ubuntu-latest
     timeout-minutes: 5
+    permissions:
+      contents: write
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
+          fetch-depth: 0
           ref: ${{ github.sha }}
-      - name: Capture committed source only (no application execution)
+      - name: Verify pinned source and network-denied offline tests
+        run: python3 -I -B .github/cas-review-stage/apply.py
+      - name: Publish only to isolated review branch (never deploy)
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          git rev-parse HEAD > source-commit.txt
-          git archive --format=zip --output=source.zip HEAD
+          test "$GITHUB_REPOSITORY" = 'manchalakusumakar-spec/kadima'
+          test "$GITHUB_REF" = 'refs/heads/codex/cas-safety-refinement'
+          git add -A -- kadima tools docs .github/cas-review-stage
+          git diff --cached --quiet && exit 1
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git commit -m 'Refine CAS controls, fresh quotes, partial fills and owned exits; add 100 regressions'
+          AUTH="$(printf 'x-access-token:%s' "$GH_TOKEN" | base64 -w0)"
+          export GIT_CONFIG_COUNT=1
+          export GIT_CONFIG_KEY_0=http.https://github.com/.extraheader
+          export GIT_CONFIG_VALUE_0="AUTHORIZATION: basic $AUTH"
+          REMOTE_HEAD="$(git ls-remote origin refs/heads/codex/cas-safety-refinement | cut -f1)"
+          test "$REMOTE_HEAD" = "$GITHUB_SHA"
+          git push origin HEAD:refs/heads/codex/cas-safety-refinement
+          git rev-parse HEAD > /tmp/cas-publication-results/source-commit.txt
+          git archive --format=zip --output=/tmp/cas-publication-results/source.zip HEAD
       - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
         with:
-          name: cas-review-source
-          path: |
-            source.zip
-            source-commit.txt
+          name: cas-source-publication
+          path: /tmp/cas-publication-results
           if-no-files-found: error
           retention-days: 1
