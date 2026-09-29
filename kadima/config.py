@@ -190,7 +190,7 @@ ORDER_PLACEMENT_ENABLED = True     # LIVE since 2026-08-21, trader's explicit de
 # (the SmartAPI value -- "NRML" is not a valid producttype string), sized at
 # min(CAS_MAX_CAPITAL_INR, live available cash), no stop-loss at entry,
 # peak-trailing exit, forced exit at the existing 15:38 EOD close.
-CAS_EXECUTION_ENABLED = os.environ.get("KADIMA_CAS_EXECUTION", "1") == "1"
+CAS_EXECUTION_ENABLED = os.environ.get("KADIMA_CAS_EXECUTION", "0") == "1"
 CAS_PRODUCT_TYPE = "CARRYFORWARD"
 CAS_ENTRY_START = (15, 15)         # CAS window opens
 CAS_ENTRY_END = (15, 35)           # no fresh CAS entry at/after this (EOD close 15:38)
@@ -198,6 +198,7 @@ CAS_MAX_CAPITAL_INR = 10_000       # per trade: min(this, availablecash)
 CAS_MAX_TRADES_PER_DAY = 1
 CAS_MIN_PREMIUM = 2.0              # skip sub-Rs2 lottery strikes (spread/tick noise)
 CAS_MAX_PREMIUM = 80.0             # CAS targets cheap premiums only
+CAS_MAX_SPREAD_PCT = 10.0          # executable top-of-book spread; fail closed above this
 CAS_STRIKES_OTM = 4                # consider OTM strikes up to this many steps from ATM
 CAS_TRIGGER_PREMIUM_PCT = 25.0     # premium up >= this % over CAS_TRIGGER_POLLS chain polls
 CAS_TRIGGER_POLLS = 2
