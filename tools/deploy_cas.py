@@ -17,6 +17,13 @@ PATCHED = ["kadima/angel_orders.py", "kadima/auto_executor.py", "kadima/celestia
            "kadima/test_order_pathway.py"]
 NEW = ["kadima/cas_config.py", "kadima/cas_executor.py", "kadima/cas_eod_guard.py",
        "kadima/cas_blast_scanner.py", "tools/test_cas_executor.py"]
+# Two watchdog designs exist. GitHub's eod_watchdog places its own INTRADAY
+# orders (needs the edits below). The live box's owned_watchdog asks the engine
+# to exit via executor._close_position (already CAS-aware) and only needs its
+# broker-matching key to use the position's own product.
+OWNED = "kadima/owned_watchdog.py"
+OWNED_EDITS = [("(p.exchange, p.token, 'INTRADAY')",
+                "(p.exchange, p.token, 'CARRYFORWARD' if getattr(p, 'kind', None) == 'cas_blast' else 'INTRADAY')")]
 WATCHDOG = "kadima/eod_watchdog.py"
 WATCHDOG_EDITS = [
     ('        "producttype": "INTRADAY",\n',
@@ -48,13 +55,24 @@ def main():
     patch = sh("git", "diff", BASE, REF, "--", *PATCHED).stdout
     open("/tmp/cas_core.patch", "w").write(patch)
     chk = sh("git", "apply", "--check", "/tmp/cas_core.patch", check=False)
-    wd = open(WATCHDOG).read()
-    missing = [old for old, _ in WATCHDOG_EDITS if wd.count(old) != 1]
+    wd_text = open(WATCHDOG).read()
+    if "placeOrder" in wd_text:                         # GitHub-style watchdog
+        target, edits = WATCHDOG, WATCHDOG_EDITS
+    elif os.path.exists(OWNED) and "owned_watchdog" in wd_text:   # live owned watchdog
+        target, edits = OWNED, OWNED_EDITS
+    else:
+        sys.exit("STOP: unrecognised watchdog design; nothing changed. Send this output to Claude.")
+    wd = open(target).read()
+    missing = [old for old, _ in edits if wd.count(old) != 1]
     refs = sh("grep", "-rln", "--include=*.py", "cas_blast_scanner", "kadima", "run.py", check=False).stdout.split()
     refs = [r for r in refs if r not in ("kadima/cas_blast_scanner.py", "kadima/engine.py",
                                          "kadima/cas_executor.py")]
     print("core patch (7 files):", "OK" if chk.returncode == 0 else "CONFLICT\n" + chk.stderr)
-    print("eod_watchdog anchors:", "OK" if not missing else f"NOT FOUND {missing}")
+    print(f"watchdog ({target}) anchors:", "OK" if not missing else f"NOT FOUND {missing}")
+    other = sh("grep", "-rlnE", "--include=*.py", "['\"]INTRADAY['\"]", "kadima", check=False).stdout.split()
+    other = sorted(set(other) - set(PATCHED) - {WATCHDOG, OWNED, "kadima/angel_orders.py"})
+    if other:
+        print("note - other live files with a literal INTRADAY (not changed; send to Claude):", other)
     print("other live users of cas_blast_scanner:", refs or "none")
     if chk.returncode or missing:
         sys.exit("STOP: nothing changed. Send this output to Claude.")
@@ -63,19 +81,19 @@ def main():
 
     backup = os.path.expanduser(f"~/kadima-backup-cas-{time.strftime('%Y%m%d-%H%M%S')}.tgz")
     with tarfile.open(backup, "w:gz") as t:
-        for f in PATCHED + [WATCHDOG] + NEW:
+        for f in PATCHED + [target] + NEW:
             if os.path.exists(f):
                 t.add(f)
     print("backup:", backup)
     sh("git", "apply", "/tmp/cas_core.patch")
     for f in NEW:
         open(f, "w").write(sh("git", "show", f"{REF}:{f}").stdout)
-    for old, new in WATCHDOG_EDITS:
+    for old, new in edits:
         wd = wd.replace(old, new)
-    open(WATCHDOG, "w").write(wd)
+    open(target, "w").write(wd)
 
     py = engine_python()
-    files = PATCHED + NEW + [WATCHDOG]
+    files = PATCHED + NEW + [target]
     comp = sh(py, "-m", "py_compile", *[f for f in files if f.endswith(".py")], check=False)
     test = sh(py, "tools/test_cas_executor.py", check=False,
               env=dict(os.environ, KADIMA_DATA_DIR=f"/tmp/cas-test-{os.getpid()}"))
