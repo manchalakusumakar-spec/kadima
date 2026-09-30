@@ -1,179 +1,59 @@
+"""Independent timer: guarded engine exit request or exclusive offline fallback.
+
+An alive but unresponsive engine is alerted, never raced by a second writer.
+Manual positions are never submitted. Accepted orders await broker confirmation.
 """
-eod_watchdog.py — independent, last-resort safety net against overnight
-carry. Genuinely separate from the main kadima engine: its own process,
-its own cron/systemd trigger, its own direct broker query.
+import json
+import os
+import urllib.request
 
-UPDATED 2026-08-23: order placement reverted NRML -> INTRADAY (see
-angel_orders.py's module docstring — Angel One was rejecting NRML orders
-outright, confirmed via live testing; root cause still unknown). This
-means Angel One's own MIS auto-square-off for F&O (3:20 PM, confirmed on
-their support page) is the PRIMARY backstop against overnight carry
-again — this script's original job. It stays deployed anyway, retimed to
-run AFTER that broker-side cutoff rather than before: not the primary
-safety net anymore, but independent verification that both
-auto_executor's own close AND the broker's MIS backstop actually did
-their job, catching the case where either one silently didn't.
-
-WHY THIS CANNOT LIVE INSIDE auto_executor.py's OWN PROCESS:
-    The entire point of a backup is that it doesn't share a failure mode
-    with the thing it's backing up. If this were just another function
-    called from the same event loop, a hang or crash that stops
-    auto_executor's own EOD close from firing would stop this from
-    firing too — exactly the scenario it exists to guard against.
-    Deploy as its own systemd oneshot unit (kadima-eod-watchdog.service),
-    triggered by its own cron entry, independent of whether kadima.service
-    is even alive when it runs.
-
-WHEN THIS SHOULD FIRE:
-    A few minutes AFTER Angel One's own 3:20 PM MIS auto-square-off —
-    both that and auto_executor's own EOD_FORCE_CLOSE_HHMM (3:15 PM) get
-    a real chance to act first; this is verification, not a race with
-    either. Suggested cron: 15:25 IST, weekdays.
-
-WHAT IT DOES, IN ORDER:
-    1. Logs in fresh — its own process, its own session. It cannot borrow
-       the main engine's in-memory SESSION even if that process happens
-       to still be alive; sharing it would reintroduce the exact
-       dependency this script exists to avoid.
-    2. Queries the broker's position() endpoint directly — ground truth,
-       same source and same fail-closed philosophy as
-       auto_executor.reconcile_on_startup(): if the broker call itself
-       fails, this sends an urgent alert and stops, rather than silently
-       assuming there's nothing to close.
-    3. For any non-zero F&O position found, places an aggressively-priced
-       LIMIT sell (still LIMIT — market orders remain prohibited even
-       here, no exception for an emergency). Priced favourably for a
-       fast fill rather than a good one: by this point in the session,
-       certainty of exit matters far more than a few rupees of slippage.
-    4. Sends an urgent alert regardless of outcome. This script finding
-       ANY open position at all means the primary mechanism did not do
-       its job — that is itself the thing to know about and investigate,
-       not just something to quietly patch over.
-"""
-
-from __future__ import annotations
-
-import sys
-
-from kadima import alerts, audit
-from kadima.session import SESSION
-from kadima.utils import now_ist
-
-AGGRESSIVE_PRICE_OFFSET_PCT = 3.0   # price the exit this far from LTP, in
-                                    # the direction that favours a fast
-                                    # fill — this is a last-resort exit,
-                                    # not a normal one; certainty beats
-                                    # price optimisation here
+from . import alerts, audit, execution_owner, owned_watchdog
 
 
-def _fetch_positions() -> list[dict] | None:
-    """Ground truth from the broker. None means unreadable — caller must
-    NOT treat that as 'nothing to close', same fail-closed convention
-    used throughout this codebase (capital_guard's margin check,
-    auto_executor.reconcile_on_startup)."""
-    try:
-        SESSION.ensure()
-        resp = SESSION.api.position()
-    except Exception as exc:                        # noqa: BLE001
-        audit.log("eod_watchdog_broker_unreadable", error=str(exc))
+class NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args, **kwargs):
         return None
-    if not resp or not resp.get("status"):
-        audit.log("eod_watchdog_broker_bad_response", response=str(resp)[:300])
-        return None
-    return resp.get("data") or []
 
 
-def _close_position(pos: dict) -> None:
-    symbol = pos.get("tradingsymbol")
-    token = pos.get("symboltoken")
-    exchange = pos.get("exchange")
+def request_engine():
+    token = os.environ.get('KADIMA_API_TOKEN')
+    if not token:
+        raise ValueError('watchdog_api_auth_missing')
+    request = urllib.request.Request('http://127.0.0.1:8081/api/kadima/watchdog',
+        headers={'Authorization': 'Bearer '+token, 'Content-Type': 'application/json'},
+        data=b'{}', method='POST')
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), NoRedirect())
+    with opener.open(request, timeout=40) as response:
+        raw = response.read(2_000_001)
+    if len(raw) > 2_000_000:
+        raise ValueError('watchdog_response_too_large')
+    value = json.loads(raw)
+    if not isinstance(value, dict) or type(value.get('ok')) is not bool:
+        raise ValueError('watchdog_response_invalid')
+    return value
 
+
+def main():
     try:
-        netqty = int(float(pos.get("netqty", 0) or 0))
-    except (TypeError, ValueError):
-        netqty = 0
-    if netqty == 0:
-        return
-
-    transaction_type = "SELL" if netqty > 0 else "BUY"
-    quantity = abs(netqty)
-
-    try:
-        ltp_f = float(pos.get("ltp"))
-    except (TypeError, ValueError):
-        ltp_f = None
-
-    if not ltp_f or ltp_f <= 0:
-        # No usable LTP to price a limit order safely — alert and stop
-        # rather than guess a price. A human needs to act right now;
-        # a wrong guessed price could fail to fill OR fill very badly.
-        audit.log("eod_watchdog_no_ltp_cannot_price", symbol=symbol, token=token)
-        alerts.send(
-            f"\U0001F6A8 EOD WATCHDOG: found open position {symbol} with no "
-            f"usable LTP to price an exit safely. MANUAL ACTION NEEDED NOW.",
-            bypass=True)
-        return
-
-    offset = AGGRESSIVE_PRICE_OFFSET_PCT / 100.0
-    price = round(ltp_f * (1 - offset if transaction_type == "SELL" else 1 + offset), 1)
-
-    orderparams = {
-        "variety": "NORMAL",
-        "tradingsymbol": symbol,
-        "symboltoken": token,
-        "transactiontype": transaction_type,
-        "exchange": exchange,
-        "ordertype": "LIMIT",           # hard-coded, no exception even here
-        "producttype": "INTRADAY",
-        "duration": "DAY",
-        "price": str(price),
-        "quantity": str(quantity),
-    }
-
-    try:
-        resp = SESSION.api.placeOrder(orderparams)
-        audit.log("eod_watchdog_exit_order_placed", response=str(resp)[:300],
-                  **orderparams)
-    except Exception as exc:                        # noqa: BLE001
-        audit.log("eod_watchdog_exit_order_failed", error=str(exc), **orderparams)
-        alerts.send(
-            f"\U0001F6A8 EOD WATCHDOG: tried to close {symbol} but the order "
-            f"call FAILED ({exc}). MANUAL ACTION NEEDED NOW.", bypass=True)
-        return
-
-    alerts.send(
-        f"\U0001F6A8 EOD WATCHDOG fired: closed {symbol} (qty {quantity}) still "
-        f"open at {now_ist().strftime('%H:%M:%S')} IST. This means "
-        f"auto_executor's own EOD close did NOT fire as expected — "
-        f"investigate why before the next session.", bypass=True)
-
-
-def main() -> int:
-    audit.log("eod_watchdog_run_start", ts=now_ist().isoformat())
-    positions = _fetch_positions()
-
-    if positions is None:
-        alerts.send(
-            "\U0001F6A8 EOD WATCHDOG: could not read broker positions at all. "
-            "CANNOT CONFIRM there is no overnight exposure. Check manually NOW.",
-            bypass=True)
+        try:
+            with execution_owner.acquire():
+                from .auto_executor import AutoExecutor
+                executor = AutoExecutor()
+                owned_watchdog.restore(executor)
+                report = dict(mode='exclusive_fallback', **owned_watchdog.cycle(executor))
+        except BlockingIOError:
+            report = dict(mode='engine_owned', **request_engine())
+        audit.log('owned_watchdog_check', **report)
+        if report.get('due_owned_positions') or report.get('ok') is not True:
+            alerts.send('EOD watchdog: owned exposure needs attention; exit requests are not fill confirmation.', bypass=True)
+        print(json.dumps(report, sort_keys=True))
+        return 0 if report.get('ok') is True else 1
+    except Exception as exc:
+        audit.log('owned_watchdog_blocked', error_type=type(exc).__name__)
+        alerts.send('EOD watchdog could not verify owned exposure. Check broker positions manually; no blind exit was sent.', bypass=True)
+        print(json.dumps(dict(ok=False, state='blocked', error_type=type(exc).__name__)))
         return 1
 
-    open_positions = [p for p in positions
-                      if int(float(p.get("netqty", 0) or 0)) != 0]
 
-    if not open_positions:
-        audit.log("eod_watchdog_clean", checked=len(positions))
-        return 0
-
-    audit.log("eod_watchdog_found_open_positions", count=len(open_positions),
-              symbols=[p.get("tradingsymbol") for p in open_positions])
-    for pos in open_positions:
-        _close_position(pos)
-
-    return 0
-
-
-if __name__ == "__main__":
-    sys.exit(main())
-
+if __name__ == '__main__':
+    raise SystemExit(main())
