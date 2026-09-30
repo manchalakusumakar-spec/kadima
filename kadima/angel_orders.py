@@ -12,7 +12,8 @@ from dataclasses import dataclass
 from typing import Optional
 
 from . import audit
-from .config import CAS_PRODUCT_TYPE, ORDER_PLACEMENT_ENABLED
+from .cas_config import CAS_PRODUCT_TYPE
+from .config import ORDER_PLACEMENT_ENABLED
 from .rate_limiter import ORDER_STATUS, ORDER_WRITE
 from .session import SESSION
 

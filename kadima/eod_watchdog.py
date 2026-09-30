@@ -59,26 +59,6 @@ from kadima import alerts, audit
 from kadima.session import SESSION
 from kadima.utils import now_ist
 
-# 2026-09-29: KADIMA's CAS trades are CARRYFORWARD. The watchdog now closes each
-# position with its OWN producttype (an INTRADAY SELL against a CARRYFORWARD
-# long opens a new short instead of closing it), never touches carry-forward
-# positions KADIMA does not own (the trader's manual carries), and leaves
-# KADIMA's CAS carry-forward positions to the engine's 15:38 EOD close unless
-# it runs at/after CAS_WATCHDOG_FROM -- schedule a second run at 15:39.
-CAS_WATCHDOG_FROM = (15, 39)
-
-
-def _owned_cas_contracts() -> set[tuple[str, str]] | None:
-    """(exchange, token) of KADIMA's own open CAS positions; None if unreadable."""
-    try:
-        from kadima import storage
-        from kadima.angel_orders import CAS_KIND
-        return {(str(r["exchange"]), str(r["token"]))
-                for r in storage.load_open_positions() if r.get("kind") == CAS_KIND}
-    except Exception as exc:                        # noqa: BLE001
-        audit.log("eod_watchdog_cas_ownership_unreadable", error=str(exc))
-        return None
-
 AGGRESSIVE_PRICE_OFFSET_PCT = 3.0   # price the exit this far from LTP, in
                                     # the direction that favours a fast
                                     # fill — this is a last-resort exit,
@@ -188,20 +168,8 @@ def main() -> int:
 
     audit.log("eod_watchdog_found_open_positions", count=len(open_positions),
               symbols=[p.get("tradingsymbol") for p in open_positions])
-    owned_cas = _owned_cas_contracts()
-    now = now_ist()
-    late = (now.hour, now.minute) >= CAS_WATCHDOG_FROM
-    for pos in open_positions:
-        if str(pos.get("producttype") or "").upper() == "CARRYFORWARD":
-            key = (str(pos.get("exchange")), str(pos.get("symboltoken")))
-            if owned_cas is None or key not in owned_cas:
-                audit.log("eod_watchdog_skip_manual_carryforward",
-                          symbol=pos.get("tradingsymbol"))
-                continue
-            if not late:
-                audit.log("eod_watchdog_cas_left_for_engine_eod",
-                          symbol=pos.get("tradingsymbol"))
-                continue
+    from kadima import cas_eod_guard
+    for pos in cas_eod_guard.to_close(open_positions, now_ist()):
         _close_position(pos)
 
     return 0

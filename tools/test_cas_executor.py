@@ -73,6 +73,11 @@ check("not armed below +30%", cas_executor.exit_reason(p, 5.0, False, False) is 
 p.peak_price = 20.0
 check("armed after +30%: holds above giveback", cas_executor.exit_reason(p, 16.0, False, False) is None and p.trail_active)
 check("exits on 25% fall from peak", cas_executor.exit_reason(p, 15.0, False, False) == "cas_peak_trail")
+q = Pos(signal_id=2, kind="cas_blast", index="NIFTY", direction="CE", symbol="Y", token="U",
+        exchange="NFO", entry_price=10.0, entry_ts=now(), lots=1, lot_size=75, remaining_qty=75, peak_price=13.0)
+check("armed trail never below entry", cas_executor.exit_reason(q, 10.5, False, False) is None and q.effective_stop == 10.0)
+with storage.conn() as c:
+    c.execute("DELETE FROM positions WHERE signal_id=2")
 check("EOD overrides", cas_executor.exit_reason(p, 19.0, False, True) == "eod_force_close")
 check("daily loss overrides", cas_executor.exit_reason(p, 19.0, True, False) == "daily_loss_limit_breached")
 with storage.conn() as c:            # the unit-test position above is not a real trade
@@ -99,7 +104,8 @@ check("entry accepted", r.get("ok"))
 check("BUY sent as CARRYFORWARD", sent and sent[0]["producttype"] == "CARRYFORWARD" and sent[0]["transactiontype"] == "BUY")
 check("first price is best bid", sent[0]["price"] == 7.4)
 check("size within 10k at cap", pos.remaining_qty * 9.7 <= 10000 and pos.remaining_qty % 75 == 0 and pos.remaining_qty > 0)
-check("second CAS entry blocked", cas_executor.enter(cand)["reason"] in ("cas_daily_trade_limit", "cas_position_already_open"))
+check("second CAS entry blocked", cas_executor.enter(cand)["reason"] in
+      ("cas_daily_trade_limit", "account_position_already_open", "portfolio_order_pending_wait"))
 auto_executor._poll_ltp = lambda exch, toks: {t: 30.0 for t in toks}
 ex.check_exits(kinds={"cas_blast"})
 auto_executor._poll_ltp = lambda exch, toks: {t: 22.0 for t in toks}
@@ -109,6 +115,14 @@ check("trail exit SELL sent as CARRYFORWARD",
 check("position closed with trail reason", storage.conn().execute(
       "SELECT exit_reason FROM positions WHERE signal_id=?", (pos.signal_id,)).fetchone()[0] == "cas_peak_trail")
 angel_orders.place_limit_order = real_place
+
+print("spread gate")
+cas_executor.fetch_quote = lambda e, t: dict(ltp=7.5, bid=6.0, ask=7.6)
+ex.state.positions.clear()
+with storage.conn() as c:
+    c.execute("DELETE FROM positions")
+cand.detected_at = now() - timedelta(seconds=2)
+check("wide spread rejected", cas_executor.enter(cand)["reason"] == "spread_too_wide")
 
 print("entry price stepping (live path, faked broker)")
 calls = []
@@ -142,7 +156,8 @@ eod_watchdog._fetch_positions = lambda: [
     dict(tradingsymbol="MANUALCF", exchange="MCX", symboltoken="M1", producttype="CARRYFORWARD", netqty="1"),
     dict(tradingsymbol="CASCF", exchange="NFO", symboltoken="C1", producttype="CARRYFORWARD", netqty="75"),
     dict(tradingsymbol="MIS", exchange="NFO", symboltoken="I1", producttype="INTRADAY", netqty="75")]
-eod_watchdog._owned_cas_contracts = lambda: {("NFO", "C1")}
+from kadima import cas_eod_guard
+cas_eod_guard.owned_cas_contracts = lambda: {("NFO", "C1")}
 eod_watchdog.now_ist = lambda: datetime(2026, 9, 29, 15, 25, tzinfo=IST)
 eod_watchdog.main()
 check("15:25: closes MIS only", closed == ["MIS"])

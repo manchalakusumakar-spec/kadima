@@ -36,11 +36,11 @@ from typing import Optional
 from . import alerts, angel_orders, audit, capital_guard, execution_ledger, exit_manager
 from . import killswitch, market_session_gate, storage
 from .angel_orders import CAS_KIND
-from .config import (CAS_ENTRY_MAX_STEPS, CAS_ENTRY_PRICE_CAP_MULT, CAS_ENTRY_STEP_SEC,
-                     CAS_EXECUTION_ENABLED, CAS_EXIT_WATCH_SEC, CAS_MAX_CAPITAL_INR, CAS_MAX_SPREAD_PCT,
-                     CAS_MAX_ORDER_QTY, CAS_MAX_TRADES_PER_DAY, CAS_PRODUCT_TYPE,
-                     CAS_TRAIL_ARM_PCT, CAS_TRAIL_GIVEBACK_PCT, DAILY_LOSS_LIMIT_INR,
-                     MARKET_CLOSE)
+from .cas_config import (CAS_ENTRY_MAX_STEPS, CAS_ENTRY_PRICE_CAP_MULT, CAS_ENTRY_STEP_SEC,
+                         CAS_EXECUTION_ENABLED, CAS_EXIT_WATCH_SEC, CAS_MAX_CAPITAL_INR,
+                         CAS_MAX_ORDER_QTY, CAS_MAX_SPREAD_PCT, CAS_MAX_TRADES_PER_DAY,
+                         CAS_PRODUCT_TYPE, CAS_TRAIL_ARM_PCT, CAS_TRAIL_GIVEBACK_PCT)
+from .config import DAILY_LOSS_LIMIT_INR, MARKET_CLOSE
 from .instrument_master import get_lot_size
 from .session import SESSION
 from .utils import now_ist

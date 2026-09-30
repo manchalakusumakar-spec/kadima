@@ -36,7 +36,7 @@ from datetime import datetime
 from typing import Optional
 
 from . import alerts, audit
-from .config import (CAS_ENTRY_END, CAS_ENTRY_START, CAS_MAX_PREMIUM,
+from .cas_config import (CAS_ENTRY_END, CAS_ENTRY_START, CAS_MAX_PREMIUM,
                      CAS_MIN_PREMIUM, CAS_STRIKES_OTM, CAS_TRIGGER_POLLS,
                      CAS_TRIGGER_PREMIUM_PCT, CAS_TRIGGER_VOLUME_MULT,
                      CAS_VOLUME_TRAILING_POLLS)
@@ -189,6 +189,16 @@ class CasBlastScanner:
             hook(candidate, chain)
         except Exception as exc:                        # noqa: BLE001
             audit.log("cas_blast_dispatch_failed", symbol=candidate.symbol, error=str(exc))
+
+    # ------------------------------------------------ legacy standalone entry
+    def run_forever(self, *_args, **_kwargs) -> None:
+        """Retired: the scanner is now fed in-process by engine._oi_loop.
+        Kept so any old caller or service unit exits cleanly instead of
+        crashing on a missing method."""
+        audit.log("cas_blast_standalone_mode_retired")
+
+    def stop(self) -> None:
+        return None
 
 
 SCANNER = CasBlastScanner()
