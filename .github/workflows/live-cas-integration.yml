@@ -1,0 +1,23 @@
+name: Live CAS integration checks
+on:
+  push:
+    branches: [codex/live-cas-integration]
+permissions:
+  contents: read
+jobs:
+  offline:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
+        with:
+          persist-credentials: false
+          ref: ${{ github.sha }}
+      - name: Compile captured runtime
+        run: python3 -m compileall -q kadima tools
+      - name: Existing CAS executor tests
+        env:
+          KADIMA_CAS_EXECUTION: "0"
+        run: python3 -I -B tools/test_cas_executor.py
+      - name: Existing audit regressions
+        run: python3 -I -B tools/test_audit_fixes.py
