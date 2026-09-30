@@ -1074,7 +1074,13 @@ class AutoExecutor:
         if execution_ledger.pending(pos.signal_id):
             return {'ok': False, 'reason': 'order_already_pending'}
         pos.exit_reason = reason
-        limit_price = round(ltp * (1 - LIMIT_ORDER_BUFFER_PCT / 100.0), 1)
+        raw_exit = ltp * (1 - LIMIT_ORDER_BUFFER_PCT / 100.0)
+        # 2026-09-30: a collapsed Rs 0.05 premium used to round to Rs 0.0 here and
+        # the exit was rejected as invalid_price. Never below one Rs 0.05 tick.
+        if angel_orders.product_for(pos) == angel_orders.CAS_PRODUCT_TYPE:
+            limit_price = angel_orders.to_tick(raw_exit, 'SELL')
+        else:
+            limit_price = max(0.05, round(raw_exit, 1))
         result = execution_ledger.submit(pos, 'SELL', pos.remaining_qty, limit_price)
         if pos.status == 'closed':
             self.state.positions.pop(str(pos.signal_id), None)

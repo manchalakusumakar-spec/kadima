@@ -86,14 +86,18 @@ def permit_reason(permit, now, mono, boot_id):
     return None
 
 
-def entry_block(exchange, now=None):
-    """Called twice on the shared entry path, never from position exit logic."""
+def entry_block(exchange, now=None, product='INTRADAY'):
+    """Called twice on the shared entry path, never from position exit logic.
+    product='CARRYFORWARD' (CAS only) skips just the broker's 15:15 INTRADAY
+    entry window; the calendar, policy schedule and lane permit still apply."""
     priority = os.environ.get('KADIMA_PRIORITY_TRADING') == '1'
     if priority:
         from . import priority_sessions
         now = now or datetime.now(IST)
         try:
             reason = priority_sessions.calendar_reason(exchange, now)
+            if reason == 'outside_broker_intraday_entry_window' and product == 'CARRYFORWARD':
+                reason = None
             if reason: return reason
             if exchange in ('NFO', 'BFO'):
                 reason = calendar_reason(read_json(POLICY), now, entries=True)

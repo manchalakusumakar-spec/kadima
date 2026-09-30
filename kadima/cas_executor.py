@@ -35,7 +35,7 @@ from typing import Optional
 
 from . import alerts, angel_orders, audit, capital_guard, execution_ledger, exit_manager
 from . import killswitch, market_session_gate, storage
-from .angel_orders import CAS_KIND
+from .angel_orders import CAS_KIND, to_tick
 from .cas_config import (CAS_ENTRY_MAX_STEPS, CAS_ENTRY_PRICE_CAP_MULT, CAS_ENTRY_STEP_SEC,
                          CAS_EXECUTION_ENABLED, CAS_EXIT_WATCH_SEC, CAS_MAX_CAPITAL_INR,
                          CAS_MAX_ORDER_QTY, CAS_MAX_SPREAD_PCT, CAS_MAX_TRADES_PER_DAY,
@@ -46,7 +46,7 @@ from .session import SESSION
 from .utils import now_ist
 
 MAX_SIGNAL_AGE_SEC = 20        # a trigger older than this is stale, not tradeable
-TICK = 0.1                     # angel_orders sends prices rounded to 0.1
+TICK = 0.05                    # CARRYFORWARD orders use the real Rs 0.05 tick grid
 
 _inflight = threading.Lock()   # at most one CAS entry being worked at a time
 _watcher_lock = threading.Lock()
@@ -60,11 +60,11 @@ def _executor():
 
 
 def _ceil_tick(x: float) -> float:
-    return round(math.ceil(round(x / TICK, 6)) * TICK, 1)
+    return to_tick(x, "BUY")
 
 
 def _floor_tick(x: float) -> float:
-    return round(math.floor(round(x / TICK, 6)) * TICK, 1)
+    return to_tick(x, "SELL")
 
 
 def fetch_quote(exchange: str, token: str) -> Optional[dict]:
@@ -218,7 +218,10 @@ def gate(candidate, executor, now: datetime) -> Optional[str]:
         return "manual_carryforward_same_underlying"
     if (candidate.exchange, candidate.token) in getattr(executor, "_external_contracts", set()):
         return "contract_held_outside_kadima"
-    return market_session_gate.entry_block(candidate.exchange)
+    # CAS is CARRYFORWARD: the broker's 15:15 INTRADAY entry window does not
+    # apply (CAS enforces its own 15:15-15:35 window above); every other
+    # session, calendar and permit check still does.
+    return market_session_gate.entry_block(candidate.exchange, product=CAS_PRODUCT_TYPE)
 
 
 def enter(candidate) -> dict:
@@ -310,7 +313,8 @@ def _step_entry(pos, order_id: str, qty: int, start: float, cap: float) -> None:
         price = min(_ceil_tick(target(fresh)), _floor_tick(cap))
         if price <= current:
             continue
-        res = angel_orders.modify_order(order_id, price=price, quantity=qty, contract=contract)
+        res = angel_orders.modify_order(order_id, price=price, quantity=qty, contract=contract,
+                                        side="BUY")
         audit.log("cas_entry_repriced", signal_id=pos.signal_id, step=step,
                   old_price=current, new_price=price, cap=cap, accepted=res.ok, reason=res.reason)
         if res.ok:

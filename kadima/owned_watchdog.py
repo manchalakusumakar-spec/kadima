@@ -39,6 +39,10 @@ def owned_positions(positions, ledger, broker, book, at):
             continue
         if not exit_due(p.exchange, at):
             continue
+        # CAS (CARRYFORWARD) positions are closed by the engine at 15:38, not at
+        # the 15:18 INTRADAY boundary -- a 15:25 watchdog run must not cut them.
+        if getattr(p, 'kind', None) == angel_orders.CAS_KIND and (at.hour, at.minute) < (15, 38):
+            continue
         rows = [r for r in ledger if r['signal_id'] == p.signal_id]
         if not rows or any(r['dry_run'] or not r['order_id'] for r in rows):
             continue

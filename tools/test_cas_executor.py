@@ -95,7 +95,7 @@ ex._reconcile_blocked = False; ex._positions_verified = True
 cas_executor.capital_guard.broker_available_funds = lambda: 100908.94
 cas_executor.fetch_quote = lambda e, t: dict(ltp=7.5, bid=7.4, ask=7.6)
 cas_executor.get_lot_size = lambda s, t: 75
-cas_executor.market_session_gate.entry_block = lambda e: None
+cas_executor.market_session_gate.entry_block = lambda e, **k: None
 cand = fired[0]
 clock["now"] = cand.detected_at + timedelta(seconds=3)
 r = cas_executor.enter(cand)
@@ -129,7 +129,7 @@ calls = []
 cas_executor.CAS_ENTRY_STEP_SEC = 0
 cas_executor.angel_orders = SimpleNamespace(
     get_order_status=lambda oid: angel_orders.OrderStatus(oid, "open", 0, None, {}),
-    modify_order=lambda oid, price, quantity, contract: (calls.append(("modify", price, contract["producttype"]))
+    modify_order=lambda oid, price, quantity, contract, side=None: (calls.append(("modify", price, contract["producttype"]))
                  or angel_orders.OrderResult(True, oid, "ok")),
     cancel_order=lambda oid: calls.append(("cancel",)) or angel_orders.OrderResult(True, oid, "ok"))
 quotes = iter([dict(ltp=7.5, bid=7.4, ask=7.6), dict(ltp=8.4, bid=8.3, ask=8.6),
@@ -167,6 +167,73 @@ if hasattr(eod_watchdog, "_fetch_positions"):      # GitHub-style watchdog place
     check("15:39: closes KADIMA CAS too, never manual CF", closed == ["CASCF", "MIS"])
 else:
     print("EOD watchdog: engine-owned design (exits via executor._close_position) - covered above")
+
+
+print("0.05 tick grid (CARRYFORWARD only)")
+check("BUY rounds up to tick", angel_orders.to_tick(7.43, "BUY") == 7.45)
+check("SELL rounds down to tick", angel_orders.to_tick(7.43, "SELL") == 7.40)
+check("exact tick kept", angel_orders.to_tick(0.05, "SELL") == 0.05 and angel_orders.to_tick(7.45, "BUY") == 7.45)
+check("never below one tick", angel_orders.to_tick(0.02, "SELL") == 0.05)
+check("CF price keeps Rs 0.05", angel_orders._price_str(0.05, "CARRYFORWARD", "SELL") == "0.05")
+check("CF price on grid, 2dp", angel_orders._price_str(7.43, "CARRYFORWARD", "BUY") == "7.45")
+check("INTRADAY rounding unchanged", angel_orders._price_str(7.43, "INTRADAY", "BUY") == "7.4")
+check("CAS entry ladder on 0.05 grid", cas_executor.price_ladder(dict(ltp=5.23, bid=5.21, ask=5.27), cap=6.8)[0] == 5.25)
+
+print("collapsed-premium exit price")
+submitted = []
+real_submit = auto_executor.execution_ledger.submit
+auto_executor.execution_ledger.submit = lambda pos, side, qty, price: submitted.append(price) or {"ok": True}
+real_pending = auto_executor.execution_ledger.pending
+auto_executor.execution_ledger.pending = lambda *a, **k: []
+for kind in ("cas_blast", "gamma_blast"):
+    z = Pos(signal_id=77, kind=kind, index="NIFTY", direction="CE", symbol="Z", token="Z1", exchange="NFO",
+            entry_price=4.0, entry_ts=now(), lots=1, lot_size=65, remaining_qty=65, status="open")
+    ex._close_position(z, 0.05, "test")
+check("Rs 0.05 premium exits at Rs 0.05, not 0.0 (CAS and intraday)", submitted == [0.05, 0.05])
+auto_executor.execution_ledger.submit = real_submit
+auto_executor.execution_ledger.pending = real_pending
+
+print("session gate: 15:15 INTRADAY window vs CARRYFORWARD")
+import importlib
+from kadima import market_session_gate as msg
+importlib.reload(msg)   # earlier sections replaced entry_block with a fake
+saved = (msg.calendar_reason, msg.read_json, msg.permit_reason, msg.BOOT, os.environ.get("KADIMA_PRIORITY_TRADING"))
+os.environ["KADIMA_PRIORITY_TRADING"] = "1"
+msg.calendar_reason = lambda *a, **k: None
+msg.read_json = lambda *a, **k: {"lanes": {"equity": True}}
+msg.permit_reason = lambda *a, **k: None
+msg.BOOT = SimpleNamespace(read_text=lambda: "boot")
+t1520 = datetime(2026, 9, 30, 15, 20, tzinfo=IST)
+check("INTRADAY entry blocked after 15:15", msg.entry_block("NFO", t1520) == "outside_broker_intraday_entry_window")
+check("CARRYFORWARD (CAS) entry allowed after 15:15", msg.entry_block("NFO", t1520, product="CARRYFORWARD") is None)
+msg.read_json = lambda *a, **k: {"lanes": {"equity": False}}
+check("CAS still needs the lane permit", msg.entry_block("NFO", t1520, product="CARRYFORWARD") == "lane_permit_not_granted")
+msg.calendar_reason, msg.read_json, msg.permit_reason, msg.BOOT = saved[:4]
+if saved[4] is None: os.environ.pop("KADIMA_PRIORITY_TRADING", None)
+else: os.environ["KADIMA_PRIORITY_TRADING"] = saved[4]
+
+print("owned watchdog leaves CAS to the 15:38 engine close")
+from kadima import owned_watchdog
+w = Pos(signal_id=88, kind="cas_blast", index="NIFTY", direction="CE", symbol="W", token="W1", exchange="NFO",
+        entry_price=4.0, entry_ts=now(), lots=1, lot_size=65, remaining_qty=65, status="open")
+led = [dict(signal_id=88, side="BUY", filled=65, dry_run=0, order_id="O1", state="terminal")]
+brk = [dict(exchange="NFO", symboltoken="W1", producttype="CARRYFORWARD", netqty="65", tradingsymbol="W")]
+due = lambda hh, mm: owned_watchdog.owned_positions({"88": w}, led, brk, [], datetime(2026, 9, 30, hh, mm, tzinfo=IST))
+check("15:25: CAS position not due", due(15, 25) == [])
+check("15:38: CAS position due", due(15, 38) == [w])
+
+print("product consistency across lanes")
+import pathlib
+src = {p.name: p.read_text() for p in pathlib.Path("kadima").glob("*.py")}
+for lane in ("cas_orders.py", "cas_engine.py"):
+    if lane in src:
+        check(f"{lane} never sets its own product (ledger decides)",
+              "CARRYFORWARD" not in src[lane] and "producttype" not in src[lane])
+check("'cas' lane is INTRADAY both ways", angel_orders.product_for(SimpleNamespace(kind="cas")) == "INTRADAY")
+allowed = {"angel_orders.py", "cas_config.py", "cas_executor.py", "cas_eod_guard.py", "celestial_adoption.py",
+           "market_session_gate.py", "owned_watchdog.py", "test_order_pathway.py", "auto_executor.py"}
+stray = sorted(n for n, t in src.items() if "CARRYFORWARD" in t and n not in allowed)
+print(f"  [info] other modules mentioning CARRYFORWARD (review, not a failure): {stray or 'none'}")
 
 print("-" * 40)
 print("ALL PASS" if not fails else f"FAILURES: {fails}")

@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
+from decimal import ROUND_CEILING, ROUND_FLOOR, ROUND_HALF_UP, Decimal
 from typing import Optional
 
 from . import audit
@@ -26,6 +27,26 @@ def product_for(pos) -> str:
     CARRYFORWARD CAS entry is never exited with an INTRADAY SELL (which
     Angel would treat as a separate, new short position)."""
     return CAS_PRODUCT_TYPE if getattr(pos, "kind", None) == CAS_KIND else "INTRADAY"
+
+
+# NSE/BSE index options trade in Rs 0.05 ticks. INTRADAY orders keep their
+# historical 0.1 rounding (unchanged behaviour); CARRYFORWARD (CAS) prices are
+# snapped to the real 0.05 grid so a cheap premium keeps its exact price: a
+# BUY rounds UP to the next tick (never below the intended limit), a SELL
+# rounds DOWN (never above the bid it is meant to hit), never below one tick.
+TICK = Decimal("0.05")
+
+
+def to_tick(price: float, side: str | None) -> float:
+    rounding = {"BUY": ROUND_CEILING, "SELL": ROUND_FLOOR}.get(side, ROUND_HALF_UP)
+    steps = (Decimal(str(price)) / TICK).quantize(Decimal(1), rounding=rounding)
+    return float(max(steps, Decimal(1)) * TICK)
+
+
+def _price_str(price: float, producttype: str | None, side: str | None) -> str:
+    if producttype == CAS_PRODUCT_TYPE:
+        return f"{to_tick(price, side):.2f}"
+    return str(round(price, 1))
 
 
 @dataclass
@@ -88,7 +109,7 @@ def place_limit_order(*, tradingsymbol: str, symboltoken: str, exchange: str,
         "ordertype": "LIMIT",          # hard-coded — see module docstring
         "producttype": producttype,    # defaults to INTRADAY — see docstrings above
         "duration": "DAY",             # hard-coded — IOC prohibited
-        "price": str(round(price, 1)),
+        "price": _price_str(price, producttype, transactiontype),
         "squareoff": "0",
         "stoploss": "0",
         "quantity": str(quantity),
@@ -178,7 +199,7 @@ def cancel_order(order_id: str, variety: str = "NORMAL") -> OrderResult:
 # ---------------------------------------------------------------- status
 def modify_order(order_id: str, *, price: float | None = None,
                   quantity: int | None = None, variety: str = "NORMAL",
-                  contract: dict | None = None) -> OrderResult:
+                  contract: dict | None = None, side: str | None = None) -> OrderResult:
     """Modify price and/or quantity on a pending LIMIT/DAY order. Does NOT
     accept an order-type or duration override — Market/IOC orders remain
     prohibited for algo trading under SEBI's framework (see module docstring).
@@ -209,7 +230,7 @@ def modify_order(order_id: str, *, price: float | None = None,
         modparams["ordertype"] = "LIMIT"
         modparams["duration"] = "DAY"
     if price is not None:
-        modparams["price"] = str(round(price, 1))
+        modparams["price"] = _price_str(price, (contract or {}).get("producttype"), side)
     if quantity is not None:
         modparams["quantity"] = str(quantity)
 

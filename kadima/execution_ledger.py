@@ -272,14 +272,17 @@ def _reprice_exit(pos, row, status, age, ltp_fn):
                        key=f"pending-exit:{status.order_id}")
         return
     buffer = REPRICE_BUFFERS[min(state['attempts'], len(REPRICE_BUFFERS) - 1)]
-    new_price = max(0.05, round(ltp * (1 - buffer), 1))
+    if angel_orders.product_for(pos) == angel_orders.CAS_PRODUCT_TYPE:
+        new_price = angel_orders.to_tick(ltp * (1 - buffer), 'SELL')
+    else:
+        new_price = max(0.05, round(ltp * (1 - buffer), 1))
     try:
         current = float(status.raw.get('price'))
     except (TypeError, ValueError):
         current = None
     if current is not None and math.isfinite(current) and new_price >= current:
         return      # existing limit is already at or below the re-priced level
-    result = angel_orders.modify_order(status.order_id, price=new_price,
+    result = angel_orders.modify_order(status.order_id, price=new_price, side='SELL',
         quantity=row['quantity'], contract=dict(tradingsymbol=pos.symbol,
         symboltoken=pos.token, exchange=pos.exchange, producttype=angel_orders.product_for(pos)))
     state['attempts'] += 1
