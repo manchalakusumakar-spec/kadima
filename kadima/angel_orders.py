@@ -12,9 +12,20 @@ from dataclasses import dataclass
 from typing import Optional
 
 from . import audit
+from .cas_config import CAS_PRODUCT_TYPE
 from .config import ORDER_PLACEMENT_ENABLED
 from .rate_limiter import ORDER_STATUS, ORDER_WRITE
 from .session import SESSION
+
+CAS_KIND = "cas_blast"
+
+
+def product_for(pos) -> str:
+    """Broker producttype a position's orders must use. Every order, fill
+    check and reconciliation for a position goes through this, so a
+    CARRYFORWARD CAS entry is never exited with an INTRADAY SELL (which
+    Angel would treat as a separate, new short position)."""
+    return CAS_PRODUCT_TYPE if getattr(pos, "kind", None) == CAS_KIND else "INTRADAY"
 
 
 @dataclass
@@ -38,7 +49,8 @@ class OrderStatus:
 # ---------------------------------------------------------------- place
 def place_limit_order(*, tradingsymbol: str, symboltoken: str, exchange: str,
                       transactiontype: str, quantity: int, price: float,
-                      producttype: str = "INTRADAY", ordertag: str | None = None) -> OrderResult:
+                      producttype: str = "INTRADAY", ordertag: str | None = None,
+                      signal_id: int | None = None) -> OrderResult:
     """
     transactiontype: "BUY" (entry) or "SELL" (exit, squaring off a long).
     price: the limit price. Caller decides this — this function does not
@@ -87,26 +99,41 @@ def place_limit_order(*, tradingsymbol: str, symboltoken: str, exchange: str,
 
     if not ORDER_PLACEMENT_ENABLED:
         dry_id = f"DRYRUN-{tradingsymbol}-{transactiontype}-{int(price*100)}"
+        audit.log('ANGELONE_BLOCKED', signal_id=signal_id, intent=ordertag, reason='dry_run')
         audit.log("order_dry_run", dry_run_id=dry_id, **orderparams)
         return OrderResult(True, dry_id, "dry_run_not_sent", dry_run=True)
 
     if not ORDER_WRITE.allow():
+        audit.log('ANGELONE_BLOCKED', signal_id=signal_id, intent=ordertag, reason='rate_limited')
         audit.log("order_rejected_rate_limited", **orderparams)
         return OrderResult(False, None, "rate_limited")
 
+    request_started = False
     try:
         SESSION.ensure()
+        audit.log('ANGELONE_REQUEST', signal_id=signal_id, intent=ordertag,
+                  symbol=tradingsymbol, side=transactiontype, quantity=quantity, price=price)
+        request_started = True
         resp = SESSION.api.placeOrder(orderparams)
         order_id = _extract_order_id(resp)
+        code = str(resp.get('errorcode') or '') if isinstance(resp, dict) else ''
+        code = code if code.isalnum() and len(code) <= 16 else None
+        audit.log('ANGELONE_RESPONSE', signal_id=signal_id, intent=ordertag,
+                  order_id=order_id, accepted=order_id is not None, broker_code=code,
+                  reason='accepted_awaiting_fill' if order_id else 'unparseable_or_rejected')
         if order_id is None:
-            audit.log("order_place_unparseable_response", response=str(resp)[:500],
+            audit.log("order_place_unparseable_response", response_type=type(resp).__name__,
                       **orderparams)
             return OrderResult(False, None, "unparseable_broker_response", uncertain=True)
         audit.log("order_placed", order_id=order_id, **orderparams)
         return OrderResult(True, order_id, "ok")
     except Exception as exc:                       # noqa: BLE001
-        audit.log("order_place_exception", error=str(exc), **orderparams)
-        return OrderResult(False, None, "submission_exception", uncertain=True)
+        audit.log('ANGELONE_RESPONSE' if request_started else 'ANGELONE_BLOCKED',
+                  signal_id=signal_id, intent=ordertag, accepted=False,
+                  uncertain=request_started, error_type=type(exc).__name__)
+        audit.log("order_place_exception", error=type(exc).__name__, **orderparams)
+        return OrderResult(False, None, "submission_exception" if request_started else "session_unavailable",
+                           uncertain=request_started)
 
 
 def _extract_order_id(resp) -> Optional[str]:
@@ -150,10 +177,15 @@ def cancel_order(order_id: str, variety: str = "NORMAL") -> OrderResult:
 
 # ---------------------------------------------------------------- status
 def modify_order(order_id: str, *, price: float | None = None,
-                  quantity: int | None = None, variety: str = "NORMAL") -> OrderResult:
+                  quantity: int | None = None, variety: str = "NORMAL",
+                  contract: dict | None = None) -> OrderResult:
     """Modify price and/or quantity on a pending LIMIT/DAY order. Does NOT
     accept an order-type or duration override — Market/IOC orders remain
-    prohibited for algo trading under SEBI's framework (see module docstring)."""
+    prohibited for algo trading under SEBI's framework (see module docstring).
+
+    contract: optional tradingsymbol/symboltoken/exchange/producttype for the
+    order. SmartAPI's modify endpoint documents these as part of the request;
+    when given they are sent with ordertype LIMIT and duration DAY forced."""
     if price is None and quantity is None:
         return OrderResult(False, order_id, "invalid_modification_no_fields")
     if price is not None and price <= 0:
@@ -170,6 +202,12 @@ def modify_order(order_id: str, *, price: float | None = None,
         return OrderResult(False, order_id, "rate_limited")
 
     modparams = {"variety": variety, "orderid": order_id}
+    if contract:
+        for key in ("tradingsymbol", "symboltoken", "exchange", "producttype"):
+            if contract.get(key) is not None:
+                modparams[key] = str(contract[key])
+        modparams["ordertype"] = "LIMIT"
+        modparams["duration"] = "DAY"
     if price is not None:
         modparams["price"] = str(round(price, 1))
     if quantity is not None:
