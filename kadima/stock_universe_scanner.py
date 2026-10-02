@@ -65,6 +65,7 @@ from . import stock_handoff
 from .instrument_master import stock_universe
 from .option_chain import OptionChain
 from .rate_limiter import QUOTE
+from .rate_limiter import quote_priority, SCAN as SCAN_PRIORITY
 from .scrip_master import ScripMaster
 from .session import SESSION
 from .utils import in_market_hours, now_ist
@@ -176,8 +177,9 @@ class UniverseScanner:
                 continue
             try:
                 SESSION.ensure()
-                response = SESSION.api.getMarketData(
-                    mode="FULL", exchangeTokens=pending)
+                with quote_priority(SCAN_PRIORITY):     # observe-only: yields to trading
+                    response = SESSION.api.getMarketData(
+                        mode="FULL", exchangeTokens=pending)
                 rows = ((response or {}).get("data") or {}).get("fetched") or []
                 if not (response or {}).get("status"):
                     rows = []
@@ -259,8 +261,9 @@ class UniverseScanner:
                 continue
             try:
                 SESSION.ensure()
-                resp = SESSION.api.getMarketData(
-                    mode="FULL", exchangeTokens={tracked.chain.index.exchange: [spot_map_token]})
+                with quote_priority(SCAN_PRIORITY):
+                    resp = SESSION.api.getMarketData(
+                        mode="FULL", exchangeTokens={tracked.chain.index.exchange: [spot_map_token]})
                 fetched = (resp or {}).get("data", {}).get("fetched", [])
                 matching = [x for x in fetched if str(x.get('symbolToken')) == str(spot_map_token)]
                 if not resp.get('status') or len(matching) != 1:

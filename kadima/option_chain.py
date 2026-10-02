@@ -318,4 +318,59 @@ def _i(v):
         return None
 
 
+# ---------------------------------------------------------------- batched polls
+# 2026-10-02: Angel's quote endpoint allows ~1 request/second but up to 50
+# tokens per request, and every KADIMA caller shares that one request per
+# 1.1s. A ladder is 22 tokens, so two same-exchange ladders fit in one call.
+# Fewer calls leave room in the shared queue for stop-loss price checks.
+MAX_TOKENS_PER_QUOTE = 50
 
+
+def plan_batches(chains):
+    """Group ladders into as few calls as possible: one exchange per call,
+    at most MAX_TOKENS_PER_QUOTE tokens, original order preserved within
+    each exchange. Empty or oversized ladders are polled on their own."""
+    batches, open_batch = [], {}
+    for chain in chains:
+        size = len(chain.quotes)
+        exchange = chain.index.opt_exchange
+        current = open_batch.get(exchange)
+        if 0 < size and current is not None and current[1] + size <= MAX_TOKENS_PER_QUOTE:
+            current[0].append(chain)
+            current[1] += size
+            continue
+        entry = [[chain], size]
+        batches.append(entry)
+        if 0 < size <= MAX_TOKENS_PER_QUOTE:
+            open_batch[exchange] = entry
+    return [entry[0] for entry in batches]
+
+
+def poll_many(chains) -> dict[int, bool]:
+    """Poll one batch from plan_batches(). Returns {id(chain): polled}.
+    Each ladder is still accepted only if complete (accept_full_sample),
+    and a failed call degrades every ladder in it, as poll() does."""
+    if len(chains) == 1:
+        return {id(chains[0]): chains[0].poll()}
+    exchange = chains[0].index.opt_exchange
+    tokens = [token for chain in chains for token in chain.quotes]
+    names = [chain.index.name for chain in chains]
+    try:
+        SESSION.ensure()
+        try:
+            resp = SESSION.api.getMarketData(mode="FULL", exchangeTokens={exchange: tokens})
+        except TypeError:
+            resp = SESSION.api.getMarketData("FULL", {exchange: tokens})
+    except Exception as exc:                            # noqa: BLE001
+        for chain in chains:
+            audit.log("oi_poll_failed", index=chain.index.name, error=str(exc), batch=names)
+            chain.velocity.mark_degraded()
+        return {id(chain): False for chain in chains}
+    if not resp or not resp.get("status"):
+        for chain in chains:
+            audit.log("oi_poll_bad_response", index=chain.index.name,
+                      response=str(resp)[:300], batch=names)
+            chain.velocity.mark_degraded()
+        return {id(chain): False for chain in chains}
+    fetched = resp.get("data", {}).get("fetched", [])
+    return {id(chain): chain.accept_full_sample(fetched) for chain in chains}

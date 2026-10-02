@@ -89,10 +89,10 @@ class CandleBuilder:
                     cur.vol_for_vwap += delta
                     self._sess_pv += ltp * delta
                     self._sess_vol += delta
-            storage.upsert_candle(cur.token, cur.interval,
-                                  cur.start.isoformat(), cur.open, cur.high,
-                                  cur.low, cur.close, cur.volume, cur.vwap,
-                                  False)
+            # 2026-10-02: the forming bar lives in memory only. Every reader
+            # uses closed bars (storage.recent_candles: closed=1), so writing
+            # each tick to SQLite on the WebSocket thread bought nothing and
+            # competed with the tick writer for the database lock.
 
     def session_vwap(self) -> float | None:
         return (self._sess_pv / self._sess_vol) if self._sess_vol else None

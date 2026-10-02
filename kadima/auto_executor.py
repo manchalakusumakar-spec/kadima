@@ -27,7 +27,7 @@ from .config import (DAILY_LOSS_LIMIT_INR, IST,
                      MAX_LOTS_PER_SIGNAL, ORDER_PLACEMENT_ENABLED)
 from .instrument_master import get_lot_size
 from . import config
-from .rate_limiter import ORDER_STATUS, QUOTE
+from .rate_limiter import ORDER_STATUS, QUOTE, quote_priority, EXIT as QUOTE_EXIT, ENTRY as QUOTE_ENTRY
 from .session import SESSION
 from .utils import in_market_hours, now_ist, past_signal_cutoff
 
@@ -43,6 +43,7 @@ FIXED_STOPLOSS_PCT = exit_manager.INITIAL_SL_PCT * 100.0        # legacy restore
 EOD_FORCE_CLOSE_HHMM = (15, 38)  # 2026-09-29: trader set back to 15:38 (was 15:18)
 LIMIT_ORDER_BUFFER_PCT = 2.5
 POSITION_MONITOR_INTERVAL_SEC = 10
+CHAIN_FALLBACK_MAX_AGE_SEC = 30.0   # stop check on a recent chain quote if the poll fails
 
 
 # ---------------------------------------------------------------- premium history
@@ -153,10 +154,11 @@ class ExecutorState:
 # module only decides WHEN to call it, never talks to SESSION.api directly
 # for order placement, so there's exactly one place that logic can go wrong.
 
-def _poll_ltp(exchange: str, tokens: list[str]) -> dict[str, float]:
+def _poll_ltp(exchange: str, tokens: list[str], priority: int = QUOTE_EXIT) -> dict[str, float]:
     """Direct LTP poll for specific tokens, independent of any
     OptionChain's ladder -- see module docstring for why this can't
-    reuse option_chain's polling."""
+    reuse option_chain's polling. Defaults to exit priority in the shared
+    quote queue; entry pricing passes QUOTE_ENTRY."""
     if not tokens:
         return {}
     tokens = list(dict.fromkeys(tokens))
@@ -164,16 +166,17 @@ def _poll_ltp(exchange: str, tokens: list[str]) -> dict[str, float]:
         # Preserve the existing shared quote limiter on each bounded batch.
         result = {}
         for offset in range(0, len(tokens), 50):
-            result.update(_poll_ltp(exchange, tokens[offset:offset + 50]))
+            result.update(_poll_ltp(exchange, tokens[offset:offset + 50], priority))
         return result
     mode = 'FULL' if celestial.enabled() else 'LTP'
     payload = {"mode": mode, "exchangeTokens": {exchange: tokens}}
     try:
         SESSION.ensure()
-        try:
-            resp = SESSION.api.getMarketData(**payload)
-        except TypeError:
-            resp = SESSION.api.getMarketData(mode, {exchange: tokens})
+        with quote_priority(priority):
+            try:
+                resp = SESSION.api.getMarketData(**payload)
+            except TypeError:
+                resp = SESSION.api.getMarketData(mode, {exchange: tokens})
     except Exception as exc:                        # noqa: BLE001
         audit.log("position_ltp_poll_failed", error=str(exc), tokens=tokens)
         return {}
@@ -790,7 +793,7 @@ class AutoExecutor:
             return self._reject("lot_size_unresolvable_at_order_time", index_name, direction)
 
         # Require a fresh received LTP; do not fall back to a stale chain quote.
-        fresh_ltp_map = _poll_ltp(chain.index.opt_exchange, [chosen_quote.token])
+        fresh_ltp_map = _poll_ltp(chain.index.opt_exchange, [chosen_quote.token], QUOTE_ENTRY)
         pricing_ltp = fresh_ltp_map.get(chosen_quote.token)
         if pricing_ltp is None:
             return self._reject("fresh_entry_quote_unavailable", index_name, direction)
@@ -977,7 +980,14 @@ class AutoExecutor:
                     # above a falling market and does not fill).
                     ltp = self._exit_fallback_price(pos)
                 else:
-                    continue
+                    # 2026-10-02: evaluate the stop on the latest chain-poll
+                    # sample (<=30s old) instead of skipping this position's
+                    # stop check for the whole cycle.
+                    ltp = self.state.premium_tracker.latest(pos.token, CHAIN_FALLBACK_MAX_AGE_SEC)
+                    if ltp is None:
+                        continue
+                    audit.log("position_ltp_chain_fallback", signal_id=pos.signal_id,
+                              token=pos.token, ltp=ltp)
 
             previous_peak = pos.peak_price
             pos.peak_price = ltp if pos.peak_price is None else max(pos.peak_price, ltp)

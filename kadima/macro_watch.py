@@ -33,6 +33,7 @@ from datetime import date, datetime
 from . import audit
 from .config import MARKETAUX_API_KEY
 from .rate_limiter import QUOTE
+from .rate_limiter import quote_priority, SCAN as SCAN_PRIORITY
 from .scrip_master import ScripMaster
 from .session import SESSION
 from .utils import in_market_hours, now_ist
@@ -281,7 +282,8 @@ class MacroWatcher:
             return
         try:
             SESSION.ensure()
-            resp = SESSION.api.getMarketData(mode="LTP", exchangeTokens={exch: [token]})
+            with quote_priority(SCAN_PRIORITY):     # macro context yields to trading
+                resp = SESSION.api.getMarketData(mode="LTP", exchangeTokens={exch: [token]})
             fetched = (resp or {}).get("data", {}).get("fetched", [])
             if fetched and fetched[0].get("ltp") is not None:
                 self._last_vix = {

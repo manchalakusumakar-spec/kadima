@@ -12,6 +12,7 @@ miscalibrated you change one number here and nothing else.
 from __future__ import annotations
 
 import json
+import queue
 import threading
 import time
 from dataclasses import dataclass, field, replace
@@ -112,10 +113,16 @@ class Engine:
         self.token_to_index: dict[str, str] = {}
         self.feed = TickFeed(self._on_tick)
         self._stop = threading.Event()
+        # 2026-10-02: candle-close work (indicator reads, scoring, Bull Shield
+        # dispatch and its broker calls) runs on one signal-worker thread in
+        # arrival order, never on the WebSocket tick callback. The lock keeps
+        # tick-time invalidation and bar-close scoring from interleaving.
+        self._signal_q: "queue.Queue[tuple]" = queue.Queue(maxsize=1000)
+        self._shield_lock = threading.Lock()
 
         for name, idx in self.scan_indices.items():
             st = IndexState(name=name)
-            st.builder = CandleBuilder(idx.token, on_close=self._on_candle_close)
+            st.builder = CandleBuilder(idx.token, on_close=self._queue_candle_close)
             st.chain = OptionChain(idx, self.scrips)
             self.states[name] = st
             self.token_to_index[idx.token] = name
@@ -130,7 +137,7 @@ class Engine:
                 continue
             token = str(matches[0]['token'])
             bank = IndexState(name=name)
-            bank.builder = CandleBuilder(token, on_close=self._on_bank_close)
+            bank.builder = CandleBuilder(token, on_close=self._queue_bank_close)
             self.bank_states[name] = bank
             self.bank_tokens[token] = name
 
@@ -198,6 +205,8 @@ class Engine:
         self.stock_worker.start()
         self.forecaster.start()
         self.learner.start()
+        threading.Thread(target=self._signal_loop, daemon=True,
+                         name="signal-worker").start()
         for name, idx in self.scan_indices.items():
             self.feed.subscribe(EXCHANGE_TYPE[idx.exchange], [idx.token])
         if self.bank_tokens:
@@ -266,6 +275,38 @@ class Engine:
             symbol=name, underlying=name, asset='INDEX', price=tick['ltp'],
             volume=tick['volume'], at=tick['ts'], received_at=tick['ts'], basis='RECEIVED'))
 
+    # ------------------------------------------------------- signal worker
+    def _queue_candle_close(self, candle: Candle) -> None:
+        self._enqueue(self._on_candle_close, candle)
+
+    def _queue_bank_close(self, candle: Candle) -> None:
+        self._enqueue(self._on_bank_close, candle)
+
+    def _enqueue(self, handler, candle: Candle) -> None:
+        """Called on the tick thread: hand the closed bar off and return."""
+        try:
+            self._signal_q.put_nowait((handler, candle))
+        except queue.Full:
+            audit.log("signal_queue_full", token=candle.token,
+                      interval=candle.interval, start=candle.start.isoformat())
+
+    def _signal_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                handler, candle = self._signal_q.get(timeout=1.0)
+            except queue.Empty:
+                continue
+            lag = (now_ist() - candle.start).total_seconds() - candle.interval * 60
+            if lag > 30:
+                audit.log("signal_worker_lag", token=candle.token,
+                          interval=candle.interval, lag_sec=round(lag, 1),
+                          queued=self._signal_q.qsize())
+            try:
+                handler(candle)
+            except Exception as exc:                    # noqa: BLE001
+                audit.log("candle_callback_error", token=candle.token,
+                          interval=candle.interval, error=str(exc))
+
     def _on_bank_close(self, candle: Candle) -> None:
         if candle.interval != 5:
             return
@@ -324,6 +365,10 @@ class Engine:
             banks=self._bank_votes(st.direction, now))
 
     def _invalidate_shield(self, st):
+        with self._shield_lock:
+            self._invalidate_shield_locked(st)
+
+    def _invalidate_shield_locked(self, st):
         if st.shield_evidence and not all(alignment(st.direction, st.snap, st.spot).values()):
             st.shield_invalidated = True
             st.shield_ready = False
@@ -398,9 +443,11 @@ class Engine:
             audit.log('FAST_LANE_ERROR',index=st.name,error_type=type(exc).__name__)
 
     def _oi_loop(self) -> None:
+        from . import option_chain
         while not self._stop.is_set():
             if in_market_hours() and not killswitch.engaged():
                 self._warm_bank_history()
+                active = []
                 for st in self.states.values():
                     from . import celestial
                     if not celestial.enabled() and st.name in GAMMA_EXPIRY_ONLY and self._dte(st) > 1.0:
@@ -408,34 +455,57 @@ class Engine:
                     if st.spot:
                         try:
                             st.chain.rebuild_ladder(st.spot)
-                            polled = st.chain.poll()
-                            if polled:
-                                auto_executor.EXECUTOR.state.premium_tracker.record_chain(st.chain)
-                                self._scan_cas(st)
-                                # Separate price-led lane consumes the same successful poll.
-                                # Observation by default; never dispatch from the tick callback.
-                                self._scan_fast(st)
-                                # CAS blast lane: same fresh sample, own gates
-                                # and execution (cas_executor). Never raises.
-                                try:
-                                    cas_blast_scanner.SCANNER.on_chain(st.name, st.chain, st.spot)
-                                except Exception as exc:  # noqa: BLE001
-                                    audit.log("cas_scan_error", index=st.name, error=str(exc))
-                            if polled:
-                                auto_executor.EXECUTOR.update_structure(st.name, st.chain, st.spot)
-                                self._score_gamma(st)
-                                self.radar.publish_chain(st.chain,st.spot,
-                                    st.last_updated.isoformat() if st.last_updated and st.is_live_tick else None,
-                                    st.gamma_result,shield_score=st.score,shield_direction=st.direction,
-                                    vwap=st.snap.vwap)
-                                if celestial.enabled():
-                                    auto_executor.EXECUTOR.prepare_celestial_context(
-                                        st.name,st.chain,st.spot,st.snap,self._dte(st))
+                            active.append(st)
+                        except Exception as exc:        # noqa: BLE001
+                            audit.log("oi_loop_error", index=st.name,
+                                      error=str(exc))
+                # 2026-10-02: same-exchange ladders share one quote call (<=50
+                # tokens). Each batch is polled right before its indices are
+                # processed, so a sample never waits behind the whole cycle.
+                by_chain = {id(st.chain): st for st in active}
+                for batch in option_chain.plan_batches([st.chain for st in active]):
+                    try:
+                        results = option_chain.poll_many(batch)
+                    except Exception as exc:            # noqa: BLE001
+                        audit.log("oi_loop_error", index=batch[0].index.name,
+                                  error=str(exc))
+                        results = {}
+                    for chain in batch:
+                        st = by_chain[id(chain)]
+                        try:
+                            self._after_poll(st, results.get(id(chain), False))
                         except Exception as exc:        # noqa: BLE001
                             audit.log("oi_loop_error", index=st.name,
                                       error=str(exc))
                     time.sleep(1)                       # spread REST load
             time.sleep(OI_POLL_SEC)
+
+    def _after_poll(self, st: IndexState, polled: bool) -> None:
+        """Everything the OI loop does with one index's fresh sample.
+        Moved verbatim from _oi_loop on 2026-10-02 (batched polling)."""
+        from . import celestial
+        if polled:
+            auto_executor.EXECUTOR.state.premium_tracker.record_chain(st.chain)
+            self._scan_cas(st)
+            # Separate price-led lane consumes the same successful poll.
+            # Observation by default; never dispatch from the tick callback.
+            self._scan_fast(st)
+            # CAS blast lane: same fresh sample, own gates
+            # and execution (cas_executor). Never raises.
+            try:
+                cas_blast_scanner.SCANNER.on_chain(st.name, st.chain, st.spot)
+            except Exception as exc:  # noqa: BLE001
+                audit.log("cas_scan_error", index=st.name, error=str(exc))
+        if polled:
+            auto_executor.EXECUTOR.update_structure(st.name, st.chain, st.spot)
+            self._score_gamma(st)
+            self.radar.publish_chain(st.chain,st.spot,
+                st.last_updated.isoformat() if st.last_updated and st.is_live_tick else None,
+                st.gamma_result,shield_score=st.score,shield_direction=st.direction,
+                vwap=st.snap.vwap)
+            if celestial.enabled():
+                auto_executor.EXECUTOR.prepare_celestial_context(
+                    st.name,st.chain,st.spot,st.snap,self._dte(st))
 
     # -------------------------------------------------------- gamma scanner
     def _score_gamma(self, st: IndexState) -> None:
@@ -499,6 +569,10 @@ class Engine:
 
     # --------------------------------------------------------------- scoring
     def _score(self, st: IndexState, closed_at=None, closed_price=None) -> None:
+        with self._shield_lock:
+            self._score_locked(st, closed_at, closed_price)
+
+    def _score_locked(self, st: IndexState, closed_at=None, closed_price=None) -> None:
         s = st.snap
         bull = bear = 0.0
         comp = {}
