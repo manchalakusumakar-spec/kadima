@@ -119,6 +119,10 @@ class Engine:
         # tick-time invalidation and bar-close scoring from interleaving.
         self._signal_q: "queue.Queue[tuple]" = queue.Queue(maxsize=1000)
         self._shield_lock = threading.Lock()
+        # Shadow comparison (observe only, shadow_compare.py): index futures
+        # feed their own candle builders and nothing else.
+        self.futures: dict[str, dict] = {}
+        self.fut_builders: dict[str, CandleBuilder] = {}
 
         for name, idx in self.scan_indices.items():
             st = IndexState(name=name)
@@ -140,6 +144,8 @@ class Engine:
             bank.builder = CandleBuilder(token, on_close=self._queue_bank_close)
             self.bank_states[name] = bank
             self.bank_tokens[token] = name
+
+        self._setup_shadow_futures()
 
         self.bank_history = StockExecutionWorker(auto_executor.EXECUTOR, self.scrips)
         self._bank_warmup_at = {}
@@ -211,6 +217,8 @@ class Engine:
             self.feed.subscribe(EXCHANGE_TYPE[idx.exchange], [idx.token])
         if self.bank_tokens:
             self.feed.subscribe(EXCHANGE_TYPE['NSE'], list(self.bank_tokens))
+        for fut in self.futures.values():
+            self.feed.subscribe(EXCHANGE_TYPE[fut['exchange']], [fut['token']])
         self.feed.start()
         threading.Thread(target=self._oi_loop, daemon=True, name="oi-poll").start()
         threading.Thread(target=self._shutdown_loop, daemon=True,
@@ -250,7 +258,31 @@ class Engine:
         alerts.enqueue("🔴 KADIMA engine stopped.")
 
     # ------------------------------------------------------------------ ticks
+    def _setup_shadow_futures(self) -> None:
+        from . import shadow_compare
+        if not shadow_compare.enabled():
+            return
+        try:
+            today = now_ist().date()
+            for name, idx in self.scan_indices.items():
+                fut = shadow_compare.future_for(self.scrips, idx, today)
+                if fut is None:
+                    audit.log('shadow_future_unavailable', index=name)
+                    continue
+                self.futures[name] = fut
+                self.fut_builders[fut['token']] = CandleBuilder(fut['token'])
+            audit.log('shadow_futures_ready', futures={n: f['symbol'] for n, f in self.futures.items()})
+        except Exception as exc:                        # noqa: BLE001
+            self.futures, self.fut_builders = {}, {}
+            audit.log('shadow_futures_setup_failed', error=str(exc))
+
     def _on_tick(self, tick: dict) -> None:
+        fut_builder = self.fut_builders.get(tick["token"])
+        if fut_builder is not None:
+            # Shadow-only input. Pre-open prints are kept out of the VWAP.
+            if tick['ts'].time() >= datetime.min.time().replace(hour=9, minute=15):
+                fut_builder.add_tick(tick['ts'], tick['ltp'], tick['volume'])
+            return
         bank_name = self.bank_tokens.get(tick["token"])
         if bank_name:
             bank = self.bank_states[bank_name]
@@ -393,6 +425,20 @@ class Engine:
         elif candle.interval == 5:
             self._score(st, candle.start + timedelta(minutes=5), candle.close)
             self._evaluate()
+            self._shadow_compare(st)
+
+    def _shadow_compare(self, st: IndexState) -> None:
+        """Observe-only; runs after live dispatch so it never delays it."""
+        from . import shadow_compare
+        if not shadow_compare.enabled():
+            return
+        try:
+            fut = self.futures.get(st.name)
+            shadow_compare.record(self, st, fut,
+                                  self.fut_builders.get(fut['token']) if fut else None,
+                                  WEIGHTS, TIER_CONFIRMED)
+        except Exception as exc:                        # noqa: BLE001
+            audit.log('shadow_compare_error', index=st.name, error=str(exc))
 
     # ------------------------------------------------------------------ OI
     def _scan_cas(self, st):
