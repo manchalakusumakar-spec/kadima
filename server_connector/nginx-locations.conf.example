@@ -1,0 +1,18 @@
+# Include INSIDE the chosen existing HTTPS server block after review.
+# Do not expose port 8081 or 8766 publicly; leave dashboard authentication intact.
+# Host must equal resource_url's hostname. The existing TLS certificate must cover it.
+# These exact locations must not inherit a dashboard login redirect/auth_request.
+# OAuth validation is enforced by the MCP service itself.
+location = /mcp {
+    proxy_pass http://127.0.0.1:8766;
+    proxy_http_version 1.1;
+    proxy_set_header Host $host;
+    proxy_set_header Authorization $http_authorization;
+    proxy_buffering off;
+    proxy_read_timeout 30s;
+    client_max_body_size 16k;
+}
+location = /.well-known/oauth-protected-resource/mcp {
+    proxy_pass http://127.0.0.1:8766;
+    proxy_set_header Host $host;
+}

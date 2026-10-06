@@ -1,0 +1,28 @@
+[Unit]
+Description=Export sanitized KADIMA diagnostic snapshot
+After=network.target
+
+[Service]
+Type=oneshot
+User=root
+Group=kadima-reader
+WorkingDirectory=/opt/kadima-connector/current
+ExecStart=/usr/bin/python3 -B -m server_connector.collector
+LoadCredential=dashboard-config:/etc/kadima-dashboard/config.json
+UMask=0027
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+ReadWritePaths=/var/lib/kadima-connector
+RestrictAddressFamilies=AF_UNIX AF_INET
+IPAddressDeny=any
+IPAddressAllow=localhost
+MemoryMax=96M
+TasksMax=16
+CPUQuota=20%
+TimeoutStartSec=45

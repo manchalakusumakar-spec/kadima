@@ -1,0 +1,11 @@
+[Unit]
+Description=Refresh KADIMA diagnostic snapshot
+
+[Timer]
+OnBootSec=20
+OnUnitInactiveSec=30
+AccuracySec=2
+Unit=kadima-connector-collect.service
+
+[Install]
+WantedBy=timers.target
