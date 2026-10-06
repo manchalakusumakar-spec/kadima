@@ -12,7 +12,7 @@ import os
 import statistics
 import time
 
-from . import celestial, storage, trade_policy, fast_entry_quality
+from . import celestial, storage, trade_policy, fast_entry_quality, celestial_exit
 from .greeks import bs_price
 from .utils import now_ist
 from .config import IST
@@ -35,6 +35,9 @@ def live_blocks(name, direction, now, score=0):
     if not h.get('ok') or not celestial.fresh(h.get('ts'), now, seconds=300) or not impact['news_available']:
         reasons.append('fresh_news_coverage_required')
     if impact['news_blocked']: reasons.append('news_risk_block')
+    conflict = celestial_exit.structure_exit_reason(name, direction, now)
+    if conflict:
+        reasons.append('fast_entry_exit_conflict_' + conflict)
     return reasons
 
 

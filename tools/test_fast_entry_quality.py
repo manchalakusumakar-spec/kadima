@@ -7,6 +7,7 @@ from copy import deepcopy
 from datetime import datetime, timedelta
 import os
 import socket
+import sqlite3
 import tempfile
 from types import SimpleNamespace as NS
 import unittest
@@ -14,7 +15,7 @@ from unittest.mock import patch
 
 os.environ.setdefault('KADIMA_DATA_DIR', tempfile.mkdtemp(prefix='kadima-fast-quality-'))
 from kadima import config, fast_entry_quality as quality, fast_momentum as fast
-from kadima import stock_fast, trade_policy, auto_executor, market_session_gate
+from kadima import stock_fast, trade_policy, auto_executor, market_session_gate, celestial_exit
 
 NOW = datetime(2026, 10, 6, 9, 45, tzinfo=config.IST)
 
@@ -207,6 +208,58 @@ class FastQualityTests(unittest.TestCase):
         for previous in (90., 103., 110.):
             stop, _ = trade_policy.ratchet(100., 115., previous, 80.)
             self.assertGreaterEqual(stop, previous)
+
+    def test_structure_conflicts_match_exit_and_block_fast_entries(self):
+        cases = [({'spot': 99., 'vwap': 100.}, 'underlying_lost_vwap'),
+                 ({'direction': 'PE', 'score': 70}, 'opposite_gamma_confirmed'),
+                 ({'shield_direction': 'PE', 'shield_score': 70}, 'opposite_shield_active'),
+                 ({'oi_direction': 'PE'}, 'directional_oi_reversed')]
+        for direction in ('CE', 'PE'):
+            for values, reason in cases:
+                values = dict(values)
+                if direction == 'PE':
+                    values = {k: ('CE' if v == 'PE' else v) for k, v in values.items()}
+                    if 'spot' in values:
+                        values['spot'] = 101.
+                evidence = dict(ts=NOW.isoformat(), spot_at=NOW.isoformat(), **values)
+                def health(key):
+                    if key.startswith('structure:'): return evidence
+                    if key == 'news': return dict(ok=True, ts=NOW.isoformat())
+                    return None
+                with self.subTest(direction=direction, reason=reason), ExitStack() as stack:
+                    db = sqlite3.connect(':memory:')
+                    stack.callback(db.close)
+                    db.execute('CREATE TABLE celestial_exit_state (signal_id INTEGER PRIMARY KEY, payload TEXT)')
+                    stack.enter_context(patch.object(celestial_exit, 'connection', return_value=db))
+                    stack.enter_context(patch.object(fast.celestial, 'health', side_effect=health))
+                    stack.enter_context(patch.object(fast.celestial, 'news_impact', return_value=dict(
+                        news_available=True, news_blocked=False)))
+                    stack.enter_context(patch.object(fast.celestial, 'read_config', return_value=dict(
+                        auto_trade_enabled=True, kill_latched=False, score_threshold=65)))
+                    stack.enter_context(patch.object(fast.celestial, 'enabled', return_value=True))
+                    stack.enter_context(patch.object(fast, 'live_requested', return_value=True))
+                    self.assertEqual(fast.live_blocks('NIFTY', direction, NOW, 99),
+                                     ['fast_entry_exit_conflict_' + reason])
+                    pos = NS(signal_id=1, index='NIFTY', direction=direction, exchange='NFO', token='1')
+                    self.assertEqual(celestial_exit.evaluate(pos, 100., NOW), reason)
+
+    def test_stale_future_or_missing_structure_is_not_a_confirmed_conflict(self):
+        good = dict(ts=NOW.isoformat(), spot_at=NOW.isoformat(), spot=99., vwap=100.)
+        evidence = [None]
+        for field in ('ts', 'spot_at'):
+            for seconds in (-31, 1):
+                evidence.append(dict(good, **{field: (NOW+timedelta(seconds=seconds)).isoformat()}))
+        for item in evidence:
+            with self.subTest(evidence=item), patch.object(fast.celestial, 'health', return_value=item):
+                self.assertIsNone(celestial_exit.structure_exit_reason('NIFTY', 'CE', NOW))
+
+    def test_aligned_structure_and_exact_vwap_do_not_block(self):
+        for direction, spot in (('CE', 100.), ('CE', 101.), ('PE', 100.), ('PE', 99.)):
+            evidence = dict(ts=NOW.isoformat(), spot_at=NOW.isoformat(), spot=spot, vwap=100.,
+                            direction=direction, score=99, shield_direction=direction,
+                            shield_score=99, oi_direction=direction)
+            with patch.object(fast.celestial, 'health', return_value=evidence):
+                self.assertIsNone(celestial_exit.structure_exit_reason('NIFTY', direction, NOW))
 
     def test_executor_rechecks_fast_context_before_any_order_path(self):
         executor = auto_executor.AutoExecutor()

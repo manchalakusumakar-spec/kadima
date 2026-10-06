@@ -95,3 +95,34 @@ training days only and freeze thresholds before evaluating held-out days.
 Trade-log replay, score recalibration, target-room filters, retest/continuation
 separation and adaptive trailing/time exits remain subsequent work. This patch
 does not claim a measured increase in win rate or profit.
+
+## Entry/exit compatibility refinement
+
+Fast live eligibility now reads the same fresh structure predicate as the
+Celestial exit engine. It blocks a new entry when that evidence already calls
+for `underlying_lost_vwap`, `opposite_gamma_confirmed`,
+`opposite_shield_active`, or `directional_oi_reversed`. The public block reason
+is `fast_entry_exit_conflict_` followed by that exit reason. Both index and
+stock fast lanes use this gate, and the executor invokes it again immediately
+before submission. A conflict arising after a fill can still require an exit.
+
+The shared helper is read-only: it does not seed premium EMA state, alter exit
+thresholds, or bypass exits for existing/manual positions. Both the structure
+publication timestamp and spot timestamp must be fresh within the existing
+30-second window. Missing or stale structure is not classified as a confirmed
+conflict; existing independent entry freshness gates remain. Therefore this
+check does not certify that every symbol has VWAP/structure coverage.
+
+The 19-test fast-entry suite includes both call/put directions for each of the
+four conflicts, identical exit/entry decisions, aligned/equal-VWAP cases and
+stale/future/missing evidence. Existing offline and audit-fix suites also pass.
+These checks establish implementation consistency, not investment performance.
+The four Manual exits in the fetched audit are not evidence that this new-entry
+check would have prevented their losses. No live rollout is included.
+
+“World's best” cannot be supported by these source changes. A credible release
+requires chronological held-out comparisons against the frozen baseline using
+actual fill costs, net expectancy, drawdown, fill/rejection rate and execution
+latency. Do not tune score weights from the 13 suggestions or present the score
+as a win probability. Keep the current draft until the missing replay evidence
+and deployed-version reconciliation are available.
