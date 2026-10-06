@@ -12,7 +12,7 @@ import os
 import statistics
 import time
 
-from . import celestial, storage, trade_policy
+from . import celestial, storage, trade_policy, fast_entry_quality
 from .greeks import bs_price
 from .utils import now_ist
 from .config import IST
@@ -78,8 +78,9 @@ def setup(rows1, rows5, spot, now):
     if sign*(five[-1]['close']-five[0]['close']) <= 0:
         raise ValueError('five_minute_context_opposes')
     if sign*(spot-stop) <= 0: raise ValueError('invalid_structure')
-    return dict(direction=direction,spot_stop=stop,breakout_at=breakout['at'].isoformat(),
-                bars=one,level=level)
+    quality = fast_entry_quality.assess(one, five, spot, direction, level, stop)
+    return dict(direction=direction,breakout_at=breakout['at'].isoformat(),
+                bars=one,level=level,**quality)
 
 
 class PremiumHistory:
@@ -200,7 +201,7 @@ class Lane:
                 'five_minute_context_opposes','invalid_structure','option_chain_stale',
                 'underlying_quote_stale','expired_contract','no_liquid_contract',
                 'premium_volume_warmup_3min','premium_acceleration_unconfirmed','invalid_premium_stop',
-                'horizon_unavailable_before_close','scenario_net_reward_risk_below_1_5'} else 'invalid_market_inputs'
+                'horizon_unavailable_before_close','scenario_net_reward_risk_below_1_5'} | fast_entry_quality.REASONS else 'invalid_market_inputs'
             row['blocked_reasons'].append(reason)
         if row['direction']:
             row['blocked_reasons'].extend(live_blocks(st.name,row['direction'],now,row.get('score',0)))
