@@ -273,6 +273,9 @@ def _reprice_exit(pos, row, status, age, ltp_fn):
         return
     buffer = REPRICE_BUFFERS[min(state['attempts'], len(REPRICE_BUFFERS) - 1)]
     new_price = max(0.05, round(ltp * (1 - buffer), 1))
+    if pos.kind in angel_orders.CAS_KINDS:
+        from .cas_config import CAS_PRICE_TICK, tick_price
+        new_price = max(CAS_PRICE_TICK, tick_price(ltp * (1 - buffer)))
     try:
         current = float(status.raw.get('price'))
     except (TypeError, ValueError):

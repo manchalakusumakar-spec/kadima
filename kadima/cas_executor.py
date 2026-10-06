@@ -37,16 +37,16 @@ from . import alerts, angel_orders, audit, capital_guard, execution_ledger, exit
 from . import killswitch, market_session_gate, storage
 from .angel_orders import CAS_KIND
 from .cas_config import (CAS_ENTRY_MAX_STEPS, CAS_ENTRY_PRICE_CAP_MULT, CAS_ENTRY_STEP_SEC,
-                         CAS_EXECUTION_ENABLED, CAS_EXIT_WATCH_SEC, CAS_MAX_CAPITAL_INR,
+                         CAS_EXIT_WATCH_SEC, CAS_MAX_CAPITAL_INR,
                          CAS_MAX_ORDER_QTY, CAS_MAX_SPREAD_PCT, CAS_MAX_TRADES_PER_DAY,
-                         CAS_PRODUCT_TYPE, CAS_TRAIL_ARM_PCT, CAS_TRAIL_GIVEBACK_PCT)
+                         CAS_PRODUCT_TYPE, CAS_TRAIL_ARM_PCT, CAS_TRAIL_GIVEBACK_PCT,
+                         entry_lane_block, tick_price)
 from .config import DAILY_LOSS_LIMIT_INR, MARKET_CLOSE
 from .instrument_master import get_lot_size
 from .session import SESSION
 from .utils import now_ist
 
 MAX_SIGNAL_AGE_SEC = 20        # a trigger older than this is stale, not tradeable
-TICK = 0.1                     # angel_orders sends prices rounded to 0.1
 
 _inflight = threading.Lock()   # at most one CAS entry being worked at a time
 _watcher_lock = threading.Lock()
@@ -60,11 +60,11 @@ def _executor():
 
 
 def _ceil_tick(x: float) -> float:
-    return round(math.ceil(round(x / TICK, 6)) * TICK, 1)
+    return tick_price(x, up=True)
 
 
 def _floor_tick(x: float) -> float:
-    return round(math.floor(round(x / TICK, 6)) * TICK, 1)
+    return tick_price(x)
 
 
 def fetch_quote(exchange: str, token: str) -> Optional[dict]:
@@ -170,8 +170,9 @@ def exit_reason(pos, ltp: float, daily_loss_breached: bool, force_close: bool) -
 def submit(candidate, chain) -> None:
     """Scanner hook. Returns immediately; the entry is worked on its own
     thread so the option-chain poll loop is never blocked by order steps."""
-    if not CAS_EXECUTION_ENABLED:
-        audit.log("cas_execution_disabled", symbol=candidate.symbol)
+    block = "killswitch_engaged" if killswitch.engaged() else entry_lane_block(CAS_KIND)
+    if block:
+        _reject(block, candidate)
         return
     if not _inflight.acquire(blocking=False):
         audit.log("cas_entry_rejected", reason="entry_already_in_progress",
@@ -198,6 +199,9 @@ def gate(candidate, executor, now: datetime) -> Optional[str]:
     from .cas_blast_scanner import in_cas_window
     if killswitch.engaged():
         return "killswitch_engaged"
+    block = entry_lane_block(CAS_KIND)
+    if block:
+        return block
     if not in_cas_window(now):
         return "outside_cas_window"
     if not 0 <= (now - candidate.detected_at).total_seconds() <= MAX_SIGNAL_AGE_SEC:
@@ -257,6 +261,11 @@ def enter(candidate) -> dict:
         if not ladder:
             return _reject("no_valid_entry_price", candidate, cap=cap)
 
+        # Quote/funds reads can outlive a control change. Recheck before reserving.
+        block = gate(candidate, executor, now_ist())
+        if block:
+            return _reject(block, candidate)
+
         payload = dict(source="CAS_BLAST", strike=candidate.strike, trigger_ltp=candidate.ltp,
                        premium_change_pct=candidate.premium_change_pct, cap=cap,
                        budget=round(budget, 2), lots=lots, product=CAS_PRODUCT_TYPE)
@@ -298,6 +307,8 @@ def _step_entry(pos, order_id: str, qty: int, start: float, cap: float) -> None:
     current = start
     for step, target in enumerate(targets, start=2):
         time.sleep(CAS_ENTRY_STEP_SEC)
+        if killswitch.engaged() or entry_lane_block(CAS_KIND):
+            break
         status = angel_orders.get_order_status(order_id)
         if status is not None and (status.status in execution_ledger.TERMINAL
                                    or status.filled_qty >= qty):
@@ -308,6 +319,8 @@ def _step_entry(pos, order_id: str, qty: int, start: float, cap: float) -> None:
         if fresh is None:
             continue
         price = min(_ceil_tick(target(fresh)), _floor_tick(cap))
+        if killswitch.engaged() or entry_lane_block(CAS_KIND):
+            break
         if price <= current:
             continue
         res = angel_orders.modify_order(order_id, price=price, quantity=qty, contract=contract)

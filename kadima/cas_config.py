@@ -1,6 +1,7 @@
 """CAS auto-execution settings. Kept out of config.py so deploying CAS never
 edits the live config file (which differs from GitHub on the EC2 box)."""
 import os
+from decimal import Decimal, ROUND_CEILING, ROUND_FLOOR
 
 # 2026-09-29, trader's decisions: CAS strikes were being identified but never
 # executed (scanner observe-only, INTRADAY blocked after Angel's 15:20 MIS
@@ -10,6 +11,32 @@ import os
 # peak-trailing exit, forced exit at the existing 15:38 EOD close.
 CAS_EXECUTION_ENABLED = os.environ.get("KADIMA_CAS_EXECUTION", "0") == "1"   # OFF unless enabled in systemd
 CAS_PRODUCT_TYPE = "CARRYFORWARD"
+CAS_PRICE_TICK = 0.05
+
+
+def tick_price(value, *, up=False):
+    """CAS index-option grid: caps round down, executable BUY prices up."""
+    tick = Decimal(str(CAS_PRICE_TICK))
+    return float((Decimal(str(value)) / tick).to_integral_value(
+        rounding=ROUND_CEILING if up else ROUND_FLOOR) * tick)
+
+
+def entry_lane_block(kind):
+    """Both scanners may observe; conflicting execution opt-ins fail closed.
+
+    The legacy flag keeps its startup-only semantics. The newer live flag is
+    read on each admission, as before. Exit monitoring never uses this gate.
+    """
+    live = os.environ.get("KADIMA_CAS_LIVE", "0") == "1"
+    if CAS_EXECUTION_ENABLED and live:
+        return "cas_entry_lane_conflict"
+    if kind == "cas_blast":
+        return None if CAS_EXECUTION_ENABLED else "cas_execution_disabled"
+    if kind == "cas":
+        return None if live else "cas_observation_only"
+    return "unknown_cas_entry_lane"
+
+
 CAS_ENTRY_START = (15, 15)         # CAS window opens
 CAS_ENTRY_END = (15, 35)           # no fresh CAS entry at/after this (EOD close 15:38)
 CAS_MAX_CAPITAL_INR = 10_000       # per trade: min(this, availablecash)

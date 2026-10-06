@@ -1075,6 +1075,9 @@ class AutoExecutor:
             return {'ok': False, 'reason': 'order_already_pending'}
         pos.exit_reason = reason
         limit_price = round(ltp * (1 - LIMIT_ORDER_BUFFER_PCT / 100.0), 1)
+        if pos.kind in angel_orders.CAS_KINDS:
+            from .cas_config import CAS_PRICE_TICK, tick_price
+            limit_price = max(CAS_PRICE_TICK, tick_price(ltp * (1 - LIMIT_ORDER_BUFFER_PCT / 100.0)))
         result = execution_ledger.submit(pos, 'SELL', pos.remaining_qty, limit_price)
         if pos.status == 'closed':
             self.state.positions.pop(str(pos.signal_id), None)

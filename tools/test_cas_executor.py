@@ -2,12 +2,13 @@
 """Offline tests for CAS auto-execution -- no network, no broker. Run after any edit."""
 import os, sys, tempfile
 os.environ["KADIMA_DATA_DIR"] = tempfile.mkdtemp()
+os.environ["KADIMA_CAS_LIVE"] = "0"
 sys.path.insert(0, ".")
 
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
-from kadima import (angel_orders, auto_executor, cas_blast_scanner, cas_executor,
+from kadima import (angel_orders, auto_executor, cas_blast_scanner, cas_config, cas_executor,
                     eod_watchdog, execution_ledger, storage)
 from kadima.config import IST
 from kadima.option_chain import OptionQuote
@@ -84,6 +85,8 @@ with storage.conn() as c:            # the unit-test position above is not a rea
     c.execute("DELETE FROM positions WHERE signal_id=1")
 
 print("end-to-end entry (dry run) and exit order product")
+# Explicit test-only opt-in; direct enter() now enforces default-off too.
+cas_config.CAS_EXECUTION_ENABLED = True
 sent = []
 real_place = angel_orders.place_limit_order
 def fake_place(**kw):
