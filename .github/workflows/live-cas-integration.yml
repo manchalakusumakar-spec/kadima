@@ -2,6 +2,8 @@ name: Live CAS integration checks
 on:
   push:
     branches: [codex/live-cas-integration]
+  pull_request:
+    branches: [codex/live-cas-integration]
 permissions:
   contents: read
 jobs:
@@ -12,9 +14,13 @@ jobs:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
         with:
           persist-credentials: false
-          ref: ${{ github.sha }}
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
       - name: Compile captured runtime
         run: python3 -m compileall -q kadima tools
+      - name: CAS semantic unit regressions (mocked transport)
+        run: python3 -I -B tools/test_cas_semantics.py
+      - name: CAS semantic integration (requires complete captured source)
+        run: python3 -I -B tools/test_cas_semantics_integration.py
       - name: Existing CAS executor tests
         env:
           KADIMA_CAS_EXECUTION: "0"

@@ -3,10 +3,10 @@
 Shares account controls, durable intents, reconciliation and owned-quantity exits.
 Never calls the legacy Shield eligibility/score/ranking path for a CAS entry.
 """
-import math
 from types import SimpleNamespace
 
 from . import cas_engine as cas, celestial, config, execution_ledger, storage, trade_policy
+from .cas_config import tick_price
 from .utils import now_ist
 
 
@@ -102,10 +102,10 @@ def dispatch(ex, st, lane, row):
     if not cas.positive(lot) or int(lot) != lot: return reject('lot_size_unresolvable_at_order_time')
     q = fetch_quote(row['exchange'], row['token'], row['symbol'], row['strike'], row['direction'])
     if q is None: return reject('cas_fresh_execution_quote_unavailable')
-    # Transport rounds to 0.1; use that grid here so rounding cannot violate cap.
+    # Preserve the CAS tick grid without rounding a BUY above its cap.
     reference = row['ask']
-    cap = math.floor(reference*1.01*10 + 1e-8)/10
-    price = math.ceil(q.ask*10 - 1e-8)/10
+    cap = tick_price(reference*1.01)
+    price = tick_price(q.ask, up=True)
     if price > cap or q.ltp < row['ltp'] or q.ltp <= q.option_vwap:
         return reject('cas_entry_ran_away_or_reversed')
     if not adding and price > cas.POLICY.max_premium: return reject('cas_not_cheap_at_execution')

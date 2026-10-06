@@ -18,6 +18,7 @@ from .rate_limiter import ORDER_STATUS, ORDER_WRITE
 from .session import SESSION
 
 CAS_KIND = "cas_blast"
+CAS_KINDS = frozenset((CAS_KIND, "cas"))
 
 
 def product_for(pos) -> str:
@@ -25,7 +26,7 @@ def product_for(pos) -> str:
     check and reconciliation for a position goes through this, so a
     CARRYFORWARD CAS entry is never exited with an INTRADAY SELL (which
     Angel would treat as a separate, new short position)."""
-    return CAS_PRODUCT_TYPE if getattr(pos, "kind", None) == CAS_KIND else "INTRADAY"
+    return CAS_PRODUCT_TYPE if getattr(pos, "kind", None) in CAS_KINDS else "INTRADAY"
 
 
 @dataclass
@@ -88,7 +89,7 @@ def place_limit_order(*, tradingsymbol: str, symboltoken: str, exchange: str,
         "ordertype": "LIMIT",          # hard-coded — see module docstring
         "producttype": producttype,    # defaults to INTRADAY — see docstrings above
         "duration": "DAY",             # hard-coded — IOC prohibited
-        "price": str(round(price, 1)),
+        "price": str(round(price, 2 if producttype == CAS_PRODUCT_TYPE else 1)),
         "squareoff": "0",
         "stoploss": "0",
         "quantity": str(quantity),
@@ -188,7 +189,7 @@ def modify_order(order_id: str, *, price: float | None = None,
     when given they are sent with ordertype LIMIT and duration DAY forced."""
     if price is None and quantity is None:
         return OrderResult(False, order_id, "invalid_modification_no_fields")
-    if price is not None and price <= 0:
+    if price is not None and (not math.isfinite(price) or price <= 0):
         return OrderResult(False, order_id, "invalid_price")
     if quantity is not None and quantity <= 0:
         return OrderResult(False, order_id, "invalid_quantity")
@@ -209,7 +210,7 @@ def modify_order(order_id: str, *, price: float | None = None,
         modparams["ordertype"] = "LIMIT"
         modparams["duration"] = "DAY"
     if price is not None:
-        modparams["price"] = str(round(price, 1))
+        modparams["price"] = str(round(price, 2 if (contract or {}).get("producttype") == CAS_PRODUCT_TYPE else 1))
     if quantity is not None:
         modparams["quantity"] = str(quantity)
 

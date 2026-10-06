@@ -8,10 +8,10 @@ from dataclasses import dataclass
 from datetime import datetime
 import json
 import math
-import os
 import time
 
 from . import celestial, storage
+from .cas_config import entry_lane_block
 from .config import IST
 from .utils import now_ist
 
@@ -69,8 +69,9 @@ def quote_valid(q, now):
 
 def live_blocks(now):
     reasons = []
-    if os.environ.get('KADIMA_CAS_LIVE', '0') != '1':
-        reasons.append('cas_observation_only')
+    lane_block = entry_lane_block('cas')
+    if lane_block:
+        reasons.append(lane_block)
     cfg = celestial.read_config()
     if not celestial.enabled(): reasons.append('rollout_disabled')
     if not cfg['auto_trade_enabled']: reasons.append('auto_paused')
