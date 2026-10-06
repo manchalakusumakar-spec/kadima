@@ -50,6 +50,12 @@ are unchanged; connector dependencies use a separate pinned virtual environment.
 
 ## Authentication that still needs provisioning
 
+For AWS root/password/authenticator users without an application OAuth provider,
+see [COGNITO_SETUP.md](COGNITO_SETUP.md). It provides a dedicated Cognito setup
+template; AWS root credentials are not used by the connector. Cognito uses the
+explicit `read_scope` configuration value `kadima/read`. Other existing setups
+retain the default `kadima:read` scope below.
+
 Use an existing established OAuth 2.1 identity provider. No self-built password
 server or reusable dashboard token is exposed to ChatGPT. The provider must:
 

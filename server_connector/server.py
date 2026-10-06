@@ -31,6 +31,8 @@ def https_url(value):
 
 
 def validate_config(cfg):
+    if cfg.get("read_scope", SCOPE) not in ("kadima:read", "kadima/read"):
+        raise ValueError("supported_read_scope_required")
     for key in ("resource_url", "issuer_url", "jwks_url"):
         https_url(cfg[key])
         if ".example" in urlsplit(cfg[key]).hostname:
@@ -75,7 +77,7 @@ class Verifier:
                 issuer=self.cfg["issuer_url"], options={"require": ["exp", "iat", "iss", "aud", "sub", "scope"]})
             client = claims.get("client_id") or claims.get("azp")
             scope = claims["scope"]
-            if not isinstance(scope, str) or SCOPE not in scope.split():
+            if not isinstance(scope, str) or self.cfg.get("read_scope", SCOPE) not in scope.split():
                 return None
             if claims.get("token_use") == "id" or claims["sub"] not in self.cfg["allowed_subjects"]:
                 return None
@@ -98,7 +100,7 @@ def build(cfg, evidence=None, verifier=None):
         token_verifier=verifier or Verifier(cfg),
         auth=AuthSettings(issuer_url=AnyHttpUrl(cfg["issuer_url"]),
             resource_server_url=AnyHttpUrl(cfg["resource_url"]),
-            required_scopes=[SCOPE], validate_token_resource=True))
+            required_scopes=[cfg.get("read_scope", SCOPE)], validate_token_resource=True))
     annotations = ToolAnnotations(readOnlyHint=True, destructiveHint=False,
                                   idempotentHint=True, openWorldHint=False)
 

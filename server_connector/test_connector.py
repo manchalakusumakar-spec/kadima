@@ -216,3 +216,40 @@ def test_installer_apply_rejects_missing_auth_before_changes(monkeypatch, tmp_pa
     with pytest.raises(ValueError):
         install.main()
     assert not install.ROOT.exists()
+
+
+def test_cognito_read_scope_requires_exact_scope(auth, snapshot):
+    previous, token = auth
+    cfg = dict(CFG, read_scope="kadima/read")
+    verifier = Verifier(cfg, previous.keys)
+    assert asyncio.run(verifier.verify_token(token())) is None
+    access = token(scope="openid kadima/read", token_use="access")
+    assert asyncio.run(verifier.verify_token(access)).subject == "operator-1"
+    with TestClient(build(cfg, save(snapshot), verifier), base_url="https://kadima.test") as client:
+        metadata = client.get("/.well-known/oauth-protected-resource/mcp").json()
+        assert metadata["scopes_supported"] == ["kadima/read"]
+        result = client.post("/mcp", headers={"Accept": "application/json, text/event-stream",
+            "Authorization": "Bearer " + access}, json={"jsonrpc": "2.0", "id": 1,
+            "method": "tools/list", "params": {}})
+        assert result.status_code == 200
+
+
+@pytest.mark.parametrize("scope", ["openid", "kadima:write", "kadima/read openid", "*", ""])
+def test_scope_configuration_cannot_be_weakened(scope):
+    with pytest.raises(ValueError):
+        validate_config(dict(CFG, read_scope=scope))
+
+
+def test_cognito_template_boundaries():
+    template = json.loads((Path(__file__).parent / "cognito-template.json").read_text())
+    resources = template["Resources"]
+    assert all(r["Type"].startswith("AWS::Cognito::") for r in resources.values())
+    pool = resources["OperatorPool"]["Properties"]
+    assert pool["AdminCreateUserConfig"]["AllowAdminCreateUserOnly"] is True
+    assert pool["MfaConfiguration"] == "ON"
+    assert pool["EnabledMfas"] == ["SOFTWARE_TOKEN_MFA"]
+    client = resources["ChatGPTClient"]["Properties"]
+    assert client["AllowedOAuthFlows"] == ["code"]
+    assert client["GenerateSecret"] is False
+    assert client["AllowedOAuthScopes"] == ["openid", "kadima/read"]
+    assert "Default" not in template["Parameters"]["ChatGPTRedirectUri"]

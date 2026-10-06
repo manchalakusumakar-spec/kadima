@@ -1,0 +1,153 @@
+{
+  "AWSTemplateFormatVersion": "2010-09-09",
+  "Description": "Dedicated KADIMA read-only connector login. No EC2, IAM, broker or trading changes.",
+  "Parameters": {
+    "ChatGPTRedirectUri": {
+      "Type": "String",
+      "Description": "Exact OAuth callback copied from this ChatGPT connection; never guess it.",
+      "AllowedPattern": "https://chatgpt[.]com/connector(?:_platform_oauth_redirect|/oauth/[A-Za-z0-9_-]+)"
+    },
+    "LoginDomainPrefix": {
+      "Type": "String",
+      "Description": "Available Cognito login-domain prefix in this AWS region.",
+      "MinLength": 3,
+      "MaxLength": 50,
+      "AllowedPattern": "[a-z0-9][a-z0-9-]*[a-z0-9]"
+    }
+  },
+  "Resources": {
+    "OperatorPool": {
+      "Type": "AWS::Cognito::UserPool",
+      "DeletionPolicy": "Retain",
+      "UpdateReplacePolicy": "Retain",
+      "Properties": {
+        "UserPoolName": {
+          "Fn::Sub": "${AWS::StackName}-operator"
+        },
+        "UserPoolTier": "ESSENTIALS",
+        "DeletionProtection": "ACTIVE",
+        "AdminCreateUserConfig": {
+          "AllowAdminCreateUserOnly": true
+        },
+        "UsernameConfiguration": {
+          "CaseSensitive": false
+        },
+        "MfaConfiguration": "ON",
+        "EnabledMfas": [
+          "SOFTWARE_TOKEN_MFA"
+        ],
+        "AccountRecoverySetting": {
+          "RecoveryMechanisms": [
+            {
+              "Name": "admin_only",
+              "Priority": 1
+            }
+          ]
+        },
+        "Policies": {
+          "PasswordPolicy": {
+            "MinimumLength": 14,
+            "RequireLowercase": true,
+            "RequireUppercase": true,
+            "RequireNumbers": true,
+            "RequireSymbols": true,
+            "TemporaryPasswordValidityDays": 1
+          }
+        }
+      }
+    },
+    "ReadOnlyResource": {
+      "Type": "AWS::Cognito::UserPoolResourceServer",
+      "Properties": {
+        "UserPoolId": {
+          "Ref": "OperatorPool"
+        },
+        "Identifier": "kadima",
+        "Name": "KADIMA diagnostics",
+        "Scopes": [
+          {
+            "ScopeName": "read",
+            "ScopeDescription": "Read sanitized KADIMA operational evidence"
+          }
+        ]
+      }
+    },
+    "ChatGPTClient": {
+      "Type": "AWS::Cognito::UserPoolClient",
+      "DependsOn": "ReadOnlyResource",
+      "Properties": {
+        "UserPoolId": {
+          "Ref": "OperatorPool"
+        },
+        "ClientName": "kadima-chatgpt-readonly",
+        "GenerateSecret": false,
+        "AllowedOAuthFlowsUserPoolClient": true,
+        "AllowedOAuthFlows": [
+          "code"
+        ],
+        "AllowedOAuthScopes": [
+          "openid",
+          "kadima/read"
+        ],
+        "SupportedIdentityProviders": [
+          "COGNITO"
+        ],
+        "CallbackURLs": [
+          {
+            "Ref": "ChatGPTRedirectUri"
+          }
+        ],
+        "PreventUserExistenceErrors": "ENABLED",
+        "EnableTokenRevocation": true,
+        "AccessTokenValidity": 5,
+        "IdTokenValidity": 5,
+        "RefreshTokenValidity": 7,
+        "TokenValidityUnits": {
+          "AccessToken": "minutes",
+          "IdToken": "minutes",
+          "RefreshToken": "days"
+        }
+      }
+    },
+    "LoginDomain": {
+      "Type": "AWS::Cognito::UserPoolDomain",
+      "Properties": {
+        "UserPoolId": {
+          "Ref": "OperatorPool"
+        },
+        "Domain": {
+          "Ref": "LoginDomainPrefix"
+        },
+        "ManagedLoginVersion": 2
+      }
+    },
+    "LoginBranding": {
+      "Type": "AWS::Cognito::ManagedLoginBranding",
+      "DependsOn": "LoginDomain",
+      "Properties": {
+        "UserPoolId": {
+          "Ref": "OperatorPool"
+        },
+        "ClientId": {
+          "Ref": "ChatGPTClient"
+        },
+        "UseCognitoProvidedValues": true
+      }
+    }
+  },
+  "Outputs": {
+    "UserPoolId": {
+      "Value": {
+        "Ref": "OperatorPool"
+      }
+    },
+    "ClientId": {
+      "Value": {
+        "Ref": "ChatGPTClient"
+      }
+    },
+    "ReadScope": {
+      "Value": "kadima/read"
+    }
+  }
+}

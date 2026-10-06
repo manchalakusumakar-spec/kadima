@@ -33,6 +33,8 @@ def config_check():
     if not stat.S_ISREG(meta.st_mode) or meta.st_uid != 0 or meta.st_mode & 0o077:
         raise ValueError("oauth_config_must_be_root_owned_0600")
     cfg = json.loads(path.read_text())
+    if cfg.get("read_scope", "kadima:read") not in ("kadima:read", "kadima/read"):
+        raise ValueError("supported_read_scope_required")
     for key in ("resource_url", "issuer_url", "jwks_url"):
         p = urlsplit(cfg[key])
         if p.scheme != "https" or not p.hostname or p.username or p.password or p.query or p.fragment or p.port not in (None, 443) or ".example" in p.hostname:
