@@ -150,6 +150,9 @@ class ForecastObserver:
     def collect(self, now):
         assets, excluded, contracts = [], {}, []
         context, availability = supplemental(now)
+        radar = self.engine.constituent_radar.snapshot(now)
+        context["nifty_constituent_radar"] = radar
+        availability["nifty_constituent_radar"] = radar["status"]
         states = dict(self.engine.states)
         stock = getattr(self.engine.stock_worker,'forecast_state',None)
         if stock:
@@ -250,3 +253,4 @@ class ForecastObserver:
                 except Exception:
                     pass
             self._stop.wait(5)
+
