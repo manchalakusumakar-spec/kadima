@@ -110,3 +110,11 @@ training and held-out days and verify all of the following:
   identical to the PR28 pin. Compilation and diff-whitespace checks pass.
 
 These are software regression results, not historical replay or net-profit evidence.
+
+## CI completion
+
+Added exact-head GitHub Actions verification because PR32's parent tree had
+no workflow. `python tools/verify_replay_capture.py` runs all 34 capture/quality
+tests and both existing offline suites in a temporary data directory, with
+external socket connections blocked across the complete test run. The workflow
+has read-only repository permissions and does not deploy or activate anything.
