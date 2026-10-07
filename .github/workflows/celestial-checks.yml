@@ -31,6 +31,7 @@ jobs:
       - name: Python regressions and compilation
         run: |
           python -m unittest discover -s tests -v
+          python -m unittest discover -s tools -p test_replay_export.py -v
           python -m compileall -q kadima dashboard_live tools trade_audit_update
       - name: Intercepted desktop and mobile dashboard
         run: |

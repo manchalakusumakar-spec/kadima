@@ -27,3 +27,16 @@ Validation: six new offline tests pass with sockets blocked, covering suggestion
 ID export without a signal, frozen plan and later signal linking through restart,
 distinct same-contract episodes/exchanges, null original horizons, unchanged
 schema and formula-safe text. No deployment or activation performed.
+
+## CI completion
+
+The first complete CI run at `a68b76c5966bb6dc5c01fe4354cb95db7487ad25`
+correctly rejected a stale release hash for `kadima/trade_audit.py` (two errors
+and two failures across 828 tests). The source patch passed its six focused
+tests, but the release manifest needed the corresponding source fingerprint.
+Only that manifest entry is updated, from
+`66b12fa755e28e4d14e85c6691596f9bc7b6ec5c` to
+`f365be0cca09bc41c71f6252fbdeb55bf6f3f507`. The source-check implementation,
+all other hashes, exposure checks and activation behavior remain unchanged.
+The existing CI workflow now also runs the six export regressions explicitly.
+No installer or activation entrypoint is executed by this work.
