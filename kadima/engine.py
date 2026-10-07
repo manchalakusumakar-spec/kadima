@@ -347,6 +347,8 @@ class Engine:
             if row['eligible']:
                 from .fast_momentum import signal_id
                 sid = signal_id(row)
+                from . import replay_capture
+                replay_capture.link(row, sid)
                 result = auto_executor.EXECUTOR.evaluate_and_enter(
                     st.name,row['direction'],st.chain,st.spot,st.snap,row['days'],
                     'fast_momentum',sid,'EXPERIMENTAL',row['score'],

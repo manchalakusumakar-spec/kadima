@@ -12,7 +12,7 @@ import os
 import statistics
 import time
 
-from . import celestial, storage, trade_policy, fast_entry_quality, celestial_exit
+from . import celestial, storage, trade_policy, fast_entry_quality, celestial_exit, replay_capture
 from .greeks import bs_price
 from .utils import now_ist
 from .config import IST
@@ -38,6 +38,7 @@ def live_blocks(name, direction, now, score=0):
     conflict = celestial_exit.structure_exit_reason(name, direction, now)
     if conflict:
         reasons.append('fast_entry_exit_conflict_' + conflict)
+    replay_capture.gate(name, direction, now, score, cfg, h, impact, reasons)
     return reasons
 
 
@@ -153,6 +154,7 @@ class Lane:
         now = now or now_ist()
         row = dict(underlying=st.name,strategy='fast_momentum',ts=now.isoformat(),
                    stage='BLOCKED',blocked_reasons=[],direction=None,scenarios=[])
+        candle_inputs = {}
         try:
             chain = st.chain
             if not 0 <= time.monotonic()-chain._last_poll <= 30:
@@ -161,8 +163,9 @@ class Lane:
                 raise ValueError('underlying_quote_stale')
             history = self.histories.setdefault(st.name,PremiumHistory())
             if record: history.record(chain,now)
-            info = setup(storage.recent_candles(chain.index.token,1,60),
-                         storage.recent_candles(chain.index.token,5,30),st.spot,now)
+            candle_inputs[1] = storage.recent_candles(chain.index.token,1,60)
+            candle_inputs[5] = storage.recent_candles(chain.index.token,5,30)
+            info = setup(candle_inputs[1], candle_inputs[5], st.spot, now)
             row.update({k:v for k,v in info.items() if k!='bars'})
             expiry = datetime.strptime(chain._expiry,'%d%b%Y').replace(tzinfo=IST,hour=15,minute=30)
             days = (expiry-now).total_seconds()/86400
@@ -210,6 +213,7 @@ class Lane:
             row['blocked_reasons'].extend(live_blocks(st.name,row['direction'],now,row.get('score',0)))
         row['eligible'] = row['stage']=='SETUP_READY' and not row['blocked_reasons']
         if record: self.rows[st.name] = row
+        replay_capture.index_decision(row, st, candle_inputs, record)
         return row
 
 

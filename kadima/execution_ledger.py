@@ -10,7 +10,7 @@ import math
 import uuid
 from datetime import datetime
 
-from . import angel_orders, audit, storage, alerts
+from . import angel_orders, audit, storage, alerts, replay_capture
 from .utils import now_ist
 
 TERMINAL = {'complete', 'completed', 'filled', 'cancelled', 'canceled', 'rejected'}
@@ -123,6 +123,7 @@ def submit(pos, side, quantity, price):
 
 def apply_fill(pos, row, status):
     """Commit position, incremental fills and cumulative cursor atomically."""
+    replay_capture.broker(pos, row, status, 'RECEIVED')
     c = connection()
     # Always reload cursor; duplicate broker snapshots/restarts are harmless.
     row = dict(c.execute('SELECT * FROM execution_orders WHERE intent=?', (row['intent'],)).fetchone())
@@ -177,6 +178,9 @@ def apply_fill(pos, row, status):
                 pos.exit_price = sold[0] / sold[1]
         storage.upsert_position(pos, _connection=c)
     original.__dict__.update(pos.__dict__)
+    replay_capture.broker(pos, row, status, 'COMMITTED', quantity=delta,
+                          price=amount/delta if delta else None, pnl=pnl,
+                          remaining_qty=pos.remaining_qty)
     if delta:
         audit.log('execution_fill_confirmed', signal_id=pos.signal_id, side=row['side'],
                   quantity=delta, remaining_qty=pos.remaining_qty, price=amount/delta,

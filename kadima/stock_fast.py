@@ -311,6 +311,8 @@ def plan(data, chain, bars, cfg, now=None):
         row['eligible'] = not row['blocked_reasons']
     except (ValueError, TypeError, KeyError, AttributeError, OverflowError) as exc:
         row['blocked_reasons'].append(_public_reason(exc))
+    from . import replay_capture
+    replay_capture.stock_decision(row, chain, bars, data, cfg)
     return row
 
 
@@ -407,6 +409,8 @@ class Worker:
         if row['eligible']:
             sid = bind_policy(row)
             row['signal_id'] = sid
+            from . import replay_capture
+            replay_capture.link(row, sid)
             def revalidate():
                 current = controls()
                 if self.stop_event.is_set() or current['revision'] != cfg['revision'] or not still_current(data):

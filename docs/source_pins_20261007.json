@@ -1,0 +1,46 @@
+{
+  "repository": "manchalakusumakar-spec/kadima",
+  "pr28_head": "263d52a7e8a825d08ae0b0e92ff744db5612d51f",
+  "pr20_head": "d584fe0eba27a8f23d2dfd2bac8fb68cb48501ce",
+  "evidence_commit": "b97b217a5a10828832ceae9e42b0acde73d7b273",
+  "files": {
+    "pr28": {
+      "analysis/evidence/audit_2026-10-05.csv": "92df0d5841843f987fe79f9bbf4d362d3421d754",
+      "kadima/angel_orders.py": "fe8b9b2e09dc8e28e453e8548fe0adcbea209604",
+      "kadima/auto_executor.py": "44dda869afac150574aafd473bd320fae3fa901b",
+      "kadima/capital_guard.py": "d3cfe78a4d6aa6a682bbb8b02c84779146db7fb6",
+      "kadima/celestial_exit.py": "9fec4eca50bc6da4793bb60652a1e7a12f32831c",
+      "kadima/config.py": "7c44a829f6b94de90cf9e538a3faad8bf3c0f1c2",
+      "kadima/engine.py": "7f9ddb10bbc3a144a82d6de982c5ca934e2433d1",
+      "kadima/execution_ledger.py": "db719ec9881825c7a24aadba12e5996996c8148c",
+      "kadima/execution_pricing.py": "fb27f668f152653ffb10d3f8b3a7990b86f95442",
+      "kadima/exit_manager.py": "4aa71e271b20fa6aba2afb4679301624c37772aa",
+      "kadima/fast_entry_quality.py": "2ee57d0bf5ba58696bf7cdfb19146b3457dc2cb4",
+      "kadima/fast_momentum.py": "044fe89d8302952a1c492e7068e4c386f31bcf0f",
+      "kadima/option_chain.py": "b2b9c4fea31e4528743e615319797e99d5e13e2c",
+      "kadima/risk_budget.py": "a8ccc00e3ef22edaec97e3f6f067ed915b2c212f",
+      "kadima/stock_fast.py": "e84932b645d584787df21e1bb94ce927d80b6cc3",
+      "kadima/storage.py": "0a843854ea467aa40fefb30f27e76681f64c8bba",
+      "kadima/trade_policy.py": "cc84936e0da3427b7721f982c6be0b47dc1cd669"
+    },
+    "pr20": {
+      "kadima/angel_orders.py": "6e379765f37044c255e5ca61b2a3b05abeec77dd",
+      "kadima/auto_executor.py": "ccba99a04ba08d0228adabb5f091939a4f496271",
+      "kadima/capital_guard.py": "ce1276a680c061e0642a3c245abf72209210363e",
+      "kadima/celestial_exit.py": "6c96f4bcba246df93325f6108ce3949d115a5a8e",
+      "kadima/config.py": "fb31412c01019a8875a2c9321d71b9b6c840024f",
+      "kadima/engine.py": "d51ff3aae35df5a226f3661921d01dff6a937da3",
+      "kadima/execution_ledger.py": "48017f3a3a59a0acada99c264ea3ec233f1203a3",
+      "kadima/execution_pricing.py": "fb27f668f152653ffb10d3f8b3a7990b86f95442",
+      "kadima/exit_manager.py": "4aa71e271b20fa6aba2afb4679301624c37772aa",
+      "kadima/fast_momentum.py": "7eb165d7ae89be70133b0a8a4d4efeed964a7d70",
+      "kadima/option_chain.py": "fe0d631935c198c3b6e51cae1f47ee79805c8e0c",
+      "kadima/price_history.py": "73cf94eff704674544b50568e59e9358e8f5383c",
+      "kadima/risk_budget.py": "a8ccc00e3ef22edaec97e3f6f067ed915b2c212f",
+      "kadima/stock_fast.py": "7773f7e60644d06f4328a8134bcb44065b1610c9",
+      "kadima/storage.py": "0a843854ea467aa40fefb30f27e76681f64c8bba",
+      "kadima/trade_audit.py": "66b12fa755e28e4d14e85c6691596f9bc7b6ec5c",
+      "kadima/trade_policy.py": "3d585c612c4d7adc0640d785a2e242d33529feb8"
+    }
+  }
+}
