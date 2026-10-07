@@ -14,6 +14,8 @@ def connection():
 
 
 def publish_quote(exchange, token, row):
+    from . import replay_capture
+    replay_capture.held_quote(exchange, token, row)
     depth = row.get('depth') or {}
     bids, asks = depth.get('buy') or [], depth.get('sell') or []
     bid = float(bids[0]['price']) if bids else None
@@ -41,6 +43,8 @@ def structure_exit_reason(index, direction, now=None):
     """
     now = now or now_ist()
     evidence = celestial.health('structure:' + index)
+    from . import replay_capture
+    replay_capture.structure(index, direction, now, evidence)
     if evidence and celestial.fresh(evidence['ts'], now) and celestial.fresh(evidence.get('spot_at'), now):
         vwap, spot = evidence.get('vwap'), evidence.get('spot')
         if celestial.finite(vwap, .000001) and celestial.finite(spot, .000001):

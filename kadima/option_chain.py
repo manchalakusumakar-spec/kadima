@@ -249,6 +249,8 @@ class OptionChain:
                 ltp=q.ltp,oi=q.oi,oi_change=q.oi_change,volume=q.volume,iv=q.iv,
                 delta=q.delta,gamma=q.gamma,theta=q.theta,vega=q.vega,bid=q.bid,ask=q.ask)
                 for q in self.quotes.values()])
+        from . import replay_capture
+        replay_capture.quotes(self)
         return True
 
     # ------------------------------------------------------------- analytics
