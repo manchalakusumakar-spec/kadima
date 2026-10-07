@@ -460,6 +460,10 @@ CSV_COLUMNS = (
     ('SL observed IST', 'sl_at'), ('Time to observed result seconds', 'time_to_result_seconds'),
     ('Time to T1 seconds', 'time_to_t1_seconds'), ('Time to T2 seconds', 'time_to_t2_seconds'),
     ('Time to stop seconds', 'time_to_sl_seconds'),
+    # Append columns: preserve existing CSV column order and existing immutable IDs.
+    ('Suggestion ID', 'audit_id'), ('Producer', 'producer'), ('Episode', 'episode'),
+    ('Exchange', 'exchange'), ('Token', 'token'),
+    ('Proposed holding basis', 'plan.holding_basis'),
 )
 
 
