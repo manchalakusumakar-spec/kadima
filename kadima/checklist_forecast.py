@@ -14,6 +14,7 @@ import sqlite3
 import tempfile
 import urllib.request
 from .greeks import bs_price, implied_vol_and_greeks
+from .rest_day_forecast import target_minutes, movement_windows, direction
 
 PROMPT_VERSION = 'kadima-checklist-1'
 PROMPT = '''You are KADIMA's observation-only intraday forecaster. Follow:
@@ -45,7 +46,7 @@ SCHEMA = obj({'assets': {'type': 'array', 'items': obj({
     'heat': {'type': 'integer', 'minimum': -5, 'maximum': 5},
     'reason': {'type': 'string'}, 'invalidation': {'type': 'string'},
     'checkpoints': {'type': 'array', 'items': obj({
-        'minute': {'type': 'integer'}, 'low': {'type': 'number'},
+        'minute': {'type': 'number'}, 'low': {'type': 'number'},
         'expected': {'type': 'number'}, 'high': {'type': 'number'}})}
 })}})
 
@@ -100,6 +101,8 @@ def validate(raw, inputs):
     if len(names) != len(raw['assets']) or len(names) != len(expected_names) or set(names) != expected_names:
         raise ValueError('asset_mismatch')
     spots = {a['name']: a['spot'] for a in inputs['assets']}
+    minutes = (target_minutes(timestamp(inputs['as_of']), timestamp(inputs['session_close']))
+        if inputs.get('horizon_kind') == 'rest_of_day' else list(range(5,61,5)))
     for a in raw['assets']:
         if set(a) != set(SCHEMA['properties']['assets']['items']['properties']):
             raise ValueError('unexpected_fields')
@@ -108,10 +111,10 @@ def validate(raw, inputs):
         if any(not isinstance(a[k], str) or not 1 <= len(a[k]) <= 1800 for k in ('reason', 'invalidation')):
             raise ValueError('invalid_explanation')
         points = a['checkpoints']
-        if not isinstance(points, list) or len(points) != 12:
+        if not isinstance(points, list) or len(points) != len(minutes):
             raise ValueError('incomplete_horizon')
-        for minute, p in zip(range(5, 61, 5), points):
-            if not isinstance(p, dict) or set(p) != {'minute', 'low', 'expected', 'high'} or type(p['minute']) is not int or p['minute'] != minute:
+        for minute, p in zip(minutes, points):
+            if not isinstance(p, dict) or set(p) != {'minute', 'low', 'expected', 'high'} or not number(p['minute'], True) or abs(p['minute']-minute) > 1e-8:
                 raise ValueError('invalid_checkpoint')
             if not all(number(p[k], True) for k in ('low', 'expected', 'high')) or not p['low'] <= p['expected'] <= p['high']:
                 raise ValueError('invalid_range')
@@ -125,8 +128,17 @@ def request_forecast(inputs, settings, opener=urllib.request.urlopen):
     key = settings.get('api_key', '')
     if not isinstance(key, str) or not key.strip():
         raise ValueError('waiting_for_api_key')
+    prompt = PROMPT
+    if inputs.get('horizon_kind') == 'rest_of_day':
+        minutes = target_minutes(timestamp(inputs['as_of']), timestamp(inputs['session_close']))
+        prompt = prompt.replace('For EVERY supplied asset return 12 checkpoints at 5,10,...,60 minutes from as_of.',
+            'For NIFTY return one checkpoint at EACH exact minute offset in this grid: '
+            + json.dumps(minutes) + '. These checkpoints end at session close. '
+            'Describe anticipated movement windows in IST in the reason. '
+            'Constituent momentum is observed evidence, not a guaranteed leading signal. '
+            'Do not claim 90% accuracy or exact turning times.')
     payload = dict(model=settings.get('model', 'gpt-5-mini'), store=False,
-        instructions=PROMPT, input=json.dumps(inputs, allow_nan=False),
+        instructions=prompt, input=json.dumps(inputs, allow_nan=False),
         max_output_tokens=12000,
         text={'format': dict(type='json_schema', name='kadima_forecast', strict=True, schema=SCHEMA)})
     if payload['model'] == 'gpt-5-mini':
@@ -205,6 +217,7 @@ class Journal:
             CREATE TABLE IF NOT EXISTS targets(run_id TEXT, name TEXT, minute INTEGER, target_at TEXT,
               base REAL, expected REAL, low REAL, high REAL, actual REAL, actual_at TEXT, target_epoch REAL,
               PRIMARY KEY(run_id,name,minute));
+            CREATE TABLE IF NOT EXISTS movement_runs(run_id TEXT PRIMARY KEY);
             CREATE TABLE IF NOT EXISTS attempts(at TEXT PRIMARY KEY, day TEXT);
             CREATE INDEX IF NOT EXISTS target_lookup ON targets(name,actual,target_epoch);
             ''')
@@ -224,6 +237,8 @@ class Journal:
     def record(self, report, inputs):
         with self.connect() as c:
             c.execute('INSERT INTO runs VALUES (?,?,?,?)', (report['id'], report['issued_at'], json.dumps(inputs, allow_nan=False), json.dumps(report, allow_nan=False)))
+            if report.get('horizon_kind') == 'rest_of_day':
+                c.execute('INSERT INTO movement_runs VALUES (?)', (report['id'],))
             by_name = {a['name']: a for a in inputs['assets']}
             for a in report['assets']:
                 for p in a['checkpoints']:
@@ -251,10 +266,50 @@ class Journal:
             note='First source sample in [target, target+30s]. Missing samples stay unscored. Overlapping forecasts are not independent. Metrics are separated by asset and horizon.')
 
 
+    def movement_metrics(self):
+        """Adjacent endpoint movement, not exact intra-window turning-time accuracy.
+
+        Score only complete adjacent endpoints of immutable published forecasts.
+        Stream rows to keep memory bounded as the journal grows.
+        """
+        total = scored = direction_hits = range_hits = joint_hits = broad = 0
+        last_run, prior_actual, prior_expected = None, None, None
+        with self.connect() as c:
+            rows = c.execute('SELECT t.run_id,t.base,t.expected,t.low,t.high,t.actual FROM targets t JOIN (SELECT run_id FROM movement_runs ORDER BY rowid DESC LIMIT 100) m ON m.run_id=t.run_id ORDER BY t.run_id,t.minute')
+            for rid,base,expected,low,high,actual in rows:
+                if rid != last_run:
+                    prior_actual = prior_expected = base
+                    last_run = rid
+                total += 1
+                if actual is not None and prior_actual is not None:
+                    scored += 1
+                    dh = direction(prior_actual,actual) == direction(prior_expected,expected)
+                    # Count containment separately; wide ranges cannot earn a joint hit.
+                    rh = low <= actual <= high
+                    wide = (high-low)/base*10000 > 100
+                    direction_hits += dh
+                    range_hits += rh
+                    broad += wide
+                    joint_hits += dh and rh and not wide
+                prior_actual, prior_expected = actual, expected
+        return dict(target_accuracy=.90, target_status='unverified', metric_scope='latest_100_rest_day_runs', total_windows=total,
+            scored_windows=scored, coverage=scored/total if total else None,
+            direction_accuracy=direction_hits/scored if scored else None,
+            endpoint_range_containment=range_hits/scored if scored else None,
+            joint_window_accuracy=joint_hits/scored if scored else None,
+            overly_broad_scored_windows=broad, direction_deadband_bps=5, max_range_width_bps=100,
+            exact_turning_time_accuracy=None,
+            note='Window endpoint movement only; first sample within 30 seconds of target. Missing endpoints are unscored. Overlapping forecasts are dependent; this is descriptive, not held-out validation or calibrated confidence.')
+
+
 def make_report(inputs, assets, model, issued_at, contracts=()):
     asof = timestamp(inputs['as_of'])
     if not 0 <= (issued_at-asof).total_seconds() < 120:
         raise ValueError('late_model_response')
+    rest_day = inputs.get('horizon_kind') == 'rest_of_day'
+    minutes = target_minutes(asof, timestamp(inputs['session_close'])) if rest_day else list(range(5,61,5))
+    if issued_at >= asof+timedelta(minutes=minutes[0]):
+        raise ValueError('forecast_issued_after_first_target')
     output = json.loads(json.dumps(assets))
     by_name = {a['name']: a for a in inputs['assets']}
     for a in output:
@@ -262,15 +317,19 @@ def make_report(inputs, assets, model, issued_at, contracts=()):
         a['source_times'] = {k:source.get(k) for k in ('spot_at','technicals_at')}
         a['source_times']['option_chain_at'] = (source.get('option_chain') or {}).get('as_of')
         a['missing_inputs'] = source.get('unavailable',[])
+        if rest_day:
+            a['movement_windows'] = movement_windows(asof, source['spot'], a['checkpoints'])
         for p in a['checkpoints']:
             p['target_at'] = (asof+timedelta(minutes=p['minute'])).isoformat()
     encoded = json.dumps(inputs, sort_keys=True, allow_nan=False).encode()
     digest = hashlib.sha256(encoded).hexdigest()
     return dict(schema_version=1, mode='observation', status='forecast_recorded',
         id=hashlib.sha256((digest+issued_at.isoformat()).encode()).hexdigest(),
-        prompt_version=PROMPT_VERSION, model=model, input_sha256=digest,
+        prompt_version=PROMPT_VERSION+('-rest-day-1' if rest_day else ''), model=model,
+        horizon_kind='rest_of_day' if rest_day else 'one_hour', accuracy_target=.90 if rest_day else None,
+        accuracy_status='unverified', input_sha256=digest,
         as_of=asof.isoformat(), issued_at=issued_at.isoformat(),
-        expires_at=(asof+timedelta(minutes=60)).isoformat(), assets=output,
+        expires_at=(asof+timedelta(minutes=minutes[-1])).isoformat(), assets=output,
         checklist_availability=inputs['availability'], excluded_assets=inputs.get('excluded_assets',{}),
         premium_scenarios=[premium_scenario(c, a, asof) for c in contracts for a in output if c['name']==a['name']],
         execution_effect='none; ordinary trailing and structural protection remain authoritative')
@@ -302,3 +361,4 @@ def enrich_options(option_data, spot, now, market_close):
     except (ValueError,KeyError,TypeError,OverflowError):
         data['greeks_assumption'] = 'modelled Greeks unavailable'
     return data
+
