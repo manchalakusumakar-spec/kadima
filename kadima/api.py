@@ -74,6 +74,7 @@ def state() -> dict:
         "ts": now_ist().isoformat(),
         "market_open": in_market_hours(),
         "indices": {},
+        "nifty_constituent_radar": ENGINE.constituent_radar.snapshot(),
         "unavailable": UNAVAILABLE,
         "notes": NOTES,
     }
@@ -267,3 +268,4 @@ REVIEW_GUARDRAIL = (
     "Below that threshold the correct answer is 'insufficient sample'. "
     "Patterns found in 20-40 outcomes are almost always noise."
 )
+

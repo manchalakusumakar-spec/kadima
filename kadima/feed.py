@@ -40,6 +40,7 @@ class TickFeed:
 
     def __init__(self, on_tick) -> None:
         self.on_tick = on_tick
+        self.transient_tokens = set()
         self._subs: dict[str, list[str]] = {}   # exchange_type -> tokens
         self._ws = None
         self._last_tick_at: float = 0.0
@@ -50,7 +51,8 @@ class TickFeed:
 
     # ------------------------------------------------------------ subscription
     def subscribe(self, exchange_type: int, tokens: list[str]) -> None:
-        self._subs.setdefault(str(exchange_type), []).extend(tokens)
+        existing = self._subs.setdefault(str(exchange_type), [])
+        existing.extend(t for t in dict.fromkeys(tokens) if t not in existing)
 
     def _token_list(self) -> list[dict]:
         return [{"exchangeType": int(k), "tokens": v}
@@ -84,11 +86,17 @@ class TickFeed:
 
             tick = {"ts": ts, "token": token, "ltp": ltp, "volume": vol,
                     "bid": bid_px, "ask": ask_px}
+            tick["exchange_type"] = message.get("exchange_type")
+            try:
+                tick["exchange_ts"] = datetime.fromtimestamp(float(message["exchange_timestamp"])/1000, IST)
+            except (KeyError, TypeError, ValueError, OverflowError, OSError):
+                tick["exchange_ts"] = None
             self._last_tick_at = time.monotonic()
 
             try:
-                self._writer_q.put_nowait(
-                    (ts.isoformat(), token, None, ltp, vol, bid_px, ask_px))
+                if not (token in self.transient_tokens and tick["exchange_type"] == 1):
+                    self._writer_q.put_nowait(
+                        (ts.isoformat(), token, None, ltp, vol, bid_px, ask_px))
             except queue.Full:
                 audit.log("tick_queue_full")
 
@@ -191,3 +199,4 @@ class TickFeed:
         self._stop.set()
         self._teardown()
         audit.log("feed_stopped")
+

@@ -32,6 +32,7 @@ from .config import (EMA_FAST, EMA_SLOW, GAMMA_EXPIRY_ONLY, GAMMA_INDICES,
                      MA_LONG, MARKET_CLOSE, NO_NEW_SIGNALS_AFTER_HOUR,
                      OI_POLL_SEC, ORDER_PLACEMENT_ENABLED, RSI_PERIOD)
 from .feed import TickFeed
+from .constituent_radar import ConstituentRadar
 from .option_chain import OptionChain
 from .scrip_master import ScripMaster
 from .session import SESSION
@@ -107,6 +108,7 @@ class Engine:
         self.states: dict[str, IndexState] = {}
         self.token_to_index: dict[str, str] = {}
         self.feed = TickFeed(self._on_tick)
+        self.constituent_radar = ConstituentRadar.from_environment(self.scrips.rows)
         self._stop = threading.Event()
 
         for name, idx in self.scan_indices.items():
@@ -195,6 +197,9 @@ class Engine:
             self.feed.subscribe(EXCHANGE_TYPE[idx.exchange], [idx.token])
         if self.bank_tokens:
             self.feed.subscribe(EXCHANGE_TYPE['NSE'], list(self.bank_tokens))
+        radar_tokens = set(self.constituent_radar.tokens)
+        self.feed.transient_tokens = radar_tokens - set(self.bank_tokens) - set(self.token_to_index)
+        self.feed.subscribe(EXCHANGE_TYPE["NSE"], sorted(radar_tokens - set(self.bank_tokens)))
         self.feed.start()
         threading.Thread(target=self._oi_loop, daemon=True, name="oi-poll").start()
         threading.Thread(target=self._shutdown_loop, daemon=True,
@@ -234,6 +239,7 @@ class Engine:
 
     # ------------------------------------------------------------------ ticks
     def _on_tick(self, tick: dict) -> None:
+        self.constituent_radar.on_tick(tick)
         bank_name = self.bank_tokens.get(tick["token"])
         if bank_name:
             bank = self.bank_states[bank_name]
@@ -655,3 +661,4 @@ class Engine:
                 audit.log("market_close_shutdown")
                 self.stop()
                 return
+

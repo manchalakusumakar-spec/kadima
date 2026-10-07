@@ -150,6 +150,9 @@ class ForecastObserver:
     def collect(self, now):
         assets, excluded, contracts = [], {}, []
         context, availability = supplemental(now)
+        radar = self.engine.constituent_radar.snapshot(now)
+        context["nifty_constituent_radar"] = radar
+        availability["nifty_constituent_radar"] = radar["status"]
         states = dict(self.engine.states)
         stock = getattr(self.engine.stock_worker,'forecast_state',None)
         if stock:
@@ -187,6 +190,8 @@ class ForecastObserver:
 
     def status(self, state):
         metrics = self.journal.metrics() if self.journal else {}
+        if self.journal:
+            metrics['rest_of_day'] = self.journal.movement_metrics()
         write_private(STATUS,dict(mode='observation',status=state,checked_at=now_ist().isoformat(),metrics=metrics,
             execution_effect='none',cadence_seconds=300))
 
@@ -209,10 +214,17 @@ class ForecastObserver:
             self.status('waiting_for_api_key')
             return
         closing = now.replace(hour=config.MARKET_CLOSE[0],minute=config.MARKET_CLOSE[1],second=0,microsecond=0)
-        if not in_market_hours() or now.weekday()>=5 or now+timedelta(hours=1)>closing:
-            self.status('outside_one_hour_forecast_window')
+        rest_day = settings.get('horizon_kind') == 'rest_of_day'
+        required = timedelta(minutes=2) if rest_day else timedelta(hours=1)
+        if not in_market_hours() or now.weekday()>=5 or now+required>closing:
+            self.status('outside_forecast_window')
             return
         inputs, contracts = self.collect(now)
+        if rest_day:
+            inputs['assets'] = [a for a in inputs['assets'] if a['name'] == 'NIFTY']
+            contracts = [c for c in contracts if c['name'] == 'NIFTY']
+            inputs['horizon_kind'] = 'rest_of_day'
+            inputs['session_close'] = closing.isoformat()
         if not inputs['assets']:
             self.status('waiting_for_fresh_market_inputs')
             return
@@ -250,3 +262,4 @@ class ForecastObserver:
                 except Exception:
                     pass
             self._stop.wait(5)
+
