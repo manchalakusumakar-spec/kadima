@@ -1,4 +1,4 @@
-import ast, unittest, types
+import ast, unittest, types, math
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1]
@@ -13,17 +13,19 @@ class Tests(unittest.TestCase):
         contract={'token':'569900','instrumenttype':'FUTCOM'}
         def fetch(tokens):
             mono[0]+=2.0
-            return {'quote_at':started+timedelta(seconds=2-age_after_response)}
-        def quotes(contracts,response,received):
-            captured.append(received)
-            age=(received-response['quote_at']).total_seconds()
-            return [contract|{'fresh':0<=age<=90}]
+            stamp=(started+timedelta(seconds=2-age_after_response)).strftime('%d-%b-%Y %H:%M:%S')
+            return {'status':True,'data':{'fetched':[{'exchange':'MCX','symbolToken':'569900',
+                'ltp':8691,'exchFeedTime':stamp,'exchTradeTime':stamp,
+                'depth':{'buy':[{'price':8691}],'sell':[{'price':8692}]}}]}}
         ns={'now_ist':lambda:started,'monitoring_window':lambda n:True,
             'catalog':lambda rows,day:[contract],'select_futures':lambda c:c,
-            'select_options':lambda c,r:[], 'quote_rows':quotes,
-            'number':lambda n:n,'PremiumWindow':object,'timedelta':timedelta,
+            'select_options':lambda c,r:[],
+            'PremiumWindow':object,'timedelta':timedelta,'datetime':datetime,'IST':started.tzinfo,'math':math,
             'monotonic_clock':types.SimpleNamespace(monotonic=lambda:mono[0])}
-        exec(compile(ast.Module(body=[poll],type_ignores=[]),str(source),'exec'),ns)
+        helpers=[n for n in tree.body if isinstance(n,ast.FunctionDef) and n.name in ('number','exchange_time','recent','quote_rows')]
+        exec(compile(ast.Module(body=helpers+[poll],type_ignores=[]),str(source),'exec'),ns)
+        real_quotes=ns['quote_rows']
+        ns['quote_rows']=lambda contracts,response,received:(captured.append(received),real_quotes(contracts,response,received))[1]
         obj=types.SimpleNamespace(rows=[],windows={})
         ns['poll'](obj,[],fetch,started)
         self.assertTrue(obj.ok)
