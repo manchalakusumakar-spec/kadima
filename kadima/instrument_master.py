@@ -161,11 +161,19 @@ def _absorb_row(row: dict, lot_map: dict, sym_map: dict,
     if itype == "OPTSTK":
         name = row.get("name")
         if name:
-            # keep one representative lot size per underlying; the most
-            # recently seen row wins, which is fine — lot size is a
-            # per-underlying property that rarely differs across a
-            # single underlying's active expiries at any given moment
-            universe_map[name] = {"lot_size": lot_i, "opt_exchange": exch}
+            # Prefer NSE/NFO whenever the same underlying is listed on both
+            # derivatives venues. OpenAPIScripMaster ordering is not stable
+            # enough to use "last row wins": BFO rows can appear after NFO
+            # rows and would otherwise overwrite nearly the entire NSE F&O
+            # stock universe. BFO-only underlyings remain BFO.
+            current = universe_map.get(name)
+            if (current is None
+                    or current.get("opt_exchange") != "NFO"
+                    and exch == "NFO"):
+                universe_map[name] = {
+                    "lot_size": lot_i,
+                    "opt_exchange": exch,
+                }
 
 
 def refresh_cache() -> bool:
