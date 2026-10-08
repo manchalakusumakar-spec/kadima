@@ -171,9 +171,9 @@ class TickFeed:
                 self._teardown()
                 time.sleep(backoff)
                 # a dead socket is often a dead session
-                if self._retries % 3 == 0:
-                    SESSION.ensure(force=True)
                 try:
+                    if self._retries % 3 == 0:
+                        SESSION.ensure(force=True)
                     self._connect()
                 except Exception as exc:                # noqa: BLE001
                     audit.log("ws_reconnect_failed", error=str(exc))
