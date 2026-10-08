@@ -3,7 +3,7 @@ import json
 from pathlib import Path
 import tempfile
 import unittest
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 from kadima import commodity_watch as c
 from kadima.config import IST
@@ -27,6 +27,13 @@ def response(tokens):
 
 
 class Monitor(unittest.TestCase):
+    def setUp(self):
+        # Fixed historical quotes and snapshots share one deterministic clock.
+        # Receipt-delay/future/stale behavior is covered by the production suite.
+        clock = patch.object(c.monotonic_clock, 'monotonic', return_value=0.0)
+        clock.start()
+        self.addCleanup(clock.stop)
+
     def test_evening_window_and_user_cap_do_not_change_equity_hours(self):
         from kadima.utils import in_market_hours
         self.assertTrue(c.monitoring_window(NOW))
