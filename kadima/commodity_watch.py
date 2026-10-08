@@ -1,7 +1,8 @@
 """Read-only MCX futures/options monitoring, isolated from the order executor."""
-from datetime import datetime, time
+from datetime import datetime, time, timedelta
 import json
 import math
+import time as monotonic_clock
 from pathlib import Path
 
 from .config import IST
@@ -148,10 +149,17 @@ class CommodityWatch:
             futures = select_futures(contracts)
             if not futures:
                 raise ValueError('contracts_unavailable')
-            rows = quote_rows(futures, fetch([row['token'] for row in futures]), now)
+            started = monotonic_clock.monotonic()
+            response = fetch([row['token'] for row in futures])
+            now += timedelta(seconds=monotonic_clock.monotonic() - started)
+            rows = quote_rows(futures, response, now)
             options = select_options(contracts, rows)
             if options:
-                rows += quote_rows(options, fetch([row['token'] for row in options]), now)
+                started = monotonic_clock.monotonic()
+                response = fetch([row['token'] for row in options])
+                now += timedelta(seconds=monotonic_clock.monotonic() - started)
+                rows += quote_rows(options, response, now)
+            self.checked_at = now.isoformat()
             retained = {}
             for row in rows:
                 if row['instrumenttype'] != 'OPTFUT':
