@@ -1,4 +1,4 @@
-"""Offline tests for the broker-free Move Capture shadow engine."""
+"""Offline tests for the broker-free Move Capture detector/service."""
 from datetime import datetime, timedelta
 import ast
 import json
@@ -44,6 +44,8 @@ class DetectorTests(unittest.TestCase):
         self.assertTrue(promoted)
         self.assertEqual(row["direction"], "CE")
         self.assertGreaterEqual(row["score"], detector.trigger_score)
+        self.assertTrue(row["episode"].startswith("move:UP:CE:"))
+        self.assertLess(row["spot_stop"], row["price"])
         self.assertEqual(detector.snapshot(datetime.fromisoformat(row["observed_at"]))["hot"][0]["underlying"], "UP")
 
     def test_down_impulse_promotes_pe(self):
@@ -52,6 +54,7 @@ class DetectorTests(unittest.TestCase):
         self.assertTrue(promoted)
         self.assertEqual(row["direction"], "PE")
         self.assertGreaterEqual(row["score"], detector.trigger_score)
+        self.assertGreater(row["spot_stop"], row["price"])
 
     def test_hot_list_is_bounded(self):
         detector = MoveCaptureDetector(max_hot=3)
@@ -71,11 +74,11 @@ class DetectorTests(unittest.TestCase):
         detector.ingest(identity, datetime(2026, 9, 21, 10, tzinfo=IST), -1, 10)
         self.assertEqual(detector.trackers, {})
 
-    def test_score_is_explicitly_shadow_only(self):
+    def test_detector_itself_never_claims_execution(self):
         detector = MoveCaptureDetector()
         feed_impulse(detector, "UP")
         snap = detector.snapshot(datetime(2026, 9, 21, 9, 22, tzinfo=IST))
-        self.assertEqual(snap["mode"], "SHADOW_OBSERVE_ONLY")
+        self.assertEqual(snap["mode"], "DETECTOR_ONLY")
         self.assertFalse(snap["execution_enabled"])
         self.assertIn("not a win probability", snap["score_note"])
 
@@ -86,6 +89,7 @@ class ServiceTests(unittest.TestCase):
             dict(name="AAA", spot_exchange="NSE", spot_token="1", opt_exchange="NFO"),
             dict(name="AAA", spot_exchange="NSE", spot_token="1", opt_exchange="BFO"),
             dict(name="BBB", spot_exchange="NSE", spot_token="2", opt_exchange="NFO"),
+            dict(name="BFOONLY", spot_exchange="NSE", spot_token="3", opt_exchange="BFO"),
         ]
         fake_indices = {
             "NIFTY": type("I", (), dict(exchange="NSE", token="999"))(),
