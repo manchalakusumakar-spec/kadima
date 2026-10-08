@@ -58,6 +58,7 @@ from __future__ import annotations
 import json
 import os
 import time
+import tempfile
 import urllib.request
 from typing import Optional
 
@@ -87,14 +88,19 @@ def _cache_age_hours(path: str) -> float:
 
 def _download_to_temp() -> str:
     os.makedirs(CACHE_DIR, exist_ok=True)
-    tmp = os.path.join(CACHE_DIR, "_scripmaster.tmp.json")
-    with urllib.request.urlopen(SCRIP_MASTER_URL, timeout=120) as resp, open(tmp, "wb") as f:
-        while True:
-            chunk = resp.read(1 << 20)  # 1MB chunks, never whole file in RAM
-            if not chunk:
-                break
-            f.write(chunk)
-    return tmp
+    fd, tmp = tempfile.mkstemp(prefix="_scripmaster-", suffix=".json", dir=CACHE_DIR)
+    try:
+        with os.fdopen(fd, "wb") as f, urllib.request.urlopen(SCRIP_MASTER_URL, timeout=120) as resp:
+            while True:
+                chunk = resp.read(1 << 20)  # 1MB chunks, never whole file in RAM
+                if not chunk:
+                    break
+                f.write(chunk)
+        return tmp
+    except BaseException:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+        raise
 
 
 def _extract_compact(tmp_path: str) -> tuple[dict, dict, dict, dict]:
@@ -166,11 +172,19 @@ def _absorb_row(row: dict, lot_map: dict, sym_map: dict,
     if itype == "OPTSTK":
         name = row.get("name")
         if name:
-            # keep one representative lot size per underlying; the most
-            # recently seen row wins, which is fine — lot size is a
-            # per-underlying property that rarely differs across a
-            # single underlying's active expiries at any given moment
-            universe_map[name] = {"lot_size": lot_i, "opt_exchange": exch}
+            # Prefer NSE/NFO whenever the same underlying is listed on both
+            # derivatives venues. OpenAPIScripMaster ordering is not stable
+            # enough to use "last row wins": BFO rows can appear after NFO
+            # rows and would otherwise overwrite nearly the entire NSE F&O
+            # stock universe. BFO-only underlyings remain BFO.
+            current = universe_map.get(name)
+            if (current is None
+                    or current.get("opt_exchange") != "NFO"
+                    and exch == "NFO"):
+                universe_map[name] = {
+                    "lot_size": lot_i,
+                    "opt_exchange": exch,
+                }
 
 
 def refresh_cache() -> bool:
@@ -182,9 +196,17 @@ def refresh_cache() -> bool:
         if not lot_map:
             return False
         os.makedirs(CACHE_DIR, exist_ok=True)
-        with open(COMPACT_CACHE, "w") as f:
-            json.dump({"schema": CACHE_SCHEMA, "lot": lot_map, "sym": sym_map,
-                       "universe": universe_map, "spot": spot_map}, f)
+        fd, output = tempfile.mkstemp(prefix=".lotsize-", suffix=".json", dir=CACHE_DIR)
+        try:
+            with os.fdopen(fd, "w") as f:
+                json.dump({"schema": CACHE_SCHEMA, "lot": lot_map, "sym": sym_map,
+                           "universe": universe_map, "spot": spot_map}, f)
+                f.flush()
+                os.fsync(f.fileno())
+            os.replace(output, COMPACT_CACHE)
+        finally:
+            if os.path.exists(output):
+                os.remove(output)
         return True
     except Exception:
         return False
