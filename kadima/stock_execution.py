@@ -183,14 +183,22 @@ class StockExecutionWorker:
                         busy = bool(self.executor.state.positions)
                     if busy:
                         self.update_held()
-                    elif not self.executor._reconcile_blocked:
+                    if not self.executor._reconcile_blocked:
                         for row in stock_handoff.candidates():
+                            # Filled positions are supported by the shared capacity
+                            # guard. Only unresolved/inconsistent exposure blocks
+                            # candidate preparation; sizing stays in AutoExecutor.
+                            from . import execution_ledger, portfolio_capacity
+                            with self.executor._lock:
+                                blocked = portfolio_capacity.entry_block(
+                                    self.executor.state.positions, execution_ledger.pending())
+                            if blocked:
+                                break
                             try:
                                 self.process(row)
                             except Exception as exc:
                                 audit.log('stock_entry_preparation_rejected',name=row['name'],error=type(exc).__name__)
-                            if self.executor.state.positions:
-                                break
+
                 except Exception as exc:
                     audit.log('stock_execution_worker_error',error=type(exc).__name__)
             self._stop.wait(10)
