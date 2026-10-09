@@ -74,6 +74,8 @@
   .toast { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); background: var(--panel2); border: 1px solid var(--line);
            border-radius: 10px; padding: 10px 14px; display: none; max-width: 92vw; z-index: 10; }
   .toast.ok { border-color: var(--up); } .toast.err { border-color: var(--down); }
+  body.embed { background: transparent; }
+  body.embed .wrap { padding: 0 0 8px; max-width: none; }
   @media (max-width: 640px) {
     .grid { grid-template-columns: 1fr; }
     .trade { grid-template-columns: 1fr 1fr; }
@@ -141,9 +143,15 @@
   const hhmm = s => s ? s.slice(11, 16) : '';
   let token = null, data = null, viewDay = null, pending = null;
   $('idx').textContent = INDEX;
+  if (new URLSearchParams(location.search).get('embed')) document.body.classList.add('embed');
 
   function getToken() {
-    try { token = localStorage.getItem('kadima_token'); } catch (e) { token = null; }
+    // Reuse a token Celestial already saved on this site, if any.
+    try {
+      const keys = ['kadima_token', 'KADIMA_CONTROL_TOKEN', 'kadima_control_token', 'kadimaToken',
+                    'controlToken', 'control_token', 'apiToken', 'api_token', 'token'];
+      for (const k of keys) { const v = localStorage.getItem(k) || sessionStorage.getItem(k); if (v) { token = v; break; } }
+    } catch (e) { token = null; }
     if (!token) {
       token = prompt('KADIMA control token');
       if (token) try { localStorage.setItem('kadima_token', token); } catch (e) {}
