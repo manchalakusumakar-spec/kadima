@@ -120,3 +120,42 @@ Rollback: `cp ~/backup-hf/*.py kadima/ && sudo systemctl restart kadima`.
 | `web/hourly_forecast.html` | Celestial panel: 7 charts, scorecard, trade buttons |
 | `tools/forecast_backtest.py` | Walk-forward backtest and tuning on real candles |
 | `tools/test_*` | Offline tests (no broker) |
+
+## Self-audit and automatic correction (v2, 9 Oct 2026)
+
+**After every slot (inside the engine):**
+- Scores the slot (FLAT now counts as a hit within ±0.10%).
+- Finds where the actual broke away ("deviated at HH:MM") and tags the reasons:
+  trend day against the forecast, band breach, option-chain shift missed,
+  a part biased all day, opening gap, reversal, small move (noise), engine down.
+- Champion/challenger retune: new weights are fitted on older slots and
+  adopted only if, on the most recent 20 slots, nothing gets materially worse
+  and at least one measure clearly improves. Each weight moves at most 0.10
+  per step. Every change is stored with its reason.
+- If direction calls drop below 52% over 30+ recent calls, the panel switches
+  to RANGE ONLY (band without direction) until they recover to 55%.
+- Panel: each card shows "Reason found for deviation" and "Modification
+  done"; a Self-tuning section shows each part's weight and record.
+
+**Every weekday at 16:05 IST** (`kadima-forecast-nightly` timer, after the
+engine has stopped and logged out): tops up NIFTY 5‑minute history from Angel
+One towards two years, replays the last 120 sessions, refits the starting
+weights and runs the same guarded retune on a 70-slot holdout.
+
+Parts with their own learned weight: pattern regression, similar days,
+technicals (EMA/RSI/TWAP), Bull Shield, trend day, option chain (PCR change,
+CE/PE wall moves). New parts start small and earn weight only from results.
+
+### Deploy v2 (after 15:40)
+
+```bash
+cd ~/kadima-py
+git fetch origin hourly-forecast
+git checkout origin/hourly-forecast -- kadima/hourly_forecast.py kadima/hourly_forecast_model.py \
+  web/hourly_forecast.html web/celestial_forecast_embed.js tools/install_celestial_embed.py \
+  tools/forecast_nightly.py tools/install_forecast_nightly.py tools/forecast_day_report.py \
+  tools/test_hourly_forecast.py
+sudo python3 tools/install_celestial_embed.py
+sudo python3 tools/install_forecast_nightly.py --run-now
+sudo systemctl restart kadima
+```

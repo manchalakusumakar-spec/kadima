@@ -64,6 +64,20 @@
   .legend { display: flex; gap: 14px; color: var(--muted); font-size: 12px; margin: 0 0 10px; flex-wrap: wrap; }
   .legend i { display: inline-block; width: 18px; height: 0; border-top: 2px solid; vertical-align: middle; margin-right: 5px; }
   .note { color: var(--dim); font-size: 12px; margin-top: 18px; }
+  .audit { margin-top: 8px; border-top: 1px solid var(--line); padding-top: 8px; font-size: 12.5px; }
+  .audit b { color: var(--muted); font-weight: 600; display: block; margin-top: 6px; font-size: 11.5px; letter-spacing: .3px; }
+  .audit ul { margin: 2px 0 0; padding-left: 16px; }
+  .audit li { margin: 1px 0; }
+  .audit .mod { color: var(--text); }
+  .audit .devt { color: var(--flat); }
+  .tuning { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin-top: 14px; }
+  .tuning h3 { margin: 0 0 8px; font-size: 14px; }
+  .tgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(340px, 1fr)); gap: 8px 24px; }
+  .wrow { display: grid; grid-template-columns: 96px minmax(80px, 1fr) 38px 96px; align-items: center; gap: 8px; font-size: 12.5px; white-space: nowrap; }
+  .wbar { height: 8px; background: var(--panel2); border-radius: 4px; position: relative; overflow: hidden; }
+  .wbar i { position: absolute; top: 0; bottom: 0; background: var(--accent); }
+  .changes { margin: 10px 0 0; padding-left: 16px; color: var(--muted); font-size: 12px; }
+  .chip.range { background: rgba(242,184,75,.15); color: var(--flat); }
   .modal { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: none; align-items: center; justify-content: center; padding: 16px; z-index: 9; }
   .modal.open { display: flex; }
   .box { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px; max-width: 380px; width: 100%; }
@@ -121,6 +135,7 @@
   </div>
 
   <div class="grid" id="grid"></div>
+  <div class="tuning" id="tuning"></div>
   <div class="note" id="note"></div>
 </div>
 
@@ -204,12 +219,18 @@
     [start, ...pts.map(p => ({ts: p.ts}))].forEach((p, i) => {
       if (i % step === 0 || i === pts.length) g += `<text x="${xs(p.ts)}" y="${H - 6}" fill="var(--dim)" font-size="9" text-anchor="middle">${hhmm(p.ts)}</text>`;
     });
+    let dev = '';
+    if (s.audit && s.audit.deviation_from) {
+      const x = xs(s.audit.deviation_from);
+      dev = `<line x1="${x}" x2="${x}" y1="${T}" y2="${H - B}" stroke="var(--flat)" stroke-width="1" stroke-dasharray="3 3"/>` +
+            `<text x="${Math.min(x + 3, W - 40)}" y="${T + 9}" fill="var(--flat)" font-size="9">deviated ${hhmm(s.audit.deviation_from)}</text>`;
+    }
     const liveDot = s.live ? `<circle cx="${xs(s.live.ts)}" cy="${ys(s.live.price)}" r="4" fill="var(--live)"><animate attributeName="r" values="3;5;3" dur="1.6s" repeatCount="indefinite"/></circle>` : '';
     return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Forecast versus actual ${s.slot} to ${s.slot_end}">
       ${g}<path d="${band}" fill="var(--band)"/>
       <path d="${path(fc)}" fill="none" stroke="var(--fc)" stroke-width="2" stroke-dasharray="5 4"/>
       ${act.length > 1 ? `<path d="${path(act)}" fill="none" stroke="var(--actual)" stroke-width="2"/>` : ''}
-      ${liveDot}</svg>`;
+      ${dev}${liveDot}</svg>`;
   }
 
   function card(s) {
@@ -218,7 +239,9 @@
     if (s.late) chips += ' <span class="chip late" title="Engine was not running at the slot start; rebuilt from the slot open and excluded from calibration">LATE</span>';
     if (s.score && s.score.dir_hit != null) chips += ` <span class="chip ${s.score.dir_hit ? 'hit' : 'miss'}">${s.score.dir_hit ? 'HIT' : 'MISS'}</span>`;
     let head = '';
-    if (s.direction) {
+    if (s.direction && data && data.model && data.model.band_only && s.status === 'live') {
+      head = '<span class="chip range">RANGE ONLY</span>';
+    } else if (s.direction) {
       const arrow = {UP: '▲', DOWN: '▼', FLAT: '◆'}[s.direction];
       const p = s.direction === 'DOWN' ? 1 - s.prob_up : s.direction === 'UP' ? s.prob_up : Math.max(s.prob_up, 1 - s.prob_up);
       head = `<span class="dir ${s.direction}">${arrow} ${s.direction} ${Math.round(p * 100)}%</span>`;
@@ -241,7 +264,43 @@
     }
     return `<div class="card ${st}">
       <div class="row"><span class="slot">${s.slot} – ${s.slot_end}</span>${chips}<span class="grow"></span>${head}</div>
-      ${kv}${chart(s)}</div>`;
+      ${kv}${chart(s)}${auditBlock(s)}</div>`;
+  }
+
+  function esc(t) { return String(t).replace(/[&<>]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;'})[c]); }
+
+  function auditBlock(s) {
+    const a = s.audit;
+    if (!a) return s.status === 'live' ? '<div class="audit"><b>AUDIT</b>Runs when this hour\'s actual is complete.</div>' : '';
+    const hit = s.score && s.score.dir_hit;
+    const dev = a.deviation_from
+      ? `<span class="devt">${hit ? 'Direction right, but the path ' : 'Deviated: price '}${esc(a.deviation_kind || 'moved away')} at ${hhmm(a.deviation_from)}</span>`
+      : 'Stayed close to the forecast path';
+    const reasons = (a.reasons || []).length ? '<ul>' + a.reasons.map(r => `<li>${esc(r)}</li>`).join('') + '</ul>'
+                  : (hit ? (a.deviation_from ? 'Direction was right; only the size of the move differed.' : 'Forecast held; nothing to correct.')
+                         : 'No rule matched.');
+    return `<div class="audit">${dev}
+      <b>REASON FOUND FOR DEVIATION</b>${reasons}
+      <b>MODIFICATION DONE</b><span class="mod">${esc(a.modification || 'Pending')}</span></div>`;
+  }
+
+  function tuning(d) {
+    const m = d.model, p = m.params || {}, sc = m.scorecard || {};
+    const rows = [['Pattern', 'beta_reg', 'reg'], ['Similar days', 'beta_analog', 'analog'], ['Technicals', 'beta_tech', 'tech'],
+                  ['Bull Shield', 'beta_shield', 'shield'], ['Trend day', 'beta_trend', 'trend'], ['Option chain', 'beta_oi', 'oi']];
+    const bar = v => { const w = Math.min(50, Math.abs(v) / 1.5 * 50); return v >= 0
+        ? `<i style="left:50%;width:${w}%"></i>` : `<i style="left:${50 - w}%;width:${w}%;background:var(--down)"></i>`; };
+    const body = rows.map(([label, k, c]) => {
+      const card = sc[c] || {};
+      const rec = card.hit == null ? '—' : `${Math.round(card.hit * 100)}% <span style="color:var(--dim)">n=${card.n}</span>`;
+      return `<div class="wrow"><span>${label}</span><div class="wbar">${bar(p[k] || 0)}</div><span>${(p[k] || 0).toFixed(2)}</span><span>${rec}</span></div>`;
+    }).join('');
+    const ch = (m.changes || []).map(c => `<li>${esc(c.ts.slice(0, 16).replace('T', ' '))} · ${esc(c.reason)}</li>`).join('');
+    $('tuning').innerHTML = `<h3>Self-tuning ${m.band_only ? '<span class="chip range">RANGE ONLY · direction hidden until it shows skill</span>' : ''}</h3>
+      <div style="color:var(--muted);font-size:12px;margin-bottom:6px">Weight of each part (bar) and how often that part alone pointed the right way.
+      Band width ${(p.band_z || 1).toFixed(2)} · confidence ${(p.prob_c || 0).toFixed(2)}</div>
+      <div class="tgrid">${body}</div>
+      ${ch ? `<ul class="changes">${ch}</ul>` : '<div class="changes" style="list-style:none;padding:0">No automatic changes yet.</div>'}`;
   }
 
   function strip(d) {
@@ -324,7 +383,7 @@
       data = await api(q);
       $('spot').textContent = data.live ? fmt(data.live.price) : '—';
       $('dot').classList.toggle('on', !!data.live);
-      strip(data); trade(data);
+      strip(data); trade(data); tuning(data);
       $('grid').innerHTML = data.slots.map(card).join('');
       $('note').textContent = data.note + ` Model ${data.model.version}.`;
     } catch (e) {
