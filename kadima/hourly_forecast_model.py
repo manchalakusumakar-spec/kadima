@@ -41,12 +41,17 @@ RECENCY_HALFLIFE_DAYS = 45.0
 MIN_SAMPLES = 30               # ridge prior strength, in resolved slots
 FEATURE_WEIGHTS = (0.5, 1.0, 1.0, 0.8, 0.8, 0.6, 0.6)
 FLAT_BAND = 0.05               # |p_up - 0.5| below this reads as FLAT
-MODEL_VERSION = 'hf-1.0'
+MODEL_VERSION = 'hf-2.0'
+FLAT_SCORE_PCT = 0.10        # FLAT counts as a hit if the slot moved less than this
 
 DEFAULT_PARAMS = dict(
-    beta_reg=0.7,       # weight on the pooled regression end move (sigma units)
-    beta_analog=0.3,    # weight on the analog mean path (sigma units)
-    beta_tech=0.15,     # end-of-slot move per unit tilt, sigma*sqrt(n) units
+    beta_reg=0.5,       # weight on the pooled regression end move (sigma units)
+    beta_analog=0.15,   # weight on the analog mean path; cut from 0.3 after 9 Oct showed a fixed bias
+    beta_tech=0.15,     # EMA/RSI/TWAP tilt, sigma*sqrt(n) units
+    beta_shield=0.10,   # live Bull Shield direction x score
+    beta_trend=0.05,    # day move so far / opening gap (new: starts small, earns weight)
+    beta_oi=0.05,       # option-chain PCR change and OI wall shifts (new: starts small)
+    band_only=False,    # set by the self-audit when no part shows skill: show the range only
     band_z=1.0,         # band half-width in model sds (1.0 ~ 68%)
     prob_c=0.7,         # probability sharpness around 0.5 (cautious until calibrated)
     n_samples=0,
@@ -374,10 +379,40 @@ def tech_tilt(days, di, i, anchor, sigma, shield_dir=None, shield_score=None):
         weights['twap'] = 0.2
     if shield_dir in ('CE', 'PE') and finite(shield_score):
         parts['shield'] = (1 if shield_dir == 'CE' else -1) * clip(shield_score / 100, 0, 1)
-        weights['shield'] = 0.35
     tw = sum(weights.values())
-    m = sum(parts[k] * weights[k] for k in parts) / tw if tw else 0.0
+    m = sum(parts[k] * weights[k] for k in weights) / tw if tw else 0.0
     return clip(m, -1, 1), parts
+
+
+def trend_tilt(days, di, i, anchor, sigma):
+    """Day move so far (or the opening gap at 09:15), -1..+1. Trend days keep going more often than not."""
+    d = days[di]
+    day_open = d.opens[0] if d.opens[0] is not None else anchor
+    if i > 0:
+        return clip(math.log(anchor / day_open) / (sigma * math.sqrt(i)) / 2, -1, 1)
+    pc = prev_close(days, di)
+    return clip(math.log(day_open / pc) / (sigma * math.sqrt(12)) / 2, -1, 1) if pc else 0.0
+
+
+def oi_tilt(oi):
+    """Option-chain tilt, -1..+1, + = bullish: PCR rising (puts written below), CE/PE OI walls moving up.
+
+    oi: dict(pcr_now, pcr_prev, ce_wall_now, ce_wall_prev, pe_wall_now, pe_wall_prev, step).
+    The sign convention is a starting point only; the self-audit learns beta_oi, including its sign.
+    """
+    if not oi:
+        return 0.0, {}
+    parts = {}
+    if finite(oi.get('pcr_now')) and finite(oi.get('pcr_prev')):
+        parts['pcr'] = clip((oi['pcr_now'] - oi['pcr_prev']) / 0.2, -1, 1)
+    step = oi.get('step') or 50
+    for k in ('ce', 'pe'):
+        a, b = oi.get(k + '_wall_now'), oi.get(k + '_wall_prev')
+        if finite(a) and finite(b):
+            parts[k + '_wall'] = clip((a - b) / step, -1, 1)
+    w = dict(pcr=0.5, ce_wall=0.25, pe_wall=0.25)
+    tw = sum(w[k] for k in parts)
+    return (clip(sum(parts[k] * w[k] for k in parts) / tw, -1, 1) if tw else 0.0), parts
 
 
 # ---------------------------------------------------------------- forecast
@@ -403,7 +438,7 @@ def iv_sigma(iv_pct):
 
 
 def make_forecast(days, di, i, n, anchor, *, as_of, tod=None, params=None,
-                  atm_iv=None, shield_dir=None, shield_score=None):
+                  atm_iv=None, shield_dir=None, shield_score=None, oi=None):
     """Forecast n 5-minute points from bar i of days[di], using nothing at or after bar i."""
     params = {**DEFAULT_PARAMS, **(params or {})}
     tod = tod or tod_profile(days[:di])
@@ -420,6 +455,9 @@ def make_forecast(days, di, i, n, anchor, *, as_of, tod=None, params=None,
     feat = features(days, di, i, anchor, sigma)
     an = analogs(days, di, i, n, feat, tod, as_of)
     m, parts = tech_tilt(days, di, i, anchor, sigma, shield_dir, shield_score)
+    shield = parts.get('shield', 0.0)
+    trend = trend_tilt(days, di, i, anchor, sigma)
+    oit, oi_parts = oi_tilt(oi)
 
     mults = [tod[min(i + k, BARS_PER_DAY - 1)] for k in range(n)]
     model_sd = [math.sqrt(sum(x * x for x in mults[:k + 1])) for k in range(n)]
@@ -428,9 +466,15 @@ def make_forecast(days, di, i, n, anchor, *, as_of, tod=None, params=None,
     reg_end = an.reg_end if an is not None else 0.0
     sd = ([math.sqrt(0.5 * ms ** 2 + 0.5 * asd ** 2) for ms, asd in zip(model_sd, an.sd)]
           if use_an else model_sd)
-    tech_end = m * math.sqrt(n)
-    mean = [params['beta_reg'] * reg_end * (k + 1) / n + params['beta_analog'] * a_mean[k]
-            + params['beta_tech'] * tech_end * (k + 1) / n for k in range(n)]
+    root = math.sqrt(n)
+    x = dict(x_reg=reg_end, x_analog=a_mean[-1], x_tech=m * root, x_shield=shield * root,
+             x_trend=trend * root, x_oi=oit * root)
+    ramp = (x['x_reg'] * params['beta_reg'] + x['x_tech'] * params['beta_tech']
+            + x['x_shield'] * params['beta_shield'] + x['x_trend'] * params['beta_trend']
+            + x['x_oi'] * params['beta_oi'])
+    mean = [ramp * (k + 1) / n + params['beta_analog'] * a_mean[k] for k in range(n)]
+    if params.get('band_only'):
+        mean = [0.0] * n
     z = params['band_z']
     points = [(k + 1,
                anchor * math.exp(mean[k] * sigma),
@@ -439,7 +483,7 @@ def make_forecast(days, di, i, n, anchor, *, as_of, tod=None, params=None,
 
     p_model = norm_cdf(mean[-1] / sd[-1]) if sd[-1] > 0 else 0.5
     p_raw = 0.5 * p_model + 0.5 * an.up_frac if use_an else p_model
-    p = clip(0.5 + params['prob_c'] * (p_raw - 0.5), 0.05, 0.95)
+    p = 0.5 if params.get('band_only') else clip(0.5 + params['prob_c'] * (p_raw - 0.5), 0.05, 0.95)
     direction = 'UP' if p >= 0.5 + FLAT_BAND else 'DOWN' if p <= 0.5 - FLAT_BAND else 'FLAT'
     end = points[-1][1]
     return Forecast(
@@ -447,8 +491,9 @@ def make_forecast(days, di, i, n, anchor, *, as_of, tod=None, params=None,
         direction=direction, projected_pct=round((end / anchor - 1) * 100, 3),
         projected_pts=round(end - anchor, 2),
         band_pts=round((points[-1][2] - points[-1][3]) / 2, 2), n_eff=round(an.n_eff, 1) if an else 0.0,
-        inputs=dict(x_reg=reg_end, x_analog=a_mean[-1], x_tech=tech_end, p_raw=p_raw, sd=sd, mean=mean,
+        inputs=dict(x, p_raw=p_raw, sd=sd, mean=mean, sd_end=sd[-1], p_model=p_model,
                     sigma=sigma, sigma_real=s_real, sigma_iv=s_iv, tech=m, tech_parts=parts,
+                    trend=trend, oi=oit, oi_parts=oi_parts, band_only=bool(params.get('band_only')),
                     analog_used=bool(use_an), analog_up=an.up_frac if an else None,
                     features=feat, params=dict(params)))
 
@@ -460,7 +505,7 @@ def score(points, anchor, actual, direction, sigma, sd_end):
     if not pairs or actual[-1] is None:
         return None
     end_move = actual[-1] - anchor
-    flat_tol = 0.5 * sd_end * sigma * anchor
+    flat_tol = FLAT_SCORE_PCT / 100 * anchor
     if direction == 'UP':
         hit = end_move > 0
     elif direction == 'DOWN':
@@ -475,21 +520,24 @@ def score(points, anchor, actual, direction, sigma, sd_end):
 
 
 # ---------------------------------------------------------------- calibration
-BETAS = (('beta_reg', 'x_reg', 0.0, 1.5), ('beta_analog', 'x_analog', 0.0, 1.5),
-         ('beta_tech', 'x_tech', -0.5, 0.5))
+BETAS = (('beta_reg', 'x_reg', -0.5, 1.5), ('beta_analog', 'x_analog', -0.5, 1.5),
+         ('beta_tech', 'x_tech', -0.5, 0.5), ('beta_shield', 'x_shield', -0.5, 0.5),
+         ('beta_trend', 'x_trend', -0.5, 0.5), ('beta_oi', 'x_oi', -0.5, 0.5))
+COMPONENTS = tuple(b[1] for b in BETAS)
 
 
 def fit_params(samples, prior=None):
     """Refit coefficients from resolved slots, with a MIN_SAMPLES-strength prior.
 
-    sample: dict(x_reg, x_analog, x_tech, y (end log-return / sigma), p_raw,
-                 up (bool), zs (|actual-mean|/sd per point)).
+    sample: dict(x_reg, x_analog, x_tech, x_shield, x_trend, x_oi, y (end log-return / sigma),
+                 p_raw, up (bool), zs (|actual-mean|/sd per point)). Missing parts count as 0.
     """
     prior = {**DEFAULT_PARAMS, **(prior or {})}
     keys = [b[1] for b in BETAS]
-    s = [x for x in samples if all(finite(x.get(k)) for k in keys + ['y', 'p_raw'])]
+    s = [dict(x, **{k: x.get(k) if finite(x.get(k)) else 0.0 for k in keys})
+         for x in samples if finite(x.get('y')) and finite(x.get('p_raw'))]
     n = len(s)
-    out = dict(prior, n_samples=n, version=MODEL_VERSION)
+    out = dict(prior, n_samples=n, version=MODEL_VERSION, band_only=bool(prior.get('band_only')))
     if n == 0:
         return out
     lam = float(MIN_SAMPLES)
@@ -514,4 +562,154 @@ def fit_params(samples, prior=None):
     sxy = sum((x['p_raw'] - 0.5) * ((1.0 if x['up'] else 0.0) - 0.5) for x in s)
     prior_x = lam * 0.01
     out['prob_c'] = round(clip((sxy + prior_x * prior['prob_c']) / (sxx + prior_x), 0.0, 1.5), 4)
+    return out
+
+
+# ---------------------------------------------------------------- self-audit
+MAX_STEP = 0.10            # largest change to any weight per recalibration
+EVAL_MIN = 20              # slots needed before a challenger may replace the champion
+BAND_ONLY_BELOW = 0.52     # direction hit rate (>= 30 directional calls) that switches to range-only
+BAND_ONLY_EXIT = 0.55      # hit rate needed to show direction again
+
+
+def replay(sample, params):
+    """Direction and probability this sample would have received under `params`."""
+    m = sum(params.get(b[0], 0.0) * (sample.get(b[1]) or 0.0) for b in BETAS)
+    sd = sample.get('sd_end') or 1.0
+    p = clip(0.5 + params.get('prob_c', 1.0) * (norm_cdf(m / sd) - 0.5), 0.05, 0.95)
+    return ('UP' if p >= 0.5 + FLAT_BAND else 'DOWN' if p <= 0.5 - FLAT_BAND else 'FLAT'), p, m
+
+
+def evaluate(samples, params):
+    """Hit rate on directional calls, band coverage and log-loss for a set of resolved slots."""
+    calls = hits = 0
+    ll = 0.0
+    inside = total = 0
+    z = params.get('band_z', 1.0)
+    for s in samples:
+        d, p, _ = replay(s, params)
+        up = bool(s.get('up'))
+        ll -= math.log(p if up else 1 - p)
+        if d != 'FLAT':
+            calls += 1
+            hits += (d == 'UP') == up
+        for e in s.get('zs') or []:
+            total += 1
+            inside += e <= z
+    n = len(samples)
+    return dict(n=n, calls=calls, hit=hits / calls if calls else None,
+                coverage=inside / total if total else None, logloss=ll / n if n else None)
+
+
+def component_scorecard(samples):
+    """How often each part pointed the right way on its own (|signal| > 0.05)."""
+    out = {}
+    for _, key, _, _ in BETAS:
+        right = used = 0
+        for s in samples:
+            v = s.get(key)
+            if finite(v) and abs(v) > 0.05 and finite(s.get('y')) and s['y'] != 0:
+                used += 1
+                right += (v > 0) == (s['y'] > 0)
+        out[key[2:]] = dict(n=used, hit=round(right / used, 3) if used else None)
+    return out
+
+
+def step_toward(champion, challenger, max_step=MAX_STEP):
+    """Move each weight at most max_step toward the challenger, so one bad day cannot swing the model."""
+    out = dict(champion)
+    for name, _, lo, hi in BETAS:
+        a, b = champion.get(name, DEFAULT_PARAMS[name]), challenger.get(name, DEFAULT_PARAMS[name])
+        out[name] = round(clip(a + clip(b - a, -max_step, max_step), lo, hi), 4)
+    for name, lo, hi, step in (('band_z', 0.6, 2.0, 0.1), ('prob_c', 0.0, 1.5, 0.15)):
+        a, b = champion.get(name, DEFAULT_PARAMS[name]), challenger.get(name, DEFAULT_PARAMS[name])
+        out[name] = round(clip(a + clip(b - a, -step, step), lo, hi), 4)
+    out['n_samples'] = challenger.get('n_samples', 0)
+    out['version'] = MODEL_VERSION
+    return out
+
+
+def recalibrate(champion, train, holdout, prior=None):
+    """Champion/challenger: adopt new weights only if they do at least as well on recent unseen slots.
+
+    train: resolved slots used to fit the challenger. holdout: the most recent slots, never
+    used for fitting, on which both are compared. Returns (params, decision dict).
+    """
+    champion = {**DEFAULT_PARAMS, **champion}
+    challenger = step_toward(champion, fit_params(train, prior=prior or champion))
+    challenger['band_only'] = champion.get('band_only', False)
+    a, b = evaluate(holdout, champion), evaluate(holdout, challenger)
+    decision = dict(holdout=len(holdout), champion=a, challenger=b, adopted=False, reason='')
+    if len(holdout) < EVAL_MIN:
+        decision['reason'] = f'kept: only {len(holdout)} recent slots (need {EVAL_MIN})'
+        chosen = champion
+    elif a['logloss'] is not None and b['logloss'] is not None and (
+            b['logloss'] <= a['logloss'] + 1e-9
+            and (b['hit'] or 0) >= (a['hit'] or 0) - 0.02
+            and abs((b['coverage'] or 0.68) - 0.68) <= abs((a['coverage'] or 0.68) - 0.68) + 0.03):
+        decision.update(adopted=True, reason='adopted: better or equal on recent unseen slots')
+        chosen = challenger
+    else:
+        decision['reason'] = 'kept: new weights did not beat current ones on recent slots'
+        chosen = champion
+    # Range-only fallback, with hysteresis, judged on the chosen weights.
+    r = evaluate(holdout, dict(chosen, band_only=False))
+    if r['calls'] >= 30 and r['hit'] is not None:
+        if not chosen.get('band_only') and r['hit'] < BAND_ONLY_BELOW:
+            chosen = dict(chosen, band_only=True)
+            decision['reason'] += f"; direction hidden: {r['hit']:.0%} on {r['calls']} calls"
+        elif chosen.get('band_only') and r['hit'] >= BAND_ONLY_EXIT:
+            chosen = dict(chosen, band_only=False)
+            decision['reason'] += f"; direction shown again: {r['hit']:.0%} on {r['calls']} calls"
+    decision['band_only'] = bool(chosen.get('band_only'))
+    return chosen, decision
+
+
+# ---------------------------------------------------------------- deviation reasons
+REASONS = {
+    'engine_down': 'Engine was not running at the slot start (late or missed forecast)',
+    'small_move': 'Market barely moved (< 0.10%): noise, not a model failure',
+    'trend_day_against': 'Trend day: model leaned against a day move already above 0.8%',
+    'band_breach': 'Move was larger than the volatility band allowed',
+    'oi_shift_missed': 'Option chain shifted with the move (PCR or OI walls) but the forecast disagreed',
+    'component_bias': 'One part of the model leaned the same way all day',
+    'opening_gap': 'Opening gap or overnight news set the first hour',
+    'reversal': 'Price reversed within the slot after first moving the forecast way',
+}
+
+
+def deviation_reasons(slot, day_pct, actual_pct, coverage, direction, hit, late, oi_move=None,
+                      first_half_pct=None, gap_pct=None):
+    """Rule-based tags explaining a slot's deviation. Inputs are plain numbers; returns tag list."""
+    tags = []
+    if late:
+        tags.append('engine_down')
+    if actual_pct is not None and abs(actual_pct) < FLAT_SCORE_PCT:
+        tags.append('small_move')
+    if hit:
+        return tags
+    fc_sign = 1 if direction == 'UP' else -1 if direction == 'DOWN' else 0
+    if day_pct is not None and abs(day_pct) >= 0.8 and actual_pct is not None and fc_sign * day_pct < 0 \
+            and actual_pct * day_pct > 0:
+        tags.append('trend_day_against')
+    if coverage is not None and coverage < 0.6:
+        tags.append('band_breach')
+    if oi_move is not None and actual_pct is not None and abs(oi_move) >= 0.3 \
+            and oi_move * actual_pct > 0 and fc_sign * actual_pct <= 0:
+        tags.append('oi_shift_missed')
+    if slot == '09:15' and gap_pct is not None and abs(gap_pct) >= 0.5:
+        tags.append('opening_gap')
+    if first_half_pct is not None and actual_pct is not None and fc_sign != 0 \
+            and first_half_pct * fc_sign > 0 and actual_pct * fc_sign < 0:
+        tags.append('reversal')
+    return tags
+
+
+def day_component_bias(rows):
+    """Parts that leaned the same way (|x| >= 0.3) in every slot of the day (>= 3 slots)."""
+    out = []
+    for key in COMPONENTS:
+        vals = [r.get(key) for r in rows if finite(r.get(key))]
+        if len(vals) >= 3 and (all(v >= 0.3 for v in vals) or all(v <= -0.3 for v in vals)):
+            out.append(key[2:])
     return out

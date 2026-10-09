@@ -67,7 +67,26 @@ CREATE TABLE IF NOT EXISTS hourly_forecast_points (
 CREATE TABLE IF NOT EXISTS hourly_forecast_model (
     index_name TEXT PRIMARY KEY, params TEXT NOT NULL, updated_at TEXT NOT NULL
 );
+CREATE TABLE IF NOT EXISTS hourly_forecast_audit (
+    day TEXT NOT NULL, index_name TEXT NOT NULL, slot TEXT NOT NULL,
+    reasons TEXT NOT NULL, deviation_from TEXT, modification TEXT, decision TEXT,
+    audited_at TEXT NOT NULL,
+    PRIMARY KEY (day, index_name, slot)
+);
+CREATE TABLE IF NOT EXISTS hourly_forecast_model_history (
+    ts TEXT NOT NULL, index_name TEXT NOT NULL, params TEXT NOT NULL, reason TEXT
+);
+CREATE TABLE IF NOT EXISTS hourly_backtest_samples (
+    index_name TEXT NOT NULL, day TEXT NOT NULL, slot TEXT NOT NULL, sample TEXT NOT NULL,
+    PRIMARY KEY (index_name, day, slot)
+);
+CREATE TABLE IF NOT EXISTS history_candles (
+    token TEXT NOT NULL, start_ts TEXT NOT NULL,
+    open REAL, high REAL, low REAL, close REAL,
+    PRIMARY KEY (token, start_ts)
+);
 """
+EVAL_SLOTS = 20             # most recent resolved slots held out to judge new weights
 
 _local = threading.local()
 
@@ -96,18 +115,58 @@ def _slot_dt(day, hm):
 
 
 # ---------------------------------------------------------------- candles
-def history_rows(token, until, days=HISTORY_DAYS):
-    """Closed 5-minute candles from kadima.db strictly before `until`."""
+def history_rows(token, until, days=HISTORY_DAYS, db=None):
+    """Closed 5-minute candles strictly before `until`: the engine's own candles, plus the
+    broker history backfilled into forecast.db for days the engine did not record."""
     since = (until - timedelta(days=days)).isoformat()
-    rows = storage.conn().execute(
-        'SELECT start_ts, open, high, low, close FROM candles WHERE token=? AND interval=5 '
-        'AND closed=1 AND start_ts>=? ORDER BY start_ts', (token, since)).fetchall()
+    merged = {}
+    for r in conn(db).execute('SELECT start_ts, open, high, low, close FROM history_candles '
+                              'WHERE token=? AND start_ts>=?', (token, since)):
+        merged[r['start_ts']] = r
+    for r in storage.conn().execute(
+            'SELECT start_ts, open, high, low, close FROM candles WHERE token=? AND interval=5 '
+            'AND closed=1 AND start_ts>=?', (token, since)):
+        merged[r['start_ts']] = r
     out = []
-    for r in rows:
-        start = _dt(r['start_ts'])
+    for ts in sorted(merged):
+        r = merged[ts]
+        start = _dt(ts)
         if start + timedelta(minutes=5) <= until:
             out.append((start, r['open'], r['high'], r['low'], r['close']))
     return out
+
+
+# ---------------------------------------------------------------- option chain
+def chain_at(index_name, ts):
+    """PCR and the largest CE/PE OI strikes from the last stored option-chain sample at or before ts."""
+    try:
+        c = storage.conn()
+        r = c.execute('SELECT ts FROM oi_snapshots WHERE index_name=? AND ts<=? ORDER BY ts DESC LIMIT 1',
+                      (index_name, ts.isoformat())).fetchone()
+        if not r or (ts - _dt(r['ts'])).total_seconds() > 300:
+            return None
+        rows = c.execute('SELECT opt_type, strike, oi FROM oi_snapshots WHERE index_name=? AND ts=?',
+                         (index_name, r['ts'])).fetchall()
+    except sqlite3.Error:
+        return None
+    ce = [x for x in rows if x['opt_type'] == 'CE' and x['oi']]
+    pe = [x for x in rows if x['opt_type'] == 'PE' and x['oi']]
+    if not ce or not pe:
+        return None
+    sce, spe = sum(x['oi'] for x in ce), sum(x['oi'] for x in pe)
+    return dict(pcr=spe / sce if sce else None, ce_wall=max(ce, key=lambda x: x['oi'])['strike'],
+                pe_wall=max(pe, key=lambda x: x['oi'])['strike'])
+
+
+def oi_features(index_name, t0, step):
+    """PCR change over the last 30 min and OI wall moves over the last 60 min, known at t0."""
+    now, p30, p60 = (chain_at(index_name, t0), chain_at(index_name, t0 - timedelta(minutes=30)),
+                     chain_at(index_name, t0 - timedelta(minutes=60)))
+    if not now:
+        return None
+    return dict(pcr_now=now['pcr'], pcr_prev=(p30 or {}).get('pcr'),
+                ce_wall_now=now['ce_wall'], ce_wall_prev=(p60 or {}).get('ce_wall'),
+                pe_wall_now=now['pe_wall'], pe_wall_prev=(p60 or {}).get('pe_wall'), step=step)
 
 
 def candle_close(token, start, interval, closed_only=True):
@@ -159,42 +218,90 @@ def load_params(index_name, db=None):
     return params
 
 
+def sample_from(r, pts):
+    """Turn a resolved forecast row and its points into a calibration sample."""
+    try:
+        inp = json.loads(r['inputs'])
+    except (TypeError, ValueError):
+        return None
+    sigma, anchor = r['sigma'], r['anchor']
+    zs = []
+    for p in pts:
+        k = p['k'] - 1
+        if p['actual'] is None or k >= len(inp.get('sd', [])) or inp['sd'][k] <= 0:
+            continue
+        zs.append(abs(math.log(p['actual'] / anchor) / sigma - inp['mean'][k]) / inp['sd'][k])
+    out = {k: inp.get(k) for k in M.COMPONENTS}
+    out.update(day=r['day'], slot=r['slot'], p_raw=inp.get('p_raw'),
+               sd_end=inp.get('sd_end') or (inp.get('sd') or [None])[-1],
+               y=math.log(r['actual_end'] / anchor) / sigma, up=r['actual_end'] > anchor, zs=zs)
+    return out
+
+
 def samples_for(index_name, db=None, days=CALIBRATION_DAYS):
-    """Resolved on-time slots as calibration samples for fit_params()."""
+    """Resolved on-time live slots, oldest first."""
     c = conn(db)
     since = (now_ist().date() - timedelta(days=days)).isoformat()
     out = []
     for r in c.execute("SELECT * FROM hourly_forecasts WHERE index_name=? AND status='final' "
-                       "AND late=0 AND actual_end IS NOT NULL AND day>=?", (index_name, since)):
-        try:
-            inp = json.loads(r['inputs'])
-        except (TypeError, ValueError):
-            continue
+                       "AND late=0 AND actual_end IS NOT NULL AND day>=? ORDER BY day, slot",
+                       (index_name, since)):
         pts = c.execute('SELECT k, actual FROM hourly_forecast_points WHERE day=? AND index_name=? '
                         'AND slot=? ORDER BY k', (r['day'], index_name, r['slot'])).fetchall()
-        sigma, anchor = r['sigma'], r['anchor']
-        zs = []
-        for p in pts:
-            k = p['k'] - 1
-            if p['actual'] is None or k >= len(inp.get('sd', [])) or inp['sd'][k] <= 0:
-                continue
-            zs.append(abs(math.log(p['actual'] / anchor) / sigma - inp['mean'][k]) / inp['sd'][k])
-        out.append(dict(x_reg=inp.get('x_reg'), x_analog=inp.get('x_analog'),
-                        x_tech=inp.get('x_tech'), p_raw=inp.get('p_raw'),
-                        y=math.log(r['actual_end'] / anchor) / sigma,
-                        up=r['actual_end'] > anchor, zs=zs))
+        smp = sample_from(r, pts)
+        if smp:
+            out.append(smp)
     return out
 
 
-def refit(index_name, db=None):
-    """Live slots refit around the backtest prior (if saved), else the defaults."""
-    prior = load_params(index_name + ':prior', db)
-    params = M.fit_params(samples_for(index_name, db), prior=prior)
+def backtest_samples(index_name, db=None, days=CALIBRATION_DAYS):
+    since = (now_ist().date() - timedelta(days=days)).isoformat()
+    return [json.loads(r['sample']) for r in conn(db).execute(
+        'SELECT sample FROM hourly_backtest_samples WHERE index_name=? AND day>=? ORDER BY day, slot',
+        (index_name, since))]
+
+
+def save_params(index_name, params, reason, db=None):
     c = conn(db)
     with c:
         c.execute('INSERT OR REPLACE INTO hourly_forecast_model VALUES (?,?,?)',
                   (index_name, json.dumps(params), now_ist().isoformat()))
-    return params
+        c.execute('INSERT INTO hourly_forecast_model_history VALUES (?,?,?,?)',
+                  (now_ist().isoformat(), index_name, json.dumps(params), reason))
+
+
+def describe_change(old, new):
+    names = dict(beta_reg='pattern', beta_analog='similar-days', beta_tech='technicals',
+                 beta_shield='Bull Shield', beta_trend='trend-day', beta_oi='option chain',
+                 band_z='band width', prob_c='confidence')
+    parts = [f"{label} {old.get(k, 0):.2f}\u2192{new.get(k, 0):.2f}" for k, label in names.items()
+             if abs((new.get(k) or 0) - (old.get(k) or 0)) >= 0.005]
+    if bool(old.get('band_only')) != bool(new.get('band_only')):
+        parts.append('direction hidden (range only)' if new.get('band_only') else 'direction shown again')
+    return ', '.join(parts)
+
+
+def recalibrate_index(index_name, db=None, eval_slots=None):
+    """Champion/challenger on all resolved history; returns (params, decision, change text)."""
+    live = samples_for(index_name, db)
+    seen = {(x['day'], x['slot']) for x in live}
+    hist = [x for x in backtest_samples(index_name, db) if (x['day'], x['slot']) not in seen]
+    allx = sorted(hist + live, key=lambda x: (x['day'], x['slot']))
+    k = eval_slots or EVAL_SLOTS
+    holdout, train = allx[-k:], allx[:-k]
+    champion = load_params(index_name, db)
+    prior = load_params(index_name + ':prior', db)
+    params, decision = M.recalibrate(champion, train, holdout, prior=prior)
+    change = describe_change(champion, params)
+    decision['scorecard'] = M.component_scorecard(allx)
+    if change:
+        save_params(index_name, params, decision['reason'] + ' | ' + change, db)
+    return params, decision, change
+
+
+def refit(index_name, db=None):
+    """Kept for compatibility: one champion/challenger pass."""
+    return recalibrate_index(index_name, db)[0]
 
 
 # ---------------------------------------------------------------- forecaster
@@ -307,9 +414,11 @@ class HourlyForecaster:
         if key not in self._tod_cache:
             self._tod_cache = {key: M.tod_profile(days[:di])}
         params = load_params(name, self.db)
+        step = INDICES[name].strike_step if name in INDICES else 50
+        oi = oi_features(name, t0, step)
         f = M.make_forecast(days, di, i, n, anchor, as_of=day, tod=self._tod_cache[key],
                             params=params, atm_iv=atm_iv, shield_dir=shield_dir,
-                            shield_score=shield_score)
+                            shield_score=shield_score, oi=oi)
         if f is None:
             audit.log('hourly_forecast_skipped', index=name, slot=M.slot_label(start),
                       reason='insufficient_history_or_volatility')
@@ -383,11 +492,112 @@ class HourlyForecaster:
                        actual[-1] if actual else None, now_ist().isoformat(),
                        r['day'], r['index_name'], r['slot']))
         audit.log('hourly_forecast_scored', index=r['index_name'], day=r['day'], slot=r['slot'], **sc)
+        # Self-audit after every slot: why it deviated, then a guarded recalibration.
+        modification, decision = None, None
         if sc and not r['late']:
-            params = refit(r['index_name'], self.db)
-            audit.log('hourly_forecast_recalibrated', index=r['index_name'],
-                      n_samples=params['n_samples'],
-                      **{k: params[k] for k in ('beta_reg', 'beta_analog', 'beta_tech', 'band_z', 'prob_c')})
+            try:
+                params, decision, change = recalibrate_index(r['index_name'], self.db)
+                modification = ('Weights changed: ' + change) if change else ('No change: ' + decision['reason'])
+                audit.log('hourly_forecast_recalibrated', index=r['index_name'], adopted=decision['adopted'],
+                          reason=decision['reason'], change=change)
+            except Exception as exc:                    # noqa: BLE001 - never block scoring
+                modification = 'Recalibration skipped: ' + type(exc).__name__
+                audit.log('hourly_forecast_recalibration_error', error=str(exc)[:200])
+        elif r['late']:
+            modification = 'No change: late slot is not used for tuning'
+        try:
+            audit_slot(r, pts, sc, self.db, modification, decision)
+        except Exception as exc:                        # noqa: BLE001
+            audit.log('hourly_forecast_audit_error', error=str(exc)[:200])
+
+
+# ---------------------------------------------------------------- self-audit
+def _day_open_prev_close(token, day):
+    c = storage.conn()
+    o = c.execute("SELECT open FROM candles WHERE token=? AND interval=5 AND substr(start_ts,1,10)=? "
+                  "ORDER BY start_ts LIMIT 1", (token, day)).fetchone()
+    pc = c.execute("SELECT close FROM candles WHERE token=? AND interval=5 AND closed=1 AND "
+                   "substr(start_ts,1,10)<? ORDER BY start_ts DESC LIMIT 1", (token, day)).fetchone()
+    return (o['open'] if o else None), (pc['close'] if pc else None)
+
+
+def deviation_start(pts):
+    """First 5-minute mark where the actual left the band, else where it drifted past half the band."""
+    for p in pts:
+        if p['actual'] is not None and not p['lower'] <= p['actual'] <= p['upper']:
+            return p['ts'], 'left the band'
+    for p in pts:
+        if p['actual'] is not None and abs(p['actual'] - p['forecast']) > (p['upper'] - p['lower']) / 4:
+            return p['ts'], 'drifted from the forecast'
+    return None, None
+
+
+def audit_slot(r, pts, sc, db=None, modification=None, decision=None):
+    """Store the reasons for this slot's deviation and the change made in response."""
+    name, day = r['index_name'], r['day']
+    token = INDICES[name].token if name in INDICES else None
+    day_open, prev = _day_open_prev_close(token, day) if token else (None, None)
+    anchor = r['anchor']
+    day_pct = (anchor / day_open - 1) * 100 if day_open else None
+    gap_pct = (day_open / prev - 1) * 100 if day_open and prev else None
+    mid = pts[len(pts) // 2 - 1]['actual'] if len(pts) >= 2 else None
+    first_half = (mid / anchor - 1) * 100 if mid else None
+    t0 = _dt(pts[0]['ts']) - timedelta(minutes=M.STEP_MIN) if pts else None
+    t1 = _dt(pts[-1]['ts']) if pts else None
+    a, b = (chain_at(name, t0), chain_at(name, t1)) if t0 else (None, None)
+    oi_move = None
+    if a and b:
+        oi_move, _ = M.oi_tilt(dict(pcr_now=b['pcr'], pcr_prev=a['pcr'], ce_wall_now=b['ce_wall'],
+                                    ce_wall_prev=a['ce_wall'], pe_wall_now=b['pe_wall'],
+                                    pe_wall_prev=a['pe_wall'], step=INDICES[name].strike_step if name in INDICES else 50))
+    hit = sc.get('dir_hit') if sc else None
+    tags = M.deviation_reasons(r['slot'], day_pct, sc.get('actual_pct') if sc else None,
+                               sc.get('coverage') if sc else None, r['direction'], hit, bool(r['late']),
+                               oi_move=oi_move, first_half_pct=first_half, gap_pct=gap_pct)
+    details = {}
+    if not hit:
+        c = conn(db)
+        today = []
+        for row in c.execute('SELECT inputs FROM hourly_forecasts WHERE day=? AND index_name=? AND late=0',
+                             (day, name)):
+            try:
+                today.append(json.loads(row['inputs']))
+            except (TypeError, ValueError):
+                pass
+        biased = M.day_component_bias(today)
+        if biased:
+            tags.append('component_bias')
+            details['biased_parts'] = biased
+    if a and b:
+        details['oi'] = dict(pcr=[a['pcr'], b['pcr']], ce_wall=[a['ce_wall'], b['ce_wall']],
+                             pe_wall=[a['pe_wall'], b['pe_wall']])
+    details.update(day_pct=day_pct, gap_pct=gap_pct)
+    dev_ts, dev_kind = deviation_start(pts)
+    if dev_ts:
+        details['deviation_kind'] = dev_kind
+    if not tags and not hit and sc:
+        tags.append('unexplained')
+    c = conn(db)
+    with c:
+        c.execute('INSERT OR REPLACE INTO hourly_forecast_audit VALUES (?,?,?,?,?,?,?,?)',
+                  (day, name, r['slot'], json.dumps(dict(tags=tags, details=details), default=str),
+                   dev_ts, modification, json.dumps(decision, default=str) if decision else None,
+                   now_ist().isoformat()))
+    audit.log('hourly_forecast_audited', index=name, day=day, slot=r['slot'], tags=tags,
+              deviation_from=dev_ts, modification=modification)
+    return tags
+
+
+def reason_text(tag, details):
+    if tag == 'component_bias':
+        return M.REASONS[tag] + ': ' + ', '.join(details.get('biased_parts', []))
+    if tag == 'oi_shift_missed' and details.get('oi'):
+        o = details['oi']
+        return (M.REASONS[tag] + f": PCR {o['pcr'][0]:.2f}\u2192{o['pcr'][1]:.2f}, CE wall "
+                f"{o['ce_wall'][0]:.0f}\u2192{o['ce_wall'][1]:.0f}, PE wall {o['pe_wall'][0]:.0f}\u2192{o['pe_wall'][1]:.0f}")
+    if tag == 'unexplained':
+        return 'No rule matched: likely ordinary noise inside the hour'
+    return M.REASONS.get(tag, tag)
 
 
 # ---------------------------------------------------------------- read view
@@ -438,6 +648,17 @@ def view(name, day=None, engine=None, now=None, db=None):
                 dir_hit=None if r['dir_hit'] is None else bool(r['dir_hit']), mae_pts=r['mae_pts'],
                 coverage=r['coverage'], end_error_pts=r['end_error_pts'], actual_pct=r['actual_pct']),
             live=live_price if (r['status'] == 'live' and t0 <= now < t1 + timedelta(seconds=60)) else None)
+        a = c.execute('SELECT * FROM hourly_forecast_audit WHERE day=? AND index_name=? AND slot=?',
+                      (day.isoformat(), name, label)).fetchone()
+        if a:
+            try:
+                info = json.loads(a['reasons'])
+            except (TypeError, ValueError):
+                info = dict(tags=[], details={})
+            base['audit'] = dict(reasons=[reason_text(t, info.get('details') or {}) for t in info.get('tags', [])],
+                                 deviation_from=a['deviation_from'],
+                                 deviation_kind=(info.get('details') or {}).get('deviation_kind'),
+                                 modification=a['modification'])
         slots.append(base)
     since = (day - timedelta(days=30)).isoformat()
     recent = c.execute("SELECT dir_hit, coverage, mae_pts FROM hourly_forecasts WHERE index_name=? "
@@ -448,10 +669,30 @@ def view(name, day=None, engine=None, now=None, db=None):
                 scorecard=dict(today=_scorecard([r for r in rows.values() if not r['late']]),
                                last_30_days=_scorecard(recent)),
                 model=dict(version=M.MODEL_VERSION, calibrated_on=params.get('n_samples', 0),
-                           min_samples=M.MIN_SAMPLES,
-                           params={k: params[k] for k in ('beta_reg', 'beta_analog', 'beta_tech',
-                                                          'band_z', 'prob_c')}),
+                           min_samples=M.MIN_SAMPLES, band_only=bool(params.get('band_only')),
+                           params={k: params[k] for k in ('beta_reg', 'beta_analog', 'beta_tech', 'beta_shield',
+                                                          'beta_trend', 'beta_oi', 'band_z', 'prob_c')},
+                           changes=[dict(ts=h['ts'], reason=h['reason']) for h in c.execute(
+                               'SELECT ts, reason FROM hourly_forecast_model_history WHERE index_name=? '
+                               'ORDER BY ts DESC LIMIT 5', (name,))],
+                           scorecard=_component_card(name, db)),
                 note='Model estimates only, calibrated against this model\'s own record. Not a trade signal.')
+
+
+_card_cache = {}
+
+
+def _component_card(name, db=None):
+    """Per-part directional record (cached for a minute; panel polls every 5 s)."""
+    hit = _card_cache.get((name, db))
+    if hit and time.monotonic() - hit[0] < 60:
+        return hit[1]
+    live = samples_for(name, db)
+    seen = {(x['day'], x['slot']) for x in live}
+    allx = [x for x in backtest_samples(name, db) if (x['day'], x['slot']) not in seen] + live
+    card = M.component_scorecard(allx)
+    _card_cache[(name, db)] = (time.monotonic(), card)
+    return card
 
 
 def available_days(name, limit=60, db=None):

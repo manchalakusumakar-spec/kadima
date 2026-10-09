@@ -91,7 +91,10 @@ def main():
     check('10:15 slot generated at its start', s1['status'] == 'live' and not s1['late'])
     check('anchor equals live spot at slot start', s1['anchor'] == todays[12][1])
     check('scorecard counts the finished slot', v['scorecard']['today']['n'] == 1)
-    check('model recalibrated after a scored slot', v['model']['calibrated_on'] == 1)
+    au = s0.get('audit') or {}
+    check('finished slot has an audit with a modification note', bool(au.get('modification')))
+    check('weights kept until enough recent slots exist', au.get('modification', '').startswith('No change'))
+    print('   audit:', au)
 
     # Engine restarted at 11:40: the 11:15 slot is rebuilt late from its open price.
     put(todays, upto=at(11, 40))

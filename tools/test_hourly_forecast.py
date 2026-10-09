@@ -151,6 +151,32 @@ def main():
     check('no false confidence on a random walk', mc < 0.12)
     check('band coverage near 68% on a random walk', 0.55 <= mv <= 0.85)
 
+    # Self-audit: champion/challenger, step cap, range-only fallback, reasons.
+    rng = random.Random(4)
+    def mk(n, trend_beta):
+        out = []
+        for i in range(n):
+            xt = rng.gauss(0, 1)
+            y = trend_beta * xt + rng.gauss(0, 1)
+            out.append(dict(x_reg=0.0, x_analog=-0.4, x_tech=0.0, x_shield=0.0, x_trend=xt, x_oi=0.0,
+                            y=y, up=y > 0, p_raw=0.5, sd_end=1.0, zs=[abs(rng.gauss(0, 1)) for _ in range(6)]))
+        return out
+    champ = dict(M.DEFAULT_PARAMS)
+    new, dec = M.recalibrate(champ, mk(300, 0.8), mk(40, 0.8))
+    check('helpful new part gains weight', dec['adopted'] and new['beta_trend'] > champ['beta_trend'])
+    check('weight change capped per recalibration', abs(new['beta_trend'] - champ['beta_trend']) <= M.MAX_STEP + 1e-9)
+    kept, dec2 = M.recalibrate(champ, mk(300, 0.8), mk(5, 0.8))
+    check('too few recent slots keeps current weights', not dec2['adopted'] and kept == {**M.DEFAULT_PARAMS, **champ})
+    noisy = dict(M.DEFAULT_PARAMS, beta_trend=0.5)
+    out, dec3 = M.recalibrate(noisy, mk(300, -0.6), mk(60, -0.6))
+    check('no skill on recent slots hides direction (range only)', out['band_only'] is True)
+    card = M.component_scorecard(mk(200, 0.8))
+    check('scorecard finds the predictive part', card['trend']['hit'] > 0.6)
+    tags = M.deviation_reasons('13:15', 1.07, 0.19, 0.83, 'DOWN', False, False, oi_move=0.5)
+    check('trend-day and option-chain reasons found', 'trend_day_against' in tags and 'oi_shift_missed' in tags)
+    check('small moves are tagged as noise', 'small_move' in M.deviation_reasons('15:15', 1.2, -0.07, 1.0, 'FLAT', True, False))
+    check('day bias spotted', M.day_component_bias([dict(x_analog=-0.39), dict(x_analog=-0.36), dict(x_analog=-0.4)]) == ['analog'])
+
     print('\n%d failure(s)' % len(FAILS))
     return 1 if FAILS else 0
 
