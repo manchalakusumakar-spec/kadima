@@ -28,6 +28,10 @@ def has(c, table):
     return c.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", (table,)).fetchone()
 
 
+def strike(x):
+    return '-' if x is None else (f'{x:g}' if isinstance(x, (int, float)) else str(x))
+
+
 def f(x, d=1):
     return '-' if x is None else (f'{x:.{d}f}' if isinstance(x, (int, float)) else str(x))
 
@@ -55,7 +59,7 @@ def main():
         if s.get('delta') is not None:
             extra.append('delta ' + f(s.get('delta'), 2))
         if p.get('best_strike') is not None:
-            extra.append('strike ' + f(p.get('best_strike'), 0))
+            extra.append('strike ' + strike(p.get('best_strike')))
         print(f"   {r['ts'][11:16]} {r['id']:>5} {(r['kind'] or '')[:14]:14} {(r['index_name'] or '')[:10]:10} "
               f"{r['direction'] or '-':3} {(r['tier'] or '')[:10]:10} {f(r['score']):>5}  {contract} {' '.join(extra)}")
 
@@ -76,7 +80,7 @@ def main():
               f"{'prem+%':>6} {'LTP':>7} {'OI':>3} {'sprd':5} {'trade':5} as of")
         for x in cands[:40]:
             shield = x.get('bull_shield_score') if x.get('direction') == 'CE' else x.get('bear_shield_score')
-            print(f"   {x.get('underlying', '')[:12]:12} {x.get('direction', ''):3} {f(x.get('best_strike'), 0):>8} "
+            print(f"   {x.get('underlying', '')[:12]:12} {x.get('direction', ''):3} {strike(x.get('best_strike')):>8} "
                   f"{(x.get('symbol') or '')[:24]:24} {f(x.get('gamma_score'), 0):>5} {f(shield, 0):>6} "
                   f"{f(x.get('premium_move_pct'), 0):>6} {f(x.get('option_ltp'), 2):>7} "
                   f"{'Y' if x.get('oi_support') else 'n':>3} {(x.get('spread_status') or '')[:5]:5} "
