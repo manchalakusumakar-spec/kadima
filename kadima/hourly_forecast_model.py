@@ -51,6 +51,7 @@ DEFAULT_PARAMS = dict(
     beta_shield=0.10,   # live Bull Shield direction x score
     beta_trend=0.05,    # day move so far / opening gap (new: starts small, earns weight)
     beta_oi=0.05,       # option-chain PCR change and OI wall shifts (new: starts small)
+    beta_breadth=0.05,  # NIFTY 50 constituent breadth from the radar (new: starts small, earns weight)
     band_only=False,    # set by the self-audit when no part shows skill: show the range only
     band_z=1.0,         # band half-width in model sds (1.0 ~ 68%)
     prob_c=0.7,         # probability sharpness around 0.5 (cautious until calibrated)
@@ -415,6 +416,35 @@ def oi_tilt(oi):
     return (clip(sum(parts[k] * w[k] for k in parts) / tw, -1, 1) if tw else 0.0), parts
 
 
+BREADTH_MIN_COVERAGE = 0.95   # share of index weight that must have a live VWAP reading
+
+
+def breadth_tilt(b, sigma):
+    """NIFTY 50 constituent breadth at the slot start, -1..+1, + = heavyweights leaning up.
+
+    b: compact radar reading (see hourly_forecast.compact_breadth): status, vwap_above,
+    vwap_cov, ret5_bps, pos5, neg5. Used only when the radar has all 50 stocks fresh
+    ("ready"); anything else reads 0 so a gap in data never moves the forecast.
+    Parts: share of index weight above its own VWAP (the day so far, the most relevant
+    to a one-hour slot), the weighted 5-minute constituent return in sigma units, and
+    rising minus falling weight over 5 minutes. The self-audit learns beta_breadth,
+    including its sign; the radar's readings are observations, not predictions.
+    """
+    if not b or b.get('status') != 'ready' or not sigma:
+        return 0.0, {}
+    parts = {}
+    above, cov = b.get('vwap_above'), b.get('vwap_cov')
+    if finite(above) and finite(cov) and cov >= BREADTH_MIN_COVERAGE:
+        parts['vwap'] = clip((above / cov) * 2 - 1, -1, 1)
+    if finite(b.get('ret5_bps')):
+        parts['momentum'] = clip(b['ret5_bps'] / 10000 / sigma / 2, -1, 1)
+    if finite(b.get('pos5')) and finite(b.get('neg5')):
+        parts['participation'] = clip(b['pos5'] - b['neg5'], -1, 1)
+    w = dict(vwap=0.5, momentum=0.25, participation=0.25)
+    tw = sum(w[k] for k in parts)
+    return (clip(sum(parts[k] * w[k] for k in parts) / tw, -1, 1) if tw else 0.0), parts
+
+
 # ---------------------------------------------------------------- forecast
 @dataclass
 class Forecast:
@@ -438,7 +468,7 @@ def iv_sigma(iv_pct):
 
 
 def make_forecast(days, di, i, n, anchor, *, as_of, tod=None, params=None,
-                  atm_iv=None, shield_dir=None, shield_score=None, oi=None):
+                  atm_iv=None, shield_dir=None, shield_score=None, oi=None, breadth=None):
     """Forecast n 5-minute points from bar i of days[di], using nothing at or after bar i."""
     params = {**DEFAULT_PARAMS, **(params or {})}
     tod = tod or tod_profile(days[:di])
@@ -458,6 +488,7 @@ def make_forecast(days, di, i, n, anchor, *, as_of, tod=None, params=None,
     shield = parts.get('shield', 0.0)
     trend = trend_tilt(days, di, i, anchor, sigma)
     oit, oi_parts = oi_tilt(oi)
+    bt, breadth_parts = breadth_tilt(breadth, sigma)
 
     mults = [tod[min(i + k, BARS_PER_DAY - 1)] for k in range(n)]
     model_sd = [math.sqrt(sum(x * x for x in mults[:k + 1])) for k in range(n)]
@@ -468,10 +499,10 @@ def make_forecast(days, di, i, n, anchor, *, as_of, tod=None, params=None,
           if use_an else model_sd)
     root = math.sqrt(n)
     x = dict(x_reg=reg_end, x_analog=a_mean[-1], x_tech=m * root, x_shield=shield * root,
-             x_trend=trend * root, x_oi=oit * root)
+             x_trend=trend * root, x_oi=oit * root, x_breadth=bt * root)
     ramp = (x['x_reg'] * params['beta_reg'] + x['x_tech'] * params['beta_tech']
             + x['x_shield'] * params['beta_shield'] + x['x_trend'] * params['beta_trend']
-            + x['x_oi'] * params['beta_oi'])
+            + x['x_oi'] * params['beta_oi'] + x['x_breadth'] * params['beta_breadth'])
     mean = [ramp * (k + 1) / n + params['beta_analog'] * a_mean[k] for k in range(n)]
     if params.get('band_only'):
         mean = [0.0] * n
@@ -493,7 +524,8 @@ def make_forecast(days, di, i, n, anchor, *, as_of, tod=None, params=None,
         band_pts=round((points[-1][2] - points[-1][3]) / 2, 2), n_eff=round(an.n_eff, 1) if an else 0.0,
         inputs=dict(x, p_raw=p_raw, sd=sd, mean=mean, sd_end=sd[-1], p_model=p_model,
                     sigma=sigma, sigma_real=s_real, sigma_iv=s_iv, tech=m, tech_parts=parts,
-                    trend=trend, oi=oit, oi_parts=oi_parts, band_only=bool(params.get('band_only')),
+                    trend=trend, oi=oit, oi_parts=oi_parts, breadth=bt, breadth_parts=breadth_parts,
+                    breadth_status=(breadth or {}).get('status', 'unavailable'), band_only=bool(params.get('band_only')),
                     analog_used=bool(use_an), analog_up=an.up_frac if an else None,
                     features=feat, params=dict(params)))
 
@@ -522,14 +554,22 @@ def score(points, anchor, actual, direction, sigma, sd_end):
 # ---------------------------------------------------------------- calibration
 BETAS = (('beta_reg', 'x_reg', -0.5, 1.5), ('beta_analog', 'x_analog', -0.5, 1.5),
          ('beta_tech', 'x_tech', -0.5, 0.5), ('beta_shield', 'x_shield', -0.5, 0.5),
-         ('beta_trend', 'x_trend', -0.5, 0.5), ('beta_oi', 'x_oi', -0.5, 0.5))
+         ('beta_trend', 'x_trend', -0.5, 0.5), ('beta_oi', 'x_oi', -0.5, 0.5),
+         ('beta_breadth', 'x_breadth', -0.5, 0.5))
 COMPONENTS = tuple(b[1] for b in BETAS)
+# Parts with no backtest history: their weight stays at the prior until they have
+# MIN_SAMPLES resolved slots of their own, so a few live slots cannot swing them.
+GATED = ('x_breadth',)
+
+
+def present(x, key):
+    return finite(x.get(key)) and x.get(key) != 0
 
 
 def fit_params(samples, prior=None):
     """Refit coefficients from resolved slots, with a MIN_SAMPLES-strength prior.
 
-    sample: dict(x_reg, x_analog, x_tech, x_shield, x_trend, x_oi, y (end log-return / sigma),
+    sample: dict(x_reg, x_analog, x_tech, x_shield, x_trend, x_oi, x_breadth, y (end log-return / sigma),
                  p_raw, up (bool), zs (|actual-mean|/sd per point)). Missing parts count as 0.
     """
     prior = {**DEFAULT_PARAMS, **(prior or {})}
@@ -537,13 +577,21 @@ def fit_params(samples, prior=None):
     s = [dict(x, **{k: x.get(k) if finite(x.get(k)) else 0.0 for k in keys})
          for x in samples if finite(x.get('y')) and finite(x.get('p_raw'))]
     n = len(s)
+    have = {k: sum(1 for x in s if present(x, k)) for k in GATED}
+    for k in GATED:
+        if have[k] < MIN_SAMPLES:
+            # Too few readings: drop the column so its weight solves to the prior.
+            s = [dict(x, **{k: 0.0}) for x in s]
     out = dict(prior, n_samples=n, version=MODEL_VERSION, band_only=bool(prior.get('band_only')))
     if n == 0:
         return out
     lam = float(MIN_SAMPLES)
     # Ridge regression of y on the regressors, shrunk toward the prior betas:
     # minimise sum (y - b.x)^2 + lam * sum v_i (b_i - prior_i)^2.
-    var = [max(sum(x[k] ** 2 for x in s) / n, 1e-6) for k in keys]
+    # Gated parts are scaled over the slots that have them, so the prior stays worth
+    # MIN_SAMPLES of their own readings rather than being diluted by empty history.
+    var = [max(sum(x[k] ** 2 for x in s) / (max(have[k], 1) if k in GATED and have[k] >= MIN_SAMPLES else n),
+               1e-6) for k in keys]
     a = [[sum(x[ki] * x[kj] for x in s) + (lam * var[i] if i == j else 0.0)
           for j, kj in enumerate(keys)] for i, ki in enumerate(keys)]
     b = [sum(x[k] * x['y'] for x in s) + lam * var[i] * prior[BETAS[i][0]]
@@ -692,11 +740,12 @@ REASONS = {
     'component_bias': 'One part of the model leaned the same way all day',
     'opening_gap': 'Opening gap or overnight news set the first hour',
     'reversal': 'Price reversed within the slot after first moving the forecast way',
+    'breadth_against': 'NIFTY 50 heavyweights moved with the market but the forecast disagreed',
 }
 
 
 def deviation_reasons(slot, day_pct, actual_pct, coverage, direction, hit, late, oi_move=None,
-                      first_half_pct=None, gap_pct=None):
+                      first_half_pct=None, gap_pct=None, breadth_move=None):
     """Rule-based tags explaining a slot's deviation. Inputs are plain numbers; returns tag list."""
     tags = []
     if late:
@@ -714,6 +763,9 @@ def deviation_reasons(slot, day_pct, actual_pct, coverage, direction, hit, late,
     if oi_move is not None and actual_pct is not None and abs(oi_move) >= 0.3 \
             and oi_move * actual_pct > 0 and fc_sign * actual_pct <= 0:
         tags.append('oi_shift_missed')
+    if breadth_move is not None and actual_pct is not None and abs(breadth_move) >= 0.2 \
+            and breadth_move * actual_pct > 0 and fc_sign * actual_pct <= 0:
+        tags.append('breadth_against')
     if slot == '09:15' and gap_pct is not None and abs(gap_pct) >= 0.5:
         tags.append('opening_gap')
     if first_half_pct is not None and actual_pct is not None and fc_sign != 0 \

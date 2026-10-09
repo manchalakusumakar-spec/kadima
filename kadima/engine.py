@@ -202,9 +202,11 @@ class Engine:
             self.feed.subscribe(EXCHANGE_TYPE[idx.exchange], [idx.token])
         if self.bank_tokens:
             self.feed.subscribe(EXCHANGE_TYPE['NSE'], list(self.bank_tokens))
+        # CONSTITUENT BREADTH v1: radar off (the default) adds no subscription at all.
         radar_tokens = set(self.constituent_radar.tokens)
-        self.feed.transient_tokens = radar_tokens - set(self.bank_tokens) - set(self.token_to_index)
-        self.feed.subscribe(EXCHANGE_TYPE["NSE"], sorted(radar_tokens - set(self.bank_tokens)))
+        if radar_tokens:
+            self.feed.transient_tokens = radar_tokens - set(self.bank_tokens) - set(self.token_to_index)
+            self.feed.subscribe(EXCHANGE_TYPE["NSE"], sorted(radar_tokens - set(self.bank_tokens)))
         self.feed.start()
         threading.Thread(target=self._oi_loop, daemon=True, name="oi-poll").start()
         threading.Thread(target=self._shutdown_loop, daemon=True,
@@ -245,7 +247,10 @@ class Engine:
 
     # ------------------------------------------------------------------ ticks
     def _on_tick(self, tick: dict) -> None:
-        self.constituent_radar.on_tick(tick)
+        try:                                    # CONSTITUENT BREADTH v1: never block index ticks
+            self.constituent_radar.on_tick(tick)
+        except Exception:                       # noqa: BLE001
+            pass
         bank_name = self.bank_tokens.get(tick["token"])
         if bank_name:
             bank = self.bank_states[bank_name]

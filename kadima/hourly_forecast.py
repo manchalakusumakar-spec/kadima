@@ -80,6 +80,11 @@ CREATE TABLE IF NOT EXISTS hourly_backtest_samples (
     index_name TEXT NOT NULL, day TEXT NOT NULL, slot TEXT NOT NULL, sample TEXT NOT NULL,
     PRIMARY KEY (index_name, day, slot)
 );
+CREATE TABLE IF NOT EXISTS hourly_breadth (
+    day TEXT NOT NULL, index_name TEXT NOT NULL, ts TEXT NOT NULL,
+    status TEXT NOT NULL, reading TEXT NOT NULL,
+    PRIMARY KEY (day, index_name, ts)
+);
 CREATE TABLE IF NOT EXISTS history_candles (
     token TEXT NOT NULL, start_ts TEXT NOT NULL,
     open REAL, high REAL, low REAL, close REAL,
@@ -87,6 +92,7 @@ CREATE TABLE IF NOT EXISTS history_candles (
 );
 """
 EVAL_SLOTS = 20             # most recent resolved slots held out to judge new weights
+BREADTH_INDEX = 'NIFTY'     # the constituent radar covers the NIFTY 50 only
 
 _local = threading.local()
 
@@ -167,6 +173,43 @@ def oi_features(index_name, t0, step):
     return dict(pcr_now=now['pcr'], pcr_prev=(p30 or {}).get('pcr'),
                 ce_wall_now=now['ce_wall'], ce_wall_prev=(p60 or {}).get('ce_wall'),
                 pe_wall_now=now['pe_wall'], pe_wall_prev=(p60 or {}).get('pe_wall'), step=step)
+
+
+def compact_breadth(snap):
+    """The few radar numbers the forecast uses, plus top movers for the panel. None if radar is off."""
+    if not snap or not snap.get('configured_count'):
+        return None
+    h5 = (snap.get('horizons') or {}).get('5') or {}
+    top = lambda xs: [dict(symbol=x['symbol'], bps=round(x['contribution_bps'], 2)) for x in (xs or [])[:3]]
+    r = dict(status=snap.get('status', 'unavailable'), reason=snap.get('reason'),
+             fresh=snap.get('fresh_count', 0), vwap_above=snap.get('observed_vwap_above_weight'),
+             vwap_cov=snap.get('observed_vwap_coverage_weight'),
+             ret5_bps=h5.get('weighted_return_bps'), pos5=h5.get('positive_weight'),
+             neg5=h5.get('negative_weight'), up=top(h5.get('top_positive')), down=top(h5.get('top_negative')))
+    for k in ('vwap_above', 'vwap_cov', 'ret5_bps', 'pos5', 'neg5'):
+        if M.finite(r[k]):
+            r[k] = round(r[k], 4)
+    return r
+
+
+def vwap_breadth(b):
+    """-1..+1 share of index weight above VWAP, or None."""
+    if not b or not M.finite(b.get('vwap_above')) or not M.finite(b.get('vwap_cov')) \
+            or b['vwap_cov'] < M.BREADTH_MIN_COVERAGE:
+        return None
+    return b['vwap_above'] / b['vwap_cov'] * 2 - 1
+
+
+def breadth_at(index_name, ts, db=None):
+    """Last stored ready breadth reading at or before ts (within 5 minutes)."""
+    r = conn(db).execute("SELECT ts, reading FROM hourly_breadth WHERE index_name=? AND status='ready' "
+                         "AND ts<=? ORDER BY ts DESC LIMIT 1", (index_name, ts.isoformat())).fetchone()
+    if not r or (ts - _dt(r['ts'])).total_seconds() > 300:
+        return None
+    try:
+        return json.loads(r['reading'])
+    except (TypeError, ValueError):
+        return None
 
 
 def candle_close(token, start, interval, closed_only=True):
@@ -273,6 +316,7 @@ def save_params(index_name, params, reason, db=None):
 def describe_change(old, new):
     names = dict(beta_reg='pattern', beta_analog='similar-days', beta_tech='technicals',
                  beta_shield='Bull Shield', beta_trend='trend-day', beta_oi='option chain',
+                 beta_breadth='constituent breadth',
                  band_z='band width', prob_c='confidence')
     parts = [f"{label} {old.get(k, 0):.2f}\u2192{new.get(k, 0):.2f}" for k, label in names.items()
              if abs((new.get(k) or 0) - (old.get(k) or 0)) >= 0.005]
@@ -311,6 +355,7 @@ class HourlyForecaster:
         self.db = db
         self._stop = threading.Event()
         self._tod_cache = {}
+        self._breadth_bucket = None
 
     def start(self):
         threading.Thread(target=self.run, daemon=True, name='hourly-forecast').start()
@@ -339,6 +384,8 @@ class HourlyForecaster:
         if now.weekday() >= 5:
             return
         slot = M.slot_for(now.time())
+        if slot:
+            self.record_breadth(now)
         for name in FORECAST_INDICES:
             st = self.engine.states.get(name) if self.engine else None
             if st is None:
@@ -346,6 +393,32 @@ class HourlyForecaster:
             if slot:
                 self.ensure_forecast(name, st, slot, now)
             self.update_actuals(name, now)
+
+    def live_breadth(self, now):
+        """Compact radar reading from engine memory, or None when the radar is not configured."""
+        radar = getattr(self.engine, 'constituent_radar', None) if self.engine else None
+        if radar is None:
+            return None
+        try:
+            return compact_breadth(radar.snapshot(now))
+        except Exception:                               # noqa: BLE001 - display-only input
+            return None
+
+    def record_breadth(self, now):
+        """Store one breadth reading per 5-minute bar (about 75 rows a day) for refits and audits."""
+        bucket = (now.date(), now.hour, now.minute // M.STEP_MIN)
+        if bucket == self._breadth_bucket:
+            return
+        b = self.live_breadth(now)
+        if b is None:
+            return
+        self._breadth_bucket = bucket
+        ts = now.replace(minute=now.minute - now.minute % M.STEP_MIN, second=0, microsecond=0)
+        c = conn(self.db)
+        with c:
+            c.execute('INSERT OR IGNORE INTO hourly_breadth VALUES (?,?,?,?,?)',
+                      (now.date().isoformat(), BREADTH_INDEX, ts.isoformat(), b['status'],
+                       json.dumps(b, default=str)))
 
     def _live_inputs(self, st, now):
         """Spot (if fresh), ATM IV and Bull Shield from engine memory. No broker calls."""
@@ -385,6 +458,7 @@ class HourlyForecaster:
         t0 = _slot_dt(day, start)
         token = INDICES[name].token if name in INDICES else st.chain.index.token
         spot, iv, shield_dir, shield_score = self._live_inputs(st, now)
+        breadth = self.live_breadth(now) if name == BREADTH_INDEX else None
         on_time = (now - t0).total_seconds() <= ON_TIME_SEC
         if on_time and spot:
             anchor, late = spot, 0
@@ -392,14 +466,15 @@ class HourlyForecaster:
             # Engine started mid-slot: rebuild from the slot's opening price and
             # data before it, and mark the slot late so calibration skips it.
             anchor, late = candle_open(token, t0), 1
-            iv, shield_dir, shield_score = None, None, None
+            iv, shield_dir, shield_score, breadth = None, None, None, None
             if anchor is None:
                 return None
         return self.generate(name, token, day, slot, anchor, late, now,
-                             atm_iv=iv, shield_dir=shield_dir, shield_score=shield_score)
+                             atm_iv=iv, shield_dir=shield_dir, shield_score=shield_score,
+                             breadth=breadth)
 
     def generate(self, name, token, day, slot, anchor, late, now, *, atm_iv=None,
-                 shield_dir=None, shield_score=None, rows=None):
+                 shield_dir=None, shield_score=None, rows=None, breadth=None):
         start, end = slot
         t0 = _slot_dt(day, start)
         rows = rows if rows is not None else history_rows(token, t0)
@@ -418,7 +493,7 @@ class HourlyForecaster:
         oi = oi_features(name, t0, step)
         f = M.make_forecast(days, di, i, n, anchor, as_of=day, tod=self._tod_cache[key],
                             params=params, atm_iv=atm_iv, shield_dir=shield_dir,
-                            shield_score=shield_score, oi=oi)
+                            shield_score=shield_score, oi=oi, breadth=breadth)
         if f is None:
             audit.log('hourly_forecast_skipped', index=name, slot=M.slot_label(start),
                       reason='insufficient_history_or_volatility')
@@ -550,10 +625,14 @@ def audit_slot(r, pts, sc, db=None, modification=None, decision=None):
         oi_move, _ = M.oi_tilt(dict(pcr_now=b['pcr'], pcr_prev=a['pcr'], ce_wall_now=b['ce_wall'],
                                     ce_wall_prev=a['ce_wall'], pe_wall_now=b['pe_wall'],
                                     pe_wall_prev=a['pe_wall'], step=INDICES[name].strike_step if name in INDICES else 50))
+    ba, bb = (breadth_at(name, t0, db), breadth_at(name, t1, db)) if t0 and name == BREADTH_INDEX else (None, None)
+    va, vb = vwap_breadth(ba), vwap_breadth(bb)
+    breadth_move = vb - va if va is not None and vb is not None else None
     hit = sc.get('dir_hit') if sc else None
     tags = M.deviation_reasons(r['slot'], day_pct, sc.get('actual_pct') if sc else None,
                                sc.get('coverage') if sc else None, r['direction'], hit, bool(r['late']),
-                               oi_move=oi_move, first_half_pct=first_half, gap_pct=gap_pct)
+                               oi_move=oi_move, first_half_pct=first_half, gap_pct=gap_pct,
+                               breadth_move=breadth_move)
     details = {}
     if not hit:
         c = conn(db)
@@ -571,6 +650,8 @@ def audit_slot(r, pts, sc, db=None, modification=None, decision=None):
     if a and b:
         details['oi'] = dict(pcr=[a['pcr'], b['pcr']], ce_wall=[a['ce_wall'], b['ce_wall']],
                              pe_wall=[a['pe_wall'], b['pe_wall']])
+    if breadth_move is not None:
+        details['breadth'] = dict(vwap=[round(va, 3), round(vb, 3)], up=bb.get('up'), down=bb.get('down'))
     details.update(day_pct=day_pct, gap_pct=gap_pct)
     dev_ts, dev_kind = deviation_start(pts)
     if dev_ts:
@@ -595,6 +676,12 @@ def reason_text(tag, details):
         o = details['oi']
         return (M.REASONS[tag] + f": PCR {o['pcr'][0]:.2f}\u2192{o['pcr'][1]:.2f}, CE wall "
                 f"{o['ce_wall'][0]:.0f}\u2192{o['ce_wall'][1]:.0f}, PE wall {o['pe_wall'][0]:.0f}\u2192{o['pe_wall'][1]:.0f}")
+    if tag == 'breadth_against' and details.get('breadth'):
+        b = details['breadth']
+        pct = lambda v: f'{(v + 1) / 2:.0%}'
+        movers = ', '.join(f"{x['symbol']} {x['bps']:+.1f}" for x in (b.get('up') or []) + (b.get('down') or []))
+        return (M.REASONS[tag] + f": weight above VWAP {pct(b['vwap'][0])}\u2192{pct(b['vwap'][1])}"
+                + (f'; movers (bps of index): {movers}' if movers else ''))
     if tag == 'unexplained':
         return 'No rule matched: likely ordinary noise inside the hour'
     return M.REASONS.get(tag, tag)
@@ -647,7 +734,8 @@ def view(name, day=None, engine=None, now=None, db=None):
             score=None if r['status'] != 'final' else dict(
                 dir_hit=None if r['dir_hit'] is None else bool(r['dir_hit']), mae_pts=r['mae_pts'],
                 coverage=r['coverage'], end_error_pts=r['end_error_pts'], actual_pct=r['actual_pct']),
-            live=live_price if (r['status'] == 'live' and t0 <= now < t1 + timedelta(seconds=60)) else None)
+            live=live_price if (r['status'] == 'live' and t0 <= now < t1 + timedelta(seconds=60)) else None,
+            breadth=_slot_breadth(r))
         a = c.execute('SELECT * FROM hourly_forecast_audit WHERE day=? AND index_name=? AND slot=?',
                       (day.isoformat(), name, label)).fetchone()
         if a:
@@ -665,18 +753,35 @@ def view(name, day=None, engine=None, now=None, db=None):
                        "AND status='final' AND late=0 AND day>=? AND day<=?",
                        (name, since, day.isoformat())).fetchall()
     params = load_params(name, db)
+    breadth_now = None
+    if name == BREADTH_INDEX and day == now.date():
+        fc = FORECASTER if FORECASTER is not None and FORECASTER.engine is engine else None
+        breadth_now = fc.live_breadth(now) if fc else None
     return dict(index=name, day=day.isoformat(), now=now.isoformat(), live=live_price, slots=slots,
+                breadth_now=breadth_now,
                 scorecard=dict(today=_scorecard([r for r in rows.values() if not r['late']]),
                                last_30_days=_scorecard(recent)),
                 model=dict(version=M.MODEL_VERSION, calibrated_on=params.get('n_samples', 0),
                            min_samples=M.MIN_SAMPLES, band_only=bool(params.get('band_only')),
                            params={k: params[k] for k in ('beta_reg', 'beta_analog', 'beta_tech', 'beta_shield',
-                                                          'beta_trend', 'beta_oi', 'band_z', 'prob_c')},
+                                                          'beta_trend', 'beta_oi', 'beta_breadth', 'band_z',
+                                                          'prob_c')},
                            changes=[dict(ts=h['ts'], reason=h['reason']) for h in c.execute(
                                'SELECT ts, reason FROM hourly_forecast_model_history WHERE index_name=? '
                                'ORDER BY ts DESC LIMIT 5', (name,))],
                            scorecard=_component_card(name, db)),
                 note='Model estimates only, calibrated against this model\'s own record. Not a trade signal.')
+
+
+def _slot_breadth(r):
+    """The breadth reading this slot's forecast actually used (frozen with the forecast)."""
+    try:
+        inp = json.loads(r['inputs'])
+    except (TypeError, ValueError):
+        return None
+    if 'breadth_status' not in inp:
+        return None                                     # made before breadth existed
+    return dict(status=inp['breadth_status'], tilt=inp.get('breadth'), parts=inp.get('breadth_parts') or {})
 
 
 _card_cache = {}
