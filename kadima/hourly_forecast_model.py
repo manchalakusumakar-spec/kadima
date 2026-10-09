@@ -629,6 +629,26 @@ def step_toward(champion, challenger, max_step=MAX_STEP):
     return out
 
 
+def _better(a, b):
+    """Why challenger b beats champion a on the holdout, or '' if it does not.
+
+    No measure may get materially worse, and at least one must clearly improve.
+    """
+    cov_a = abs((a['coverage'] if a['coverage'] is not None else 0.68) - 0.68)
+    cov_b = abs((b['coverage'] if b['coverage'] is not None else 0.68) - 0.68)
+    hit_a, hit_b = a['hit'] or 0.5, b['hit'] or 0.5
+    if b['logloss'] > a['logloss'] + 0.005 or hit_b < hit_a - 0.02 or cov_b > cov_a + 0.02:
+        return ''
+    gains = []
+    if b['logloss'] < a['logloss'] - 0.002:
+        gains.append(f"probability error {a['logloss']:.3f}\u2192{b['logloss']:.3f}")
+    if hit_b >= hit_a + 0.02:
+        gains.append(f'direction hits {hit_a:.0%}\u2192{hit_b:.0%}')
+    if cov_b <= cov_a - 0.02:
+        gains.append(f"band holds {a['coverage']:.0%}\u2192{b['coverage']:.0%} (target 68%)")
+    return ', '.join(gains)
+
+
 def recalibrate(champion, train, holdout, prior=None):
     """Champion/challenger: adopt new weights only if they do at least as well on recent unseen slots.
 
@@ -643,11 +663,8 @@ def recalibrate(champion, train, holdout, prior=None):
     if len(holdout) < EVAL_MIN:
         decision['reason'] = f'kept: only {len(holdout)} recent slots (need {EVAL_MIN})'
         chosen = champion
-    elif a['logloss'] is not None and b['logloss'] is not None and (
-            b['logloss'] <= a['logloss'] + 1e-9
-            and (b['hit'] or 0) >= (a['hit'] or 0) - 0.02
-            and abs((b['coverage'] or 0.68) - 0.68) <= abs((a['coverage'] or 0.68) - 0.68) + 0.03):
-        decision.update(adopted=True, reason='adopted: better or equal on recent unseen slots')
+    elif a['logloss'] is not None and b['logloss'] is not None and _better(a, b):
+        decision.update(adopted=True, reason='adopted: ' + _better(a, b))
         chosen = challenger
     else:
         decision['reason'] = 'kept: new weights did not beat current ones on recent slots'
