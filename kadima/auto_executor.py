@@ -7,6 +7,7 @@ forecast feature flags; no model forecast is fabricated.
 
 from __future__ import annotations
 
+import json
 import math
 from functools import wraps
 import threading
@@ -1018,6 +1019,130 @@ class AutoExecutor:
             except Exception as exc:                    # noqa: BLE001
                 audit.log("position_monitor_loop_error", error=str(exc))
             self._stop.wait(max(0.1, POSITION_MONITOR_INTERVAL_SEC - (time.monotonic() - started)))
+
+    # -------------------------------------------------------- forecast panel manual entry
+    @serialized
+    def forecast_manual_buy(self, index_name: str, direction: str, strike: float, lots: int,
+                            chain, spot: float) -> dict:
+        """One human-clicked BUY of a strike the trader picked on the hourly-forecast panel.
+
+        The strike and lot count are the trader's choice; everything else is the
+        existing entry machinery: session gate, reconciliation, kill switch,
+        market hours, signal cutoff, daily loss limit, carry-forward and external
+        contract checks, portfolio cash/loss capacity, fresh LIMIT pricing, the
+        durable execution ledger, and the same software stop/trail monitoring as
+        every other position. Nothing here runs without a click.
+        """
+        from . import market_session_gate, portfolio_capacity
+        if not getattr(config, 'FORECAST_MANUAL_TRADE_ENABLED', False):
+            return self._reject('forecast_manual_trade_disabled', index_name, direction)
+        if not ORDER_PLACEMENT_ENABLED:
+            return self._reject('broker_orders_disabled', index_name, direction)
+        if direction not in ('CE', 'PE'):
+            return self._reject('direction_must_be_CE_or_PE', index_name, str(direction))
+        max_lots = getattr(config, 'FORECAST_MANUAL_MAX_LOTS', MAX_LOTS_PER_SIGNAL)
+        if isinstance(lots, bool) or not isinstance(lots, int) or not 1 <= lots <= max_lots:
+            return self._reject(f'lots_must_be_1_to_{max_lots}', index_name, direction)
+        session_block = market_session_gate.entry_block(chain.index.opt_exchange)
+        if session_block:
+            return self._reject(session_block, index_name, direction)
+        if self._reconcile_blocked:
+            return self._reject('startup_reconcile_not_complete', index_name, direction)
+        if killswitch.engaged():
+            return self._reject('killswitch_engaged', index_name, direction)
+        if not in_market_hours():
+            return self._reject('outside_market_hours', index_name, direction)
+        if past_signal_cutoff():
+            return self._reject('past_signal_cutoff', index_name, direction)
+        if exit_manager.realized_pnl_today() <= -DAILY_LOSS_LIMIT_INR:
+            return self._reject('daily_loss_limit_breached', index_name, direction)
+        if index_name in self._manual_carryforward_underlyings:
+            return self._reject('manual_carryforward_same_underlying', index_name, direction)
+        block = portfolio_capacity.entry_block(self.state.positions, execution_ledger.pending())
+        if block:
+            return self._reject(block, index_name, direction)
+        clock = time.monotonic()
+        if not 0 <= clock - getattr(chain, '_spot_received_at', 0) <= 30:
+            return self._reject('underlying_quote_stale', index_name, direction)
+        if not 0 <= clock - getattr(chain, '_last_poll', 0) <= 30:
+            return self._reject('option_chain_stale', index_name, direction)
+
+        quote = next((q for q in chain.quotes.values()
+                      if q.strike == strike and q.opt_type == direction), None)
+        if quote is None:
+            return self._reject('strike_not_in_tracked_ladder', index_name, direction)
+        try:
+            valid = {str(c['token']) for c in chain.scrips.strikes_around(
+                chain.index, chain.atm, config.STRIKES_EACH_SIDE)}
+        except (AttributeError, TypeError, KeyError):
+            return self._reject('contract_expiry_unverifiable', index_name, direction)
+        if str(quote.token) not in valid:
+            return self._reject('contract_expiry_unverifiable', index_name, direction)
+        if (chain.index.opt_exchange, str(quote.token)) in self._external_contracts:
+            return self._reject('contract_held_outside_kadima', index_name, direction)
+        lot_size = get_lot_size(quote.symbol, quote.token)
+        if lot_size is None:
+            return self._reject('lot_size_unresolvable_at_order_time', index_name, direction)
+        pricing_ltp = _poll_ltp(chain.index.opt_exchange, [quote.token]).get(quote.token)
+        if pricing_ltp is None:
+            return self._reject('fresh_entry_quote_unavailable', index_name, direction)
+        limit_price = round(pricing_ltp * (1 + LIMIT_ORDER_BUFFER_PCT / 100.0), 1)
+
+        # Stop: the same structure-based premium stop as engine entries when a
+        # confirmed swing exists, otherwise a flat fallback below the fill price.
+        swing_level, stop = None, None
+        structure = self._structure(chain, direction, spot)
+        if structure is not None:
+            swing_level, days = structure
+            stop = trade_policy.premium_stop(spot, swing_level, quote.strike, pricing_ltp,
+                                             days, direction)
+        if stop is None:
+            stop = round(pricing_ltp * (1 - getattr(config, 'FORECAST_MANUAL_FALLBACK_SL_PCT', 0.30)), 2)
+        if pricing_ltp <= stop:
+            return self._reject('fresh_quote_invalidates_stop', index_name, direction)
+
+        capacity = portfolio_capacity.affordable_lots(
+            self.state.positions, execution_ledger.pending(),
+            exchange=chain.index.opt_exchange, token=quote.token,
+            limit_price=limit_price, stop=stop, lot_size=lot_size, requested_lots=lots,
+            broker_funds=capital_guard.broker_available_funds(),
+            capital_buffer_pct=capital_guard.CAPITAL_SAFETY_BUFFER_PCT,
+            daily_limit=DAILY_LOSS_LIMIT_INR, realized_pnl=exit_manager.realized_pnl_today(),
+            cost_reserve=trade_policy.COST_RESERVE, exit_buffer=trade_policy.EXIT_BUFFER)
+        if capacity.lots < lots:
+            return self._reject(f'only_{capacity.lots}_lots_affordable_{capacity.reason}',
+                                index_name, direction)
+        if killswitch.engaged() or not in_market_hours() or past_signal_cutoff():
+            return self._reject('entry_gate_changed_before_submission', index_name, direction)
+        session_block = market_session_gate.entry_block(chain.index.opt_exchange)
+        if session_block:
+            return self._reject(session_block, index_name, direction)
+
+        quantity = lots * lot_size
+        signal_id = storage.insert_signal(index_name, 'MANUAL', 0.0, direction, json.dumps(dict(
+            source='hourly_forecast_panel', strike=strike, lots=lots, limit_price=limit_price,
+            stop=stop, spot=spot)), kind='forecast_manual')
+        pos = Position(
+            signal_id=signal_id, kind='forecast_manual', index=index_name, direction=direction,
+            symbol=quote.symbol, token=quote.token, exchange=chain.index.opt_exchange,
+            entry_price=0.0, entry_ts=now_ist(), lots=lots, lot_size=lot_size,
+            remaining_qty=0, status='entry_pending', swing_level=swing_level,
+            structural_stop=stop, effective_stop=stop, allocated_capital=quantity * limit_price)
+        with self._lock:
+            self.state.positions[str(signal_id)] = pos
+        result = execution_ledger.submit(pos, 'BUY', quantity, limit_price)
+        self._last_reconcile = 0.0
+        if pos.status == 'closed':
+            self.state.positions.pop(str(signal_id), None)
+        result = dict(result, signal_id=signal_id, symbol=quote.symbol, quantity=quantity,
+                      limit_price=limit_price, stop=stop)
+        audit.log('forecast_manual_entry_result', index=index_name, direction=direction,
+                  strike=strike, lots=lots, **result)
+        self.entry_diagnostics.append(dict(result, ts=now_ist().isoformat(), index=index_name,
+            direction=direction, stage='FORECAST_MANUAL_SUBMISSION'))
+        alerts.enqueue(f"MANUAL forecast-panel BUY {quote.symbol} x{quantity} @ {limit_price}: "
+                       f"{result.get('reason')} | signal #{signal_id}", key=f'entry:{signal_id}')
+        return result
 
     def stop(self) -> None:
         self._stop.set()

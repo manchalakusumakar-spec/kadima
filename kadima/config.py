@@ -183,6 +183,17 @@ DAILY_LOSS_LIMIT_INR = 10_000      # set to your real number
 NO_NEW_SIGNALS_AFTER_HOUR = 13     # non-expiry days, per your own rule
 ORDER_PLACEMENT_ENABLED = True     # LIVE since 2026-08-21, trader's explicit decision
 
+# ---------------------------------------------------------------- hourly forecast panel
+# 2026-10-09, trader's decisions: NIFTY only to start (KADIMA_FORECAST_INDICES
+# env var, comma-separated, adds SENSEX/BANKNIFTY later), display only, plus
+# human-clicked CE/PE BUY buttons with a confirm step. Each click goes through
+# auto_executor.forecast_manual_buy(), which keeps every existing entry gate.
+FORECAST_MANUAL_TRADE_ENABLED = True
+FORECAST_MANUAL_MAX_LOTS = MAX_LOTS_PER_SIGNAL
+FORECAST_MANUAL_FALLBACK_SL_PCT = 0.30   # used only when no confirmed swing stop exists
+# Reserved for a possible future auto-trade mode from the forecast. Nothing reads it.
+FORECAST_AUTOTRADE_ENABLED = False
+
 
 
 # --------------------------------------------------------------- no-auto-exit window

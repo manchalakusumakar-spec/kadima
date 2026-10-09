@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>KADIMA Celestial · Hourly Forecast</title>
+<style>
+  :root {
+    --bg: #0b0f17; --panel: #121826; --panel2: #182033; --line: #253049;
+    --text: #e6ebf5; --muted: #8b97b0; --dim: #5d6882;
+    --up: #2fd08a; --down: #ff5c6c; --flat: #f2b84b; --fc: #8fb4ff; --band: rgba(143,180,255,.14);
+    --actual: #f5f7fb; --live: #ffd166; --accent: #7c9cff;
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; background: var(--bg); color: var(--text);
+         font: 14px/1.45 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif; }
+  .wrap { max-width: 1280px; margin: 0 auto; padding: 14px 16px 40px; }
+  header { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 16px; margin-bottom: 12px; }
+  h1 { font-size: 18px; margin: 0; letter-spacing: .3px; }
+  h1 small { color: var(--muted); font-weight: 500; }
+  .spot { font: 600 20px/1 ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; background: var(--dim); margin-right: 6px; }
+  .dot.on { background: var(--up); box-shadow: 0 0 8px var(--up); }
+  .grow { flex: 1; }
+  select, input, button { font: inherit; color: var(--text); background: var(--panel2);
+                          border: 1px solid var(--line); border-radius: 8px; padding: 7px 10px; }
+  button { cursor: pointer; }
+  .strip { display: grid; grid-template-columns: repeat(auto-fit, minmax(140px, 1fr)); gap: 8px; margin-bottom: 12px; }
+  .stat { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 9px 12px; }
+  .stat b { display: block; font: 600 17px/1.2 ui-monospace, Menlo, monospace; }
+  .stat span { color: var(--muted); font-size: 12px; }
+  .trade { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px; margin-bottom: 14px;
+           display: grid; grid-template-columns: 1fr 1fr auto; gap: 10px; align-items: end; }
+  .trade h3 { grid-column: 1 / -1; margin: 0; font-size: 14px; color: var(--muted); font-weight: 600; }
+  .side { display: flex; flex-direction: column; gap: 6px; padding: 8px; border-radius: 10px; border: 1px solid transparent; }
+  .side.hl { border-color: var(--accent); background: rgba(124,156,255,.07); }
+  .side label { font-size: 12px; color: var(--muted); }
+  .buy { font-weight: 700; border: none; padding: 10px; }
+  .buy.ce { background: #1c7a52; } .buy.pe { background: #9b2f3b; }
+  .buy:disabled { opacity: .4; cursor: not-allowed; }
+  .lots { display: flex; flex-direction: column; gap: 6px; }
+  .lots div { display: flex; gap: 4px; }
+  .lots input { width: 52px; text-align: center; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 12px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
+  .card.live { border-color: var(--live); }
+  .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .slot { font-weight: 700; font-size: 15px; }
+  .chip { font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 999px; background: var(--panel2); color: var(--muted); letter-spacing: .4px; }
+  .chip.live { background: rgba(255,209,102,.15); color: var(--live); }
+  .chip.final { background: rgba(124,156,255,.15); color: var(--accent); }
+  .chip.hit { background: rgba(47,208,138,.15); color: var(--up); }
+  .chip.miss { background: rgba(255,92,108,.15); color: var(--down); }
+  .chip.late { background: rgba(242,184,75,.15); color: var(--flat); }
+  .dir { font-weight: 800; font-size: 15px; }
+  .UP { color: var(--up); } .DOWN { color: var(--down); } .FLAT { color: var(--flat); }
+  .kv { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px 10px; margin: 8px 0 4px; }
+  .kv div span { display: block; color: var(--muted); font-size: 11px; }
+  .kv div b { font: 600 13px ui-monospace, Menlo, monospace; }
+  svg { width: 100%; height: auto; display: block; }
+  .empty { color: var(--dim); text-align: center; padding: 44px 0; font-size: 13px; }
+  .card.pending .empty, .card.missed .empty { padding: 6px 0 0; text-align: left; }
+  .legend { display: flex; gap: 14px; color: var(--muted); font-size: 12px; margin: 0 0 10px; flex-wrap: wrap; }
+  .legend i { display: inline-block; width: 18px; height: 0; border-top: 2px solid; vertical-align: middle; margin-right: 5px; }
+  .note { color: var(--dim); font-size: 12px; margin-top: 18px; }
+  .modal { position: fixed; inset: 0; background: rgba(0,0,0,.6); display: none; align-items: center; justify-content: center; padding: 16px; z-index: 9; }
+  .modal.open { display: flex; }
+  .box { background: var(--panel); border: 1px solid var(--line); border-radius: 14px; padding: 18px; max-width: 380px; width: 100%; }
+  .box h4 { margin: 0 0 8px; font-size: 16px; }
+  .box p { margin: 6px 0; color: var(--muted); }
+  .box .big { color: var(--text); font: 700 17px ui-monospace, Menlo, monospace; }
+  .box .btns { display: flex; gap: 8px; margin-top: 14px; }
+  .box .btns button { flex: 1; padding: 10px; font-weight: 700; }
+  .toast { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); background: var(--panel2); border: 1px solid var(--line);
+           border-radius: 10px; padding: 10px 14px; display: none; max-width: 92vw; z-index: 10; }
+  .toast.ok { border-color: var(--up); } .toast.err { border-color: var(--down); }
+  @media (max-width: 640px) {
+    .grid { grid-template-columns: 1fr; }
+    .trade { grid-template-columns: 1fr 1fr; }
+    .lots { grid-column: 1 / -1; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+  <header>
+    <h1>Hourly Forecast <small id="idx">NIFTY</small></h1>
+    <span><span class="dot" id="dot"></span><span class="spot" id="spot">—</span></span>
+    <span class="grow"></span>
+    <select id="day" aria-label="Day"></select>
+  </header>
+
+  <div class="strip" id="strip"></div>
+
+  <div class="trade" id="trade">
+    <h3 id="tradeTitle">Trade from forecast</h3>
+    <div class="side" id="sideCE">
+      <label for="ceStrike">CE strike</label>
+      <select id="ceStrike"></select>
+      <button class="buy ce" id="buyCE">BUY CE</button>
+    </div>
+    <div class="side" id="sidePE">
+      <label for="peStrike">PE strike</label>
+      <select id="peStrike"></select>
+      <button class="buy pe" id="buyPE">BUY PE</button>
+    </div>
+    <div class="lots">
+      <label for="lots">Lots</label>
+      <div><button id="lotMinus" aria-label="Fewer lots">−</button><input id="lots" value="1" inputmode="numeric"><button id="lotPlus" aria-label="More lots">+</button></div>
+    </div>
+  </div>
+
+  <div class="legend">
+    <span><i style="border-color:var(--fc);border-top-style:dashed"></i>Forecast</span>
+    <span><i style="border-color:var(--actual)"></i>Actual</span>
+    <span><i style="border-color:var(--band);border-top-width:8px"></i>Forecast band</span>
+    <span><i style="border-color:var(--live);border-top-width:6px;width:6px;border-radius:50%"></i>Live price</span>
+  </div>
+
+  <div class="grid" id="grid"></div>
+  <div class="note" id="note"></div>
+</div>
+
+<div class="modal" id="modal" role="dialog" aria-modal="true">
+  <div class="box">
+    <h4>Confirm order</h4>
+    <p class="big" id="mText"></p>
+    <p id="mSub"></p>
+    <div class="btns"><button id="mCancel">Cancel</button><button id="mOk" class="buy ce">Confirm BUY</button></div>
+  </div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+(() => {
+  const API = (location.pathname.startsWith('/control/') ? '' : '/control') + '/api/forecast';
+  const INDEX = new URLSearchParams(location.search).get('index') || 'NIFTY';
+  const $ = id => document.getElementById(id);
+  const fmt = (x, d = 2) => (x == null || !isFinite(x)) ? '—' : Number(x).toLocaleString('en-IN', {minimumFractionDigits: d, maximumFractionDigits: d});
+  const sign = x => (x > 0 ? '+' : '') ;
+  const hhmm = s => s ? s.slice(11, 16) : '';
+  let token = null, data = null, viewDay = null, pending = null;
+  $('idx').textContent = INDEX;
+
+  function getToken() {
+    try { token = localStorage.getItem('kadima_token'); } catch (e) { token = null; }
+    if (!token) {
+      token = prompt('KADIMA control token');
+      if (token) try { localStorage.setItem('kadima_token', token); } catch (e) {}
+    }
+    return token;
+  }
+
+  async function api(path, opts = {}) {
+    if (!token && !getToken()) throw new Error('No token');
+    const r = await fetch(API + path, {...opts, headers: {'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'}});
+    if (r.status === 401) { try { localStorage.removeItem('kadima_token'); } catch (e) {} token = null; throw new Error('Token rejected'); }
+    const body = await r.json().catch(() => ({}));
+    if (!r.ok) throw Object.assign(new Error(typeof body.detail === 'string' ? body.detail : (body.detail && body.detail.reason) || ('HTTP ' + r.status)), {body});
+    return body;
+  }
+
+  function toast(msg, ok) {
+    const t = $('toast'); t.textContent = msg; t.className = 'toast ' + (ok ? 'ok' : 'err'); t.style.display = 'block';
+    clearTimeout(toast._t); toast._t = setTimeout(() => t.style.display = 'none', 6000);
+  }
+
+  // ---------------------------------------------------------------- chart
+  function chart(s) {
+    const pts = s.points || [];
+    if (!pts.length) return `<div class="empty">${s.status === 'missed' ? 'No forecast was made for this slot' : 'Forecast at ' + s.slot}</div>`;
+    const W = 340, H = 170, L = 50, R = 18, T = 10, B = 22;
+    const t0 = Date.parse(s.start_ts), t1 = Date.parse(s.end_ts);
+    const xs = ts => L + (Date.parse(ts) - t0) / (t1 - t0) * (W - L - R);
+    const all = [s.anchor];
+    pts.forEach(p => { all.push(p.upper, p.lower); if (p.actual != null) all.push(p.actual); });
+    if (s.live) all.push(s.live.price);
+    let lo = Math.min(...all), hi = Math.max(...all); const pad = (hi - lo) * .08 || 5; lo -= pad; hi += pad;
+    const ys = v => T + (hi - v) / (hi - lo) * (H - T - B);
+    const start = {ts: s.start_ts, v: s.anchor};
+    const fc = [start, ...pts.map(p => ({ts: p.ts, v: p.forecast}))];
+    const up = [start, ...pts.map(p => ({ts: p.ts, v: p.upper}))];
+    const dn = [start, ...pts.map(p => ({ts: p.ts, v: p.lower}))];
+    const act = [start, ...pts.filter(p => p.actual != null).map(p => ({ts: p.ts, v: p.actual}))];
+    if (s.live) act.push({ts: s.live.ts, v: s.live.price});
+    const path = a => a.map((p, i) => (i ? 'L' : 'M') + xs(p.ts).toFixed(1) + ' ' + ys(p.v).toFixed(1)).join(' ');
+    const band = path(up) + ' ' + dn.slice().reverse().map(p => 'L' + xs(p.ts).toFixed(1) + ' ' + ys(p.v).toFixed(1)).join(' ') + ' Z';
+    let g = '';
+    for (let k = 0; k <= 4; k++) {
+      const v = lo + (hi - lo) * k / 4, y = ys(v);
+      g += `<line x1="${L}" x2="${W - R}" y1="${y}" y2="${y}" stroke="var(--line)" stroke-width="1"/>` +
+           `<text x="${L - 6}" y="${y + 3}" fill="var(--dim)" font-size="9" text-anchor="end">${Math.round(v)}</text>`;
+    }
+    const step = pts.length > 6 ? 3 : 1;
+    [start, ...pts.map(p => ({ts: p.ts}))].forEach((p, i) => {
+      if (i % step === 0 || i === pts.length) g += `<text x="${xs(p.ts)}" y="${H - 6}" fill="var(--dim)" font-size="9" text-anchor="middle">${hhmm(p.ts)}</text>`;
+    });
+    const liveDot = s.live ? `<circle cx="${xs(s.live.ts)}" cy="${ys(s.live.price)}" r="4" fill="var(--live)"><animate attributeName="r" values="3;5;3" dur="1.6s" repeatCount="indefinite"/></circle>` : '';
+    return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Forecast versus actual ${s.slot} to ${s.slot_end}">
+      ${g}<path d="${band}" fill="var(--band)"/>
+      <path d="${path(fc)}" fill="none" stroke="var(--fc)" stroke-width="2" stroke-dasharray="5 4"/>
+      ${act.length > 1 ? `<path d="${path(act)}" fill="none" stroke="var(--actual)" stroke-width="2"/>` : ''}
+      ${liveDot}</svg>`;
+  }
+
+  function card(s) {
+    const st = s.status;
+    let chips = `<span class="chip ${st}">${st.toUpperCase()}</span>`;
+    if (s.late) chips += ' <span class="chip late" title="Engine was not running at the slot start; rebuilt from the slot open and excluded from calibration">LATE</span>';
+    if (s.score && s.score.dir_hit != null) chips += ` <span class="chip ${s.score.dir_hit ? 'hit' : 'miss'}">${s.score.dir_hit ? 'HIT' : 'MISS'}</span>`;
+    let head = '';
+    if (s.direction) {
+      const arrow = {UP: '▲', DOWN: '▼', FLAT: '◆'}[s.direction];
+      const p = s.direction === 'DOWN' ? 1 - s.prob_up : s.direction === 'UP' ? s.prob_up : Math.max(s.prob_up, 1 - s.prob_up);
+      head = `<span class="dir ${s.direction}">${arrow} ${s.direction} ${Math.round(p * 100)}%</span>`;
+    }
+    let kv = '';
+    if (s.points) {
+      const last = s.points[s.points.length - 1];
+      const now = s.live ? s.live.price : (s.points.filter(p => p.actual != null).slice(-1)[0] || {}).actual;
+      kv = `<div class="kv">
+        <div><span>Forecast move</span><b class="${s.direction}">${sign(s.projected_pct)}${fmt(s.projected_pct)}%</b></div>
+        <div><span>Points</span><b>${sign(s.projected_pts)}${fmt(s.projected_pts, 0)}</b></div>
+        <div><span>Band (end)</span><b>±${fmt(s.band_pts, 0)}</b></div>
+        <div><span>Start</span><b>${fmt(s.anchor, 1)}</b></div>
+        <div><span>Forecast ${s.slot_end}</span><b>${fmt(last.forecast, 1)}</b></div>
+        <div><span>${s.status === 'final' ? 'Actual ' + s.slot_end : 'Actual now'}</span><b>${fmt(s.status === 'final' ? last.actual : now, 1)}</b></div>
+        ${s.score ? `<div><span>Actual move</span><b>${sign(s.score.actual_pct)}${fmt(s.score.actual_pct)}%</b></div>
+        <div><span>Avg error</span><b>${fmt(s.score.mae_pts, 0)} pts</b></div>
+        <div><span>Inside band</span><b>${s.score.coverage == null ? '—' : Math.round(s.score.coverage * 100) + '%'}</b></div>` : ''}
+      </div>`;
+    }
+    return `<div class="card ${st}">
+      <div class="row"><span class="slot">${s.slot} – ${s.slot_end}</span>${chips}<span class="grow"></span>${head}</div>
+      ${kv}${chart(s)}</div>`;
+  }
+
+  function strip(d) {
+    const t = d.scorecard.today, m = d.scorecard.last_30_days, mod = d.model;
+    const stat = (v, l) => `<div class="stat"><b>${v}</b><span>${l}</span></div>`;
+    $('strip').innerHTML =
+      stat(t.n ? `${t.dir_hits}/${t.n}` : '—', 'Direction hits today') +
+      stat(t.n ? fmt(t.mae_pts, 0) + ' pts' : '—', 'Avg path error today') +
+      stat(t.n ? Math.round(t.coverage * 100) + '%' : '—', 'Actual inside band today') +
+      stat(m.n ? Math.round(m.dir_hit_rate * 100) + '%' : '—', `30-day hit rate (${m.n} slots)`) +
+      stat(`${Math.min(mod.calibrated_on, mod.min_samples)}/${mod.min_samples}`, mod.calibrated_on >= mod.min_samples ? 'Calibrated on own record' : 'Slots until calibrated');
+  }
+
+  // ---------------------------------------------------------------- trade
+  function trade(d) {
+    const tr = d.trade || {}, s = tr.strikes || {};
+    const isToday = d.day === d.now.slice(0, 10);
+    const ok = tr.enabled && s.available && isToday;
+    $('trade').style.display = isToday ? '' : 'none';
+    const opt = r => `<option value="${r.strike}" ${r.available ? '' : 'disabled'}>${r.strike}${r.ltp != null ? '  ·  ₹' + fmt(r.ltp) : ''}</option>`;
+    const keep = (sel, rows) => { const v = sel.value; sel.innerHTML = (rows || []).map(opt).join(''); if ([...sel.options].some(o => o.value === v && !o.disabled)) sel.value = v; };
+    keep($('ceStrike'), s.ce); keep($('peStrike'), s.pe);
+    $('buyCE').disabled = $('buyPE').disabled = !ok;
+    $('lots').max = tr.max_lots || 1;
+    const live = d.slots.find(x => x.status === 'live');
+    $('sideCE').classList.toggle('hl', !!live && live.direction === 'UP');
+    $('sidePE').classList.toggle('hl', !!live && live.direction === 'DOWN');
+    $('tradeTitle').textContent = !tr.enabled ? 'Trade buttons are switched off on the server'
+      : !s.available ? 'Option quotes unavailable (' + (s.reason || 'engine') + ')'
+      : `Trade from forecast · ATM ${s.atm}` + (s.quotes_fresh ? '' : ' · quotes stale');
+  }
+
+  function lots() {
+    const max = Number($('lots').max) || 1;
+    let n = parseInt($('lots').value, 10); if (!(n >= 1)) n = 1; if (n > max) n = max; $('lots').value = n; return n;
+  }
+  $('lotMinus').onclick = () => { $('lots').value = Math.max(1, lots() - 1); };
+  $('lotPlus').onclick = () => { $('lots').value = lots() + 1; lots(); };
+
+  function ask(direction) {
+    const sel = direction === 'CE' ? $('ceStrike') : $('peStrike');
+    const strike = Number(sel.value), n = lots();
+    const row = ((data.trade.strikes[direction.toLowerCase()]) || []).find(r => r.strike === strike) || {};
+    pending = {index: INDEX, direction, strike, lots: n};
+    $('mText').textContent = `BUY ${n} lot${n > 1 ? 's' : ''} ${INDEX} ${strike} ${direction}` + (row.ltp != null ? ` @ ₹${fmt(row.ltp)}` : '');
+    $('mSub').textContent = (row.lot_size ? `Quantity ${n * row.lot_size} · ` : '') + 'LIMIT order at a fresh LTP + 2.5%. All KADIMA entry checks still apply; stop and trailing are managed by the engine.';
+    $('mOk').className = 'buy ' + direction.toLowerCase();
+    $('modal').classList.add('open');
+  }
+  $('buyCE').onclick = () => ask('CE');
+  $('buyPE').onclick = () => ask('PE');
+  $('mCancel').onclick = () => { pending = null; $('modal').classList.remove('open'); };
+  $('mOk').onclick = async () => {
+    const body = pending; pending = null; $('modal').classList.remove('open');
+    if (!body) return;
+    $('mOk').disabled = true;
+    try {
+      const r = await api('/buy', {method: 'POST', body: JSON.stringify(body)});
+      toast(`Order sent: ${r.symbol} ×${r.quantity} LIMIT ₹${fmt(r.limit_price)} · ${r.reason}`, true);
+    } catch (e) {
+      toast('Not placed: ' + e.message.replace(/_/g, ' '), false);
+    } finally { $('mOk').disabled = false; refresh(); }
+  };
+
+  // ---------------------------------------------------------------- refresh
+  async function days() {
+    try {
+      const r = await api('/days?index=' + INDEX);
+      const today = new Date(Date.now() + 330 * 60000).toISOString().slice(0, 10);
+      const list = [...new Set([today, ...r.days])];
+      $('day').innerHTML = list.map(d => `<option value="${d}">${d === today ? 'Today · ' + d : d}</option>`).join('');
+      $('day').value = viewDay || today;
+    } catch (e) {}
+  }
+  $('day').onchange = () => { viewDay = $('day').value; refresh(); };
+
+  async function refresh() {
+    try {
+      const q = '/hourly?index=' + INDEX + (viewDay ? '&day=' + viewDay : '');
+      data = await api(q);
+      $('spot').textContent = data.live ? fmt(data.live.price) : '—';
+      $('dot').classList.toggle('on', !!data.live);
+      strip(data); trade(data);
+      $('grid').innerHTML = data.slots.map(card).join('');
+      $('note').textContent = data.note + ` Model ${data.model.version}.`;
+    } catch (e) {
+      $('grid').innerHTML = `<div class="empty">Could not load forecasts: ${e.message}</div>`;
+    }
+  }
+
+  days().then(refresh);
+  setInterval(() => { if (!document.hidden && !$('modal').classList.contains('open')) refresh(); }, 5000);
+  setInterval(days, 300000);
+})();
+</script>
+</body>
+</html>

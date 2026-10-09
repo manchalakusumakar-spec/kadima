@@ -604,3 +604,73 @@ def celestial_news(body: dict = Body(...), authorization: Optional[str] = Header
                       covered_symbols=body['covered_symbols'])
     except (ValueError,TypeError,KeyError) as exc:
         raise HTTPException(422,str(exc))
+
+
+# ---------------------------------------------------------------- hourly forecast panel
+# Forecast reads are display-only. The one write is a human-clicked BUY that the
+# panel only sends after its own confirm step; it is routed through
+# auto_executor.forecast_manual_buy(), never straight to the broker.
+from datetime import date as _date
+from fastapi import Query
+from . import hourly_forecast
+
+
+def _forecast_engine():
+    f = hourly_forecast.FORECASTER
+    if f is None or f.engine is None:
+        raise HTTPException(503, 'hourly_forecaster_not_running')
+    return f.engine
+
+
+def _forecast_index(name):
+    name = (name or '').upper()
+    if name not in hourly_forecast.FORECAST_INDICES:
+        raise HTTPException(422, f'index_not_enabled_for_forecast:{name}')
+    return name
+
+
+@app.get('/api/forecast/hourly')
+def forecast_hourly(index: str = Query('NIFTY'), day: Optional[str] = Query(None),
+                    authorization: Optional[str] = Header(None)):
+    _check_auth(authorization)
+    name = _forecast_index(index)
+    try:
+        d = _date.fromisoformat(day) if day else None
+    except ValueError:
+        raise HTTPException(422, 'day_must_be_YYYY-MM-DD')
+    engine = hourly_forecast.FORECASTER.engine if hourly_forecast.FORECASTER else None
+    out = hourly_forecast.view(name, d, engine=engine)
+    out['trade'] = dict(enabled=bool(config.FORECAST_MANUAL_TRADE_ENABLED and config.ORDER_PLACEMENT_ENABLED),
+                        max_lots=config.FORECAST_MANUAL_MAX_LOTS,
+                        strikes=hourly_forecast.strike_options(name, engine) if engine else
+                        dict(available=False, reason='engine_not_running'))
+    return out
+
+
+@app.get('/api/forecast/days')
+def forecast_days(index: str = Query('NIFTY'), authorization: Optional[str] = Header(None)):
+    _check_auth(authorization)
+    return dict(index=_forecast_index(index), days=hourly_forecast.available_days(_forecast_index(index)))
+
+
+@app.post('/api/forecast/buy')
+def forecast_buy(body: dict = Body(...), authorization: Optional[str] = Header(None)):
+    _check_auth(authorization)
+    if set(body) != {'index', 'direction', 'strike', 'lots'}:
+        raise HTTPException(422, 'index_direction_strike_lots_required')
+    name = _forecast_index(body['index'])
+    direction, strike, lots = body['direction'], body['strike'], body['lots']
+    if direction not in ('CE', 'PE') or type(lots) is not int or isinstance(strike, bool) \
+            or not isinstance(strike, (int, float)):
+        raise HTTPException(422, 'direction_CE_PE_integer_lots_numeric_strike')
+    if EXECUTOR is None:
+        raise HTTPException(503, 'executor_not_registered')
+    engine = _forecast_engine()
+    # Only the panel's own choices: CE ATM/+1/+2, PE ATM/-1/-2 at the current spot.
+    if hourly_forecast.allowed_strike(name, engine, direction, float(strike)) is None:
+        raise HTTPException(409, 'strike_not_offered_at_current_spot_refresh_panel')
+    st = engine.states[name]
+    result = EXECUTOR.forecast_manual_buy(name, direction, float(strike), lots, st.chain, st.spot)
+    audit.log('forecast_panel_buy_request', index=name, direction=direction, strike=strike,
+              lots=lots, ok=result.get('ok'), reason=result.get('reason'))
+    return _control_result(result)
