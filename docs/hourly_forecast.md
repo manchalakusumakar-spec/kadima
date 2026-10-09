@@ -76,12 +76,12 @@ git checkout origin/hourly-forecast -- kadima/hourly_forecast.py kadima/hourly_f
     tools/forecast_backtest.py tools/test_hourly_forecast.py tools/test_hourly_forecast_live.py \
     tools/test_forecast_manual_buy.py web/hourly_forecast.html docs/hourly_forecast.md
 
-# 2) edits to existing files, as a patch against the live versions
-git diff c53365d origin/hourly-forecast -- kadima/auto_executor.py kadima/config.py \
-    kadima/control_api.py kadima/engine.py > ~/hf.patch
-git apply --check ~/hf.patch && git apply ~/hf.patch
-#   If --check fails, stop: the live file differs from main around that hunk.
-#   Send the error and the hunk will be re-based on the live file.
+# 2) edits to existing files, by anchors (the live files differ from main, so a
+#    git patch does not apply). --check changes nothing; install backs up first
+#    and restores automatically if anything fails to compile.
+git checkout origin/hourly-forecast -- tools/install_hourly_forecast.py
+python tools/install_hourly_forecast.py --check
+python tools/install_hourly_forecast.py
 
 # 3) verify
 python -m py_compile kadima/*.py
