@@ -11,7 +11,7 @@
  */
 (function () {
   var HIDE_TITLE = 'Daily Price Memory';
-  var SRC = '/forecast.html?embed=1';
+  var SRC = '/forecast.html?embed=1&v=3';
   var FRAME_ID = 'kadima-hourly-forecast-frame';
   var HOLD_ID = 'kadima-hourly-forecast-slot';
   var frameHeight = 600;
@@ -46,7 +46,7 @@
     f.src = SRC;
     f.title = 'Hourly Forecast';
     f.setAttribute('scrolling', 'no');
-    f.style.cssText = 'position:absolute;border:0;background:transparent;z-index:5;left:0;top:0;width:0;height:0;';
+    f.style.cssText = 'position:absolute;border:0;background:#0b0f17;color-scheme:dark;border-radius:12px;z-index:5;left:0;top:0;width:0;height:0;';
     document.body.appendChild(f);
     return f;
   }

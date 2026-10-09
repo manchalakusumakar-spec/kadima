@@ -3,9 +3,10 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="dark">
 <title>KADIMA Celestial · Hourly Forecast</title>
 <style>
-  :root {
+  :root { color-scheme: dark;
     --bg: #0b0f17; --panel: #121826; --panel2: #182033; --line: #253049;
     --text: #e6ebf5; --muted: #8b97b0; --dim: #5d6882;
     --up: #2fd08a; --down: #ff5c6c; --flat: #f2b84b; --fc: #8fb4ff; --band: rgba(143,180,255,.14);
@@ -74,8 +75,8 @@
   .toast { position: fixed; left: 50%; bottom: 18px; transform: translateX(-50%); background: var(--panel2); border: 1px solid var(--line);
            border-radius: 10px; padding: 10px 14px; display: none; max-width: 92vw; z-index: 10; }
   .toast.ok { border-color: var(--up); } .toast.err { border-color: var(--down); }
-  body.embed { background: transparent; }
-  body.embed .wrap { padding: 0 0 8px; max-width: none; }
+  body.embed { background: var(--bg); }
+  body.embed .wrap { padding: 12px 12px 8px; max-width: none; }
   @media (max-width: 640px) {
     .grid { grid-template-columns: 1fr; }
     .trade { grid-template-columns: 1fr 1fr; }

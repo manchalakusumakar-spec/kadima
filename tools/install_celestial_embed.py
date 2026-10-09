@@ -17,7 +17,7 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WWW = os.environ.get('KADIMA_WWW', '/var/www/html')
 DASH = os.path.join(WWW, 'dashboard.html')
-TAG = '<script src="celestial_forecast_embed.js?v=2"></script><!-- HOURLY FORECAST v1 -->'
+TAG = '<script src="celestial_forecast_embed.js?v=3"></script><!-- HOURLY FORECAST v1 -->'
 OLD = re.compile(r'<script src="celestial_forecast_embed\.js[^"]*"></script><!-- HOURLY FORECAST v1 -->')
 
 
