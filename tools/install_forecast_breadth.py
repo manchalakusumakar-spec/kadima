@@ -64,11 +64,12 @@ def apply(live, pairs, label, problems):
     """Apply every pair to `live` or report why not. Already-applied pairs are skipped."""
     text, done, skipped = live, 0, 0
     for n, (old, new) in enumerate(pairs, 1):
-        if text.count(old) == 1:
+        if text.count(new) == 1:
+            skipped += 1                               # already installed (checked first: an
+                                                       # insertion's new text contains its old text)
+        elif text.count(old) == 1:
             text = text.replace(old, new)
             done += 1
-        elif text.count(new) == 1 and old not in text:
-            skipped += 1                               # already installed
         else:
             first = next((ln.strip() for ln in old.splitlines() if ln.strip()), '')[:70]
             problems.append(f'{label}: change {n}/{len(pairs)} - original text found '
@@ -142,7 +143,7 @@ def main():
         return 0
 
     stamp = time.strftime('%Y%m%d-%H%M%S')
-    bdir = os.path.expanduser(f'~/kadima-backups/forecast-breadth-{stamp}')
+    bdir = os.path.expanduser(f'~/kadima-backups/forecast-breadth-{stamp}-{os.getpid()}')
     os.makedirs(bdir)
     diff, manifest, rollback = [], [], ['#!/bin/sh', 'set -e']
     for path, (before, after) in sorted(writes.items()):
