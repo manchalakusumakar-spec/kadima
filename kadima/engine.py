@@ -97,6 +97,8 @@ class Engine:
         from .celestial_scanner import Radar
         self.radar = Radar()
         self.fast_lane = FastLane()
+        from .intraday_trend import Lane as IntradayTrendLane   # INTRADAY TREND v1
+        self.trend_lane = IntradayTrendLane()
         self._fast_reported = {}
         self.scan_indices = GAMMA_INDICES
         if celestial.enabled():
@@ -339,8 +341,48 @@ class Engine:
         elif candle.interval == 5:
             self._score(st, candle.start + timedelta(minutes=5), candle.close)
             self._evaluate()
+            self._observe_intraday_trend(st)   # INTRADAY TREND v1: observation only here
 
     # ------------------------------------------------------------------ OI
+    # ------------------------------------------------------------ intraday trend
+    def _observe_intraday_trend(self, st):
+        """Separate lane; its failure must never affect Shield, Gamma, CAS or fast."""
+        if st.name not in INDICES:
+            return
+        try:
+            row = self.trend_lane.observe_close(st)
+            auto_executor.EXECUTOR.trend_rows = self.trend_lane.rows
+            audit.log('INTRADAY_TREND_OBSERVED', index=st.name, stage=row['stage'],
+                      episode=row.get('episode'), family=row.get('family'),
+                      direction=row.get('direction'), reasons=row['blocked_reasons'],
+                      evaluations=row.get('evaluations'))
+        except Exception as exc:                        # noqa: BLE001
+            audit.log('INTRADAY_TREND_LANE_ERROR', index=st.name, stage='observe',
+                      error_type=type(exc).__name__)
+
+    def _admit_intraday_trend(self, st):
+        if st.name not in INDICES or st.name not in self.trend_lane.pending:
+            return
+        try:
+            ex = auto_executor.EXECUTOR
+            row = self.trend_lane.prepare(st, ex.state.positions)
+            ex.trend_rows = self.trend_lane.rows
+            if row is None or not row['eligible']:
+                return
+            from .intraday_trend import signal_id
+            sid = signal_id(row)
+            result = ex.evaluate_and_enter(
+                st.name, row['direction'], st.chain, st.spot, st.snap, row['days'],
+                'intraday_trend', sid, 'TREND', 0.0,
+                trend_context=lambda state=st: self.trend_lane.revalidate(
+                    state, auto_executor.EXECUTOR.state.positions))
+            self.trend_lane.settle(st.name, dict(row, signal_id=sid), result)
+            audit.log('INTRADAY_TREND_DISPATCH_RESULT', signal_id=sid, index=st.name,
+                      episode=row['episode'], **result)
+        except Exception as exc:                        # noqa: BLE001
+            audit.log('INTRADAY_TREND_LANE_ERROR', index=st.name, stage='admit',
+                      error_type=type(exc).__name__)
+
     def _scan_fast(self, st):
         """Optional lane failure must not suppress the established scanners."""
         try:
@@ -392,6 +434,8 @@ class Engine:
                                 if celestial.enabled():
                                     auto_executor.EXECUTOR.prepare_celestial_context(
                                         st.name,st.chain,st.spot,st.snap,self._dte(st))
+                                # INTRADAY TREND v1: admission on this fresh poll, after all existing lanes.
+                                self._admit_intraday_trend(st)
                         except Exception as exc:        # noqa: BLE001
                             audit.log("oi_loop_error", index=st.name,
                                       error=str(exc))
