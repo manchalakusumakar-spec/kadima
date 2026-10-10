@@ -183,6 +183,29 @@ DAILY_LOSS_LIMIT_INR = 10_000      # set to your real number
 NO_NEW_SIGNALS_AFTER_HOUR = 13     # non-expiry days, per your own rule
 ORDER_PLACEMENT_ENABLED = True     # LIVE since 2026-08-21, trader's explicit decision
 
+# ---------------------------------------------------------------- parallel orders
+# 2026-10-10, trader's decision: when capital is sufficient, several entries may
+# be open or pending at once. Capital and the daily loss allowance are the real
+# limit (portfolio_capacity reserves cash/risk for pending BUYs too); these are
+# safety ceilings on top of that. MAX_CONCURRENT_POSITIONS above is no longer read
+# by the entry path.
+MAX_OPEN_POSITIONS = 5             # open + pending positions across all lanes
+MAX_OPEN_PER_UNDERLYING = 2        # e.g. at most 2 NIFTY contracts at once
+
+# Delivery failures (rate limited / broker session unavailable) never reached
+# Angel One, so the signal may be re-sent on a later cycle: at most this many
+# attempts, all within this many seconds of the first, never paying more than
+# this % above the first attempt's limit price.
+ORDER_RETRY_ATTEMPTS = 3
+ORDER_RETRY_WINDOW_SEC = 45
+ORDER_RETRY_MAX_DRIFT_PCT = 1.0
+
+# An order whose submission outcome was unknown (timeout / unreadable reply) and
+# that is still not in Angel One's order book after this long is marked failed,
+# freeing its capital reservation. It is never re-sent; if it appears later a
+# loud alert is raised and reconciliation treats it as an external order.
+UNKNOWN_ORDER_TIMEOUT_SEC = 60
+
 # ---------------------------------------------------------------- hourly forecast panel
 # 2026-10-09, trader's decisions: NIFTY only to start (KADIMA_FORECAST_INDICES
 # env var, comma-separated, adds SENSEX/BANKNIFTY later), display only, plus

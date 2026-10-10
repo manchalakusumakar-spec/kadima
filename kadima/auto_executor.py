@@ -242,6 +242,16 @@ def projected_return_pct(quote, spot: float, days_to_expiry: float) -> Optional[
 
 
 # ---------------------------------------------------------------- executor
+def _position_limits(index_name: str) -> dict:
+    """Safety ceilings layered on capital-based sizing (config, 2026-10-10)."""
+    def limit(name):
+        value = getattr(config, name, None)
+        return value if type(value) is int and value > 0 else None
+    return dict(max_open=limit('MAX_OPEN_POSITIONS'),
+                max_per_underlying=limit('MAX_OPEN_PER_UNDERLYING'),
+                underlying=index_name)
+
+
 def serialized(method):
     @wraps(method)
     def call(self, *args, **kwargs):
@@ -623,10 +633,11 @@ class AutoExecutor:
                 for p in self.state.positions.values())
         if same_underlying:
             return self._reject("same_underlying_position_exists", index_name, direction)
-        # KADIMA CAPITAL-BASED MULTI-POSITION v1
+        # KADIMA CAPITAL-BASED MULTI-POSITION v2 (2026-10-10): parallel entries,
+        # pending BUYs reserve capital, count ceilings from config.
         from . import portfolio_capacity
         portfolio_block = portfolio_capacity.entry_block(
-            self.state.positions, execution_ledger.pending())
+            self.state.positions, execution_ledger.pending(), **_position_limits(index_name))
         if portfolio_block:
             return self._reject(portfolio_block, index_name, direction)
 
@@ -776,7 +787,8 @@ class AutoExecutor:
             capital_buffer_pct=capital_guard.CAPITAL_SAFETY_BUFFER_PCT,
             daily_limit=DAILY_LOSS_LIMIT_INR,
             realized_pnl=exit_manager.realized_pnl_today(),
-            cost_reserve=trade_policy.COST_RESERVE, exit_buffer=trade_policy.EXIT_BUFFER)
+            cost_reserve=trade_policy.COST_RESERVE, exit_buffer=trade_policy.EXIT_BUFFER,
+            **_position_limits(index_name))
         if capacity.lots < 1:
             return self._reject(capacity.reason, index_name, direction)
         allowed_lots = capacity.lots
@@ -826,6 +838,9 @@ class AutoExecutor:
         session_block = market_session_gate.entry_block(chain.index.opt_exchange)
         if session_block:
             return self._reject(session_block, index_name, direction)
+        if not execution_ledger.retry_price_ok(source_signal_id, limit_price):
+            # Re-sends after a delivery failure must not chase the premium.
+            return self._reject('retry_price_drift_exceeded', index_name, direction)
         pos = Position(
             signal_id=source_signal_id, kind=kind, index=index_name, direction=direction,
             symbol=chosen_quote.symbol, token=chosen_quote.token,
@@ -842,7 +857,9 @@ class AutoExecutor:
         audit.log('entry_order_result', signal_id=source_signal_id, **result)
         self.entry_diagnostics.append(dict(ts=now_ist().isoformat(),index=index_name,
             direction=direction,signal_id=source_signal_id,stage='SUBMISSION_RESULT',**result))
-        alerts.enqueue(f"ENTRY order {pos.symbol}: {result['reason']} | signal #{source_signal_id}",
+        retry = (" - did not reach Angel One; will re-send on the next cycle if still valid"
+                 if result.get('retryable') and not execution_ledger.seen(source_signal_id) else "")
+        alerts.enqueue(f"ENTRY order {pos.symbol}: {result['reason']}{retry} | signal #{source_signal_id}",
                        key=f'entry:{source_signal_id}')
         return result
 
@@ -1058,7 +1075,8 @@ class AutoExecutor:
             return self._reject('daily_loss_limit_breached', index_name, direction)
         if index_name in self._manual_carryforward_underlyings:
             return self._reject('manual_carryforward_same_underlying', index_name, direction)
-        block = portfolio_capacity.entry_block(self.state.positions, execution_ledger.pending())
+        block = portfolio_capacity.entry_block(self.state.positions, execution_ledger.pending(),
+                                               **_position_limits(index_name))
         if block:
             return self._reject(block, index_name, direction)
         clock = time.monotonic()
@@ -1108,7 +1126,8 @@ class AutoExecutor:
             broker_funds=capital_guard.broker_available_funds(),
             capital_buffer_pct=capital_guard.CAPITAL_SAFETY_BUFFER_PCT,
             daily_limit=DAILY_LOSS_LIMIT_INR, realized_pnl=exit_manager.realized_pnl_today(),
-            cost_reserve=trade_policy.COST_RESERVE, exit_buffer=trade_policy.EXIT_BUFFER)
+            cost_reserve=trade_policy.COST_RESERVE, exit_buffer=trade_policy.EXIT_BUFFER,
+            **_position_limits(index_name))
         if capacity.lots < lots:
             return self._reject(f'only_{capacity.lots}_lots_affordable_{capacity.reason}',
                                 index_name, direction)

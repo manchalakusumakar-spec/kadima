@@ -333,7 +333,8 @@ def dashboard_data(authorization: Optional[str] = Header(None)):
             "daily_loss_used_inr": round(daily_loss_used, 0),
             "daily_loss_limit_inr": config.DAILY_LOSS_LIMIT_INR,
             "position_slots_used": len(open_positions),
-            "position_slots_max": min(1, config.MAX_CONCURRENT_POSITIONS),
+            "position_slots_max": getattr(config, "MAX_OPEN_POSITIONS", config.MAX_CONCURRENT_POSITIONS),
+            "position_slots_per_underlying_max": getattr(config, "MAX_OPEN_PER_UNDERLYING", None),
         },
     }
 

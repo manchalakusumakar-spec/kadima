@@ -39,7 +39,7 @@ def setup(**over):
     from kadima import portfolio_capacity, storage, execution_ledger
     portfolio_capacity.affordable_lots = lambda *a, **k: SimpleNamespace(
         lots=min(k['requested_lots'], env['afford']), reason='cash_headroom')
-    portfolio_capacity.entry_block = lambda *a: None
+    portfolio_capacity.entry_block = lambda *a, **k: None
     execution_ledger.pending = lambda *a: []
 
     def submit(pos, side, qty, price):
