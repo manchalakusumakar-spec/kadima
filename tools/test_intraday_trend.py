@@ -108,6 +108,16 @@ def test_opening_rejections():
     s, ev = it.detect(opening_rows(), 25066, misaligned, tech, now)
     check('trend not aligned rejected with the failing factor',
           s is None and ev['opening_continuation'] == 'trend_not_aligned:rsi')
+    fake_vwap = Snapshot(close=25060, vwap=25200.0, ema_fast=25040.0, ema_slow=25020.0, rsi=60.0)
+    s, _ = it.detect(opening_rows(), 25066, fake_vwap, tech, now)
+    check('index VWAP (really the last close) is not used: EMA+RSI aligned still detects',
+          s and s['family'] == 'opening_continuation')
+    no_vwap = Snapshot(close=25060, vwap=None, ema_fast=25040.0, ema_slow=25020.0, rsi=60.0)
+    s, _ = it.detect(opening_rows(), 25066, no_vwap, tech, now)
+    check('missing VWAP does not block the trend check', s is not None)
+    ema_against = Snapshot(close=25060, vwap=25030.0, ema_fast=25010.0, ema_slow=25020.0, rsi=60.0)
+    s, ev = it.detect(opening_rows(), 25066, ema_against, tech, now)
+    check('EMA against the direction still rejects', s is None and ev['opening_continuation'] == 'trend_not_aligned:ema')
     s, ev = it.detect(opening_rows(), 25040, snap_ce(), tech, now)
     check('breakout already undone at decision rejected',
           s is None and ev['opening_continuation'] == 'breakout_invalidated_at_decision')
@@ -531,6 +541,45 @@ def test_executor_exit():
           p.exit_reason == 'intraday_trend_no_progress_45min' and ORDERS and ORDERS[0][0] == 'SELL')
 
 
+def test_celestial_exit_exemption():
+    print('exits in Celestial mode: intraday keeps only the spread guard; Gamma unchanged')
+    from kadima import celestial
+    install_broker_mocks()
+    os.environ['KADIMA_CELESTIAL_ENABLED'] = '1'
+    try:
+        now = datetime.now(IST).replace(hour=11, minute=0, second=0, microsecond=0)
+        real_now = auto_executor.now_ist
+        auto_executor.now_ist = lambda: now
+        celestial.health('structure:NIFTY', dict(vwap=25100.0, spot=25000.0, spot_at=now.isoformat(),
+                                                  direction='PE', score=80, oi_direction='PE'),
+                         timestamp=now.isoformat())
+
+        def run(kind, sid, spread=0.2, peak=104.0):
+            reset_books()
+            ORDERS.clear()
+            ex = auto_executor.AutoExecutor()
+            ex._reconcile_blocked, ex._positions_verified = False, True
+            p = position(kind, sid=sid, token=f'TK{sid}', entry_ts=now - timedelta(minutes=10), peak_price=peak)
+            ex.state.positions[str(sid)] = p
+            ex._celestial_verified.add(str(sid))
+            celestial.health(f'quote:NFO:TK{sid}', dict(bid=104.0 - spread / 2, ask=104.0 + spread / 2),
+                             timestamp=now.isoformat())
+            auto_executor._poll_ltp = lambda exch, toks: {t: 104.0 for t in toks}
+            ex.check_exits()
+            return p.exit_reason
+        check('intraday ignores lost-VWAP / opposite Gamma / opposite OI exits',
+              run(it.STRATEGY, 801) is None)
+        check('intraday still exits when the spread widens above 3%',
+              run(it.STRATEGY, 802, spread=6.0) == 'spread_widened_above_3pct')
+        check('Gamma still gets the full Celestial exit set (unchanged)',
+              run('gamma_blast', 803) == 'underlying_lost_vwap')
+        check('fast scalping still gets the full Celestial exit set (unchanged)',
+              run('fast_momentum', 804, peak=106.0) == 'underlying_lost_vwap')   # past its 5-min no-progress check
+    finally:
+        auto_executor.now_ist = real_now
+        os.environ.pop('KADIMA_CELESTIAL_ENABLED', None)
+
+
 # ------------------------------------------------------------------ engine hooks
 def test_engine_hooks():
     print('engine: hooks are isolated and only touch the intraday lane')
@@ -613,7 +662,8 @@ def test_dispatch_parity():
     check('scenario set covers gamma, celestial, shield, fast, gap, forecast and exits',
           {'gamma_legacy_ce_confirmed', 'gamma_celestial_candidate', 'bull_shield_without_evidence',
            'fast_context_valid_live_gate_open', 'gap_context_valid_live_gate_open', 'forecast_manual_buy',
-           'exit_gamma_trail', 'exit_fast_timeout', 'exit_cas_kind_holding'} <= names)
+           'exit_gamma_trail', 'exit_fast_timeout', 'exit_cas_kind_holding',
+           'exit_gamma_celestial_lost_vwap', 'exit_fast_celestial_spread'} <= names)
     print(f'    ({len(data)} scenarios)')
 
 
@@ -628,6 +678,7 @@ if __name__ == '__main__':
     test_executor_dispatch()
     test_executor_exit()
     test_strike_claims()
+    test_celestial_exit_exemption()
     test_claim_appears_before_submission()
     test_engine_hooks()
     test_dispatch_parity()

@@ -315,4 +315,27 @@ run('exit_bull_shield_holding', lambda: exits('bull_shield', 103.0, minutes_ago=
 run('exit_cas_kind_holding', lambda: exits('cas', 103.0, minutes_ago=60))
 run('exit_mcx_kind_holding', lambda: exits('mcx_momentum', 103.0, minutes_ago=60))
 
+
+
+def celestial_exit(kind, spread):
+    os.environ['KADIMA_CELESTIAL_ENABLED'] = '1'
+    try:
+        celestial.health('structure:NIFTY', dict(vwap=25100.0, spot=25000.0, spot_at=NOW.isoformat(),
+                                                  direction='PE', score=80, oi_direction='PE'))
+        ex = executor()
+        pos = position(kind, 950 + len(OUT), token='CE25050')
+        ex.state.positions[str(pos.signal_id)] = pos
+        ex._celestial_verified.add(str(pos.signal_id))
+        celestial.health('quote:NFO:CE25050', dict(bid=104.0 - spread / 2, ask=104.0 + spread / 2))
+        LTP['CE25050'] = 104.0
+        ex.check_exits()
+        return dict(status=pos.status, exit_reason=pos.exit_reason)
+    finally:
+        os.environ.pop('KADIMA_CELESTIAL_ENABLED', None)
+
+
+run('exit_gamma_celestial_lost_vwap', lambda: celestial_exit('gamma_blast', 0.2))
+run('exit_fast_celestial_spread', lambda: celestial_exit('fast_momentum', 6.0))
+run('exit_shield_celestial_lost_vwap', lambda: celestial_exit('bull_shield', 0.2))
+
 print(json.dumps(OUT, sort_keys=True, indent=1, default=str))

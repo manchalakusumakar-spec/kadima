@@ -991,8 +991,11 @@ class AutoExecutor:
                     reason = decision.reason if decision.should_exit else None
 
             if not reason and celestial.enabled() and not is_mcx:
-                from .celestial_exit import evaluate
-                reason = evaluate(pos, ltp, now)
+                if getattr(pos,'kind',None)==intraday_trend.STRATEGY:
+                    reason = intraday_trend.celestial_exit_guard(pos, now)   # spread guard only
+                else:
+                    from .celestial_exit import evaluate
+                    reason = evaluate(pos, ltp, now)
 
             if reason:
                 self._close_position(pos, ltp, reason)

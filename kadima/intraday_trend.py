@@ -43,7 +43,6 @@ from datetime import datetime, time as dtime, timedelta
 
 from . import storage, trade_policy
 from .config import IST
-from .shield_confirmation import alignment
 from .utils import now_ist
 
 STRATEGY = 'intraday_trend'
@@ -136,6 +135,21 @@ def _ema(values, period):
 
 def _avg_range(bars):
     return statistics.mean(b['high'] - b['low'] for b in bars)
+
+
+# ------------------------------------------------------------------ trend check
+def trend_alignment(direction, snap):
+    """EMA33 vs EMA83 and RSI 50 on the 3-min snapshot. No VWAP leg: index spot
+    has no volume, so the snapshot's 'VWAP' is only the last candle's close
+    (audit finding, 11 Oct). Switch to index-futures VWAP once that is live."""
+    try:
+        fast, slow, rsi = snap.ema_fast, snap.ema_slow, snap.rsi
+        if not _finite(fast, slow, rsi) or fast <= 0 or slow <= 0 or not 0 <= rsi <= 100:
+            return dict(ema=False, rsi=False)
+        bull = direction == 'CE'
+        return dict(ema=fast > slow if bull else fast < slow, rsi=rsi > 50 if bull else rsi < 50)
+    except AttributeError:
+        return dict(ema=False, rsi=False)
 
 
 # ------------------------------------------------------------------ setups
@@ -243,7 +257,7 @@ def detect(rows, spot, snap, technical_at, now):
         if technical_at is None or not 0 <= (now - technical_at).total_seconds() <= POLICY['technical_max_age_sec']:
             evaluations[family] = 'trend_snapshot_stale'
             continue
-        aligned = alignment(direction, snap, spot)
+        aligned = trend_alignment(direction, snap)
         if not all(aligned.values()):
             evaluations[family] = 'trend_not_aligned:' + ','.join(k for k, v in aligned.items() if not v)
             continue
@@ -367,6 +381,22 @@ def still_valid(latest, original, underlying, direction, now):
     keys = ('episode', 'token', 'symbol', 'exchange', 'direction', 'spot_stop')
     return (context_valid(latest, underlying, direction, now)
             and all(latest.get(k) == original.get(k) for k in keys))
+
+
+INTRADAY_SPREAD_EXIT_PCT = 3.0
+
+
+def celestial_exit_guard(pos, now):
+    """In Celestial mode intraday positions skip Celestial's scalping-style exits
+    (fake index VWAP, 1-min EMA9, opposite OI/Gamma, news) and keep only the
+    liquidity guard: exit if the option's spread widens above 3%."""
+    from . import celestial
+    quote = celestial.health('quote:' + pos.exchange + ':' + pos.token)
+    if quote and celestial.fresh(quote.get('ts'), now):
+        bid, ask = quote.get('bid'), quote.get('ask')
+        if bid and ask and 200 * (ask - bid) / (ask + bid) > INTRADAY_SPREAD_EXIT_PCT:
+            return 'spread_widened_above_3pct'
+    return None
 
 
 def exit_reason(pos, now):
