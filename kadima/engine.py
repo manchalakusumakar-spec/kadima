@@ -365,7 +365,8 @@ class Engine:
             return
         try:
             ex = auto_executor.EXECUTOR
-            row = self.trend_lane.prepare(st, ex.state.positions)
+            from .intraday_trend import strike_claims
+            row = self.trend_lane.prepare(st, ex.state.positions, claims=strike_claims(ex))
             ex.trend_rows = self.trend_lane.rows
             if row is None or not row['eligible']:
                 return
@@ -374,8 +375,7 @@ class Engine:
             result = ex.evaluate_and_enter(
                 st.name, row['direction'], st.chain, st.spot, st.snap, row['days'],
                 'intraday_trend', sid, 'TREND', 0.0,
-                trend_context=lambda state=st: self.trend_lane.revalidate(
-                    state, auto_executor.EXECUTOR.state.positions))
+                trend_context=lambda state=st: self.trend_lane.revalidate(state, auto_executor.EXECUTOR))
             self.trend_lane.settle(st.name, dict(row, signal_id=sid), result)
             audit.log('INTRADAY_TREND_DISPATCH_RESULT', signal_id=sid, index=st.name,
                       episode=row['episode'], **result)

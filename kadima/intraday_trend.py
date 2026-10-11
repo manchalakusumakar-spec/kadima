@@ -384,6 +384,41 @@ def exit_reason(pos, now):
     return None
 
 
+# ------------------------------------------------------------------ strike claims
+# Trader's rule (11 Oct 2026): when engines want the same strike, before 15:15
+# Gamma > Scalping > Intraday (CAS leads from 15:15, after intraday's 15:10 exit).
+# Gamma and scalping take profits in 2-5 minutes; intraday holds longer, so
+# intraday steers clear: it never takes a strike another engine holds, or one
+# Gamma or scalping currently has selected, and tries its next-ranked contract.
+# This only READS the other engines' state; it changes nothing in them.
+ENGINE_OF_KIND = {'gamma_blast': 'GAMMA', 'fast_momentum': 'SCALPING', 'cas': 'CAS', 'cas_blast': 'CAS',
+                  'bull_shield': 'SHIELD', 'bear_shield': 'SHIELD', 'gap_and_go': 'GAP',
+                  'mcx_momentum': 'MCX', 'forecast_manual': 'MANUAL', 'MANUAL_ADOPTED': 'MANUAL',
+                  STRATEGY: 'INTRADAY'}
+
+
+def strike_claims(executor):
+    """{(exchange, token): reason} for contracts intraday must not take.
+    Returns None if any source cannot be read, so the caller fails closed."""
+    from . import celestial
+    claims = {}
+    try:
+        for p in list(executor.state.positions.values()):
+            if getattr(p, 'status', None) != 'closed':
+                engine = ENGINE_OF_KIND.get(getattr(p, 'kind', None), 'OTHER')
+                claims[(str(p.exchange), str(p.token))] = 'held_by_' + engine
+        for row in list((getattr(executor, 'fast_rows', None) or {}).values()):
+            if row.get('eligible') is True and row.get('token') and row.get('exchange'):
+                claims.setdefault((str(row['exchange']), str(row['token'])), 'strike_claimed_by_SCALPING')
+        if celestial.enabled():
+            for row in celestial.top20():
+                if row.get('eligible') is True and row.get('exchange') and row.get('token'):
+                    claims.setdefault((str(row['exchange']), str(row['token'])), 'strike_claimed_by_GAMMA')
+    except Exception:          # unknown claims: do not risk taking a contested strike
+        return None
+    return claims
+
+
 # ------------------------------------------------------------------ lane
 class Lane:
     """Setup observation (on each closed 5-min bar) kept separate from order
@@ -424,8 +459,9 @@ class Lane:
         self.rows[st.name] = row
         return row
 
-    def prepare(self, st, positions, now=None):
-        """Rank liquid contracts against this policy on a fresh chain poll."""
+    def prepare(self, st, positions, now=None, claims=None):
+        """Rank liquid contracts against this policy on a fresh chain poll.
+        claims: strike_claims() result; None means unreadable and blocks entry."""
         from . import strike_selector
         now = now or now_ist()
         setup = self.pending.get(st.name)
@@ -453,6 +489,8 @@ class Lane:
                     connection().execute('SELECT 1 FROM intraday_trend_episodes WHERE episode=?',
                                          (setup['episode'],)).fetchone() is None:
                 raise ValueError('daily_episode_cap_reached')
+            if claims is None:
+                raise ValueError('strike_claims_unavailable')
             expiry = datetime.strptime(chain._expiry, '%d%b%Y').replace(tzinfo=IST, hour=15, minute=30)
             days = (expiry - now).total_seconds() / 86400
             if days <= 0:
@@ -464,7 +502,9 @@ class Lane:
             for r in ranked:
                 q, evidence = r.quote, dict(token=r.quote.token, symbol=r.quote.symbol,
                                             strike=r.quote.strike, rank_score=round(r.score, 1))
-                if r.rejected:
+                if (chain.index.opt_exchange, str(q.token)) in claims:
+                    evidence['reason'] = claims[(chain.index.opt_exchange, str(q.token))]
+                elif r.rejected:
                     evidence['reason'] = 'ranking:' + str(r.rejected)
                 elif not getattr(q, 'tradeable', True) or not trade_policy.positive(q.ltp, q.bid, q.ask) \
                         or q.ask < q.bid:
@@ -519,14 +559,17 @@ class Lane:
             record(stage, setup, last_blocked_reasons=last.get('blocked_reasons', []),
                    last_contracts=last.get('contracts', []), **extra)
 
-    def revalidate(self, st, positions):
-        """Fresh re-evaluation used by the executor right before submission."""
-        return self.prepare(st, positions)
+    def revalidate(self, st, executor):
+        """Fresh re-evaluation used by the executor right before submission,
+        including a fresh read of other engines' strike claims."""
+        return self.prepare(st, executor.state.positions, claims=strike_claims(executor))
 
     def settle(self, underlying, row, result):
         """Record the dispatch outcome; the setup is spent unless the shared
         ledger allows a delivery-failure re-send for the same signal."""
-        record('DISPATCH', row, dispatch=result)
+        latest = self.rows.get(underlying) or {}
+        record('DISPATCH', row, dispatch=result,   # contract actually used after the final revalidation
+               submitted={k: latest.get(k) for k in ('token', 'symbol', 'strike', 'entry', 'stop', 'contracts')})
         if not (result or {}).get('retryable'):
             self.pending.pop(underlying, None)
             self.last_attempt.pop(underlying, None)

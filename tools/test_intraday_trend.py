@@ -234,12 +234,12 @@ def test_contract_selection_and_gates():
     print('admission: contract selection, live gates, freshness')
     now = datetime.now(IST)
     lane = lane_with(now)
-    row = lane.prepare(state(now), {}, now)
+    row = lane.prepare(state(now), {}, now, claims={})
     check('default is observation only', row['stage'] == 'SETUP_READY' and not row['eligible']
           and 'intraday_trend_observation_only' in row['blocked_reasons'])
     os.environ['KADIMA_INTRADAY_TREND_LIVE'] = '1'
     try:
-        row = lane.prepare(state(now), {}, now)
+        row = lane.prepare(state(now), {}, now, claims={})
         check('live opt-in makes a valid setup eligible', row['eligible'] and row['token'])
         check('ranked contract evidence recorded',
               [c['token'] for c in row['contracts'] if c['reason'] == 'SELECTED'] == [row['token']])
@@ -248,7 +248,7 @@ def test_contract_selection_and_gates():
         check('stop below entry and within policy', 0 < row['stop'] < row['entry']
               and (row['entry'] - row['stop']) / row['entry'] * 100 <= it.POLICY['max_stop_pct'])
         first = row['token']
-        wide = lane_with(now).prepare(state(now, option_chain(first_spread=8.0, wide_token=first)), {}, now)
+        wide = lane_with(now).prepare(state(now, option_chain(first_spread=8.0, wide_token=first)), {}, now, claims={})
         reasons = {c['token']: c['reason'] for c in wide['contracts']}
         check('a rejected contract is recorded and another ranked one is selected',
               wide['eligible'] and wide['token'] != first and reasons.get(first, '').startswith('ranking:'))
@@ -256,26 +256,107 @@ def test_contract_selection_and_gates():
               all(c.get('reason') for c in wide['contracts']) and len(wide['contracts']) >= 3)
         stale = option_chain()
         stale._last_poll -= 31
-        row = lane_with(now).prepare(state(now, stale), {}, now)
+        row = lane_with(now).prepare(state(now, stale), {}, now, claims={})
         check('stale option chain blocks and keeps the setup pending',
               'option_chain_stale' in row['blocked_reasons'] and not row['eligible'])
         st = state(now)
         st.last_updated = now - timedelta(seconds=45)
-        row = lane_with(now).prepare(st, {}, now)
+        row = lane_with(now).prepare(st, {}, now, claims={})
         check('stale spot blocks', 'underlying_quote_stale' in row['blocked_reasons'])
         st = state(now)
         st.spot = 25040.0
         lane = lane_with(now)
-        row = lane.prepare(st, {}, now)
+        row = lane.prepare(st, {}, now, claims={})
         check('breakout undone before entry -> failed and recorded',
               'breakout_failed_before_entry' in row['blocked_reasons'] and 'NIFTY' not in lane.pending)
         old = now - timedelta(minutes=12)
         lane = lane_with(now, bar_start=old.replace(second=0, microsecond=0))
-        row = lane.prepare(state(now), {}, now)
+        row = lane.prepare(state(now), {}, now, claims={})
         check('setup not admitted by the next bar expires with a record',
               'setup_expired_next_bar' in row['blocked_reasons'] and 'NIFTY' not in lane.pending)
         stages = [d['record_stage'] for d in it.recent_decisions(20)]
         check('expired and failed setups have outcome records', 'SETUP_EXPIRED' in stages and 'SETUP_FAILED' in stages)
+    finally:
+        os.environ.pop('KADIMA_INTRADAY_TREND_LIVE', None)
+
+
+def test_strike_claims():
+    print('strike priority: intraday steers clear of Gamma / scalping / held strikes')
+    os.environ['KADIMA_INTRADAY_TREND_LIVE'] = '1'
+    try:
+        now = datetime.now(IST)
+        base = lane_with(now).prepare(state(now), {}, now, claims={})
+        first = base['token']
+        for reason in ('strike_claimed_by_GAMMA', 'strike_claimed_by_SCALPING', 'held_by_GAMMA', 'held_by_CAS'):
+            row = lane_with(now).prepare(state(now), {}, now, claims={('NFO', first): reason})
+            ev = {c['token']: c['reason'] for c in row['contracts']}
+            check(f'{reason}: intraday takes its next-ranked contract',
+                  row['eligible'] and row['token'] != first and ev.get(first) == reason)
+        everything = {('NFO', q): 'strike_claimed_by_GAMMA' for q in state(now).chain.quotes}
+        row = lane_with(now).prepare(state(now), {}, now, claims=everything)
+        check('all strikes claimed -> no intraday entry, reason recorded',
+              not row['eligible'] and 'no_contract_meets_intraday_policy' in row['blocked_reasons'])
+        row = lane_with(now).prepare(state(now), {}, now, claims=None)
+        check('unreadable claims fail closed', not row['eligible']
+              and 'strike_claims_unavailable' in row['blocked_reasons'])
+
+        ex = auto_executor.AutoExecutor()
+        ex.state.positions['5'] = position('gamma_blast', sid=5, token='CE25100')
+        ex.state.positions['6'] = position('fast_momentum', sid=6, token='CE25150', status='closed')
+        ex.fast_rows = {'NIFTY': dict(eligible=True, token='CE25000', exchange='NFO'),
+                        'BANKNIFTY': dict(eligible=False, token='CE99', exchange='NFO')}
+        claims = it.strike_claims(ex)
+        check('held Gamma position is claimed', claims.get(('NFO', 'CE25100')) == 'held_by_GAMMA')
+        check('closed position is not a claim', ('NFO', 'CE25150') not in claims)
+        check('eligible scalping selection is claimed', claims.get(('NFO', 'CE25000')) == 'strike_claimed_by_SCALPING')
+        check('ineligible scalping row is not a claim', ('NFO', 'CE99') not in claims)
+        os.environ['KADIMA_CELESTIAL_ENABLED'] = '1'
+        from kadima import celestial
+        real_top20 = celestial.top20
+        celestial.top20 = lambda *a, **k: [dict(eligible=True, exchange='NFO', token='CE24950'),
+                                           dict(eligible=False, exchange='NFO', token='CE24900')]
+        try:
+            claims = it.strike_claims(ex)
+            check('eligible Celestial (Gamma) row is claimed', claims.get(('NFO', 'CE24950')) == 'strike_claimed_by_GAMMA')
+            check('ineligible Celestial row is not a claim', ('NFO', 'CE24900') not in claims)
+
+            def broken(*a, **k):
+                raise ValueError('Invalid persistent config; entry disabled')
+            celestial.top20 = broken
+            check('Celestial read failure -> claims None (fail closed)', it.strike_claims(ex) is None)
+        finally:
+            celestial.top20 = real_top20
+            os.environ.pop('KADIMA_CELESTIAL_ENABLED', None)
+    finally:
+        os.environ.pop('KADIMA_INTRADAY_TREND_LIVE', None)
+
+
+def test_claim_appears_before_submission():
+    print('strike priority: a claim arriving just before submission moves intraday off that strike')
+    install_broker_mocks()
+    os.environ['KADIMA_INTRADAY_TREND_LIVE'] = '1'
+    try:
+        now = datetime.now(IST)
+        chain = option_chain()
+        st = state(now, chain)
+        auto_executor._poll_ltp = lambda exch, toks: {t: chain.quotes[t].ltp for t in toks}
+        lane = lane_with(now)
+        ex = auto_executor.AutoExecutor()
+        ex._reconcile_blocked, ex._positions_verified = False, True
+        row = lane.prepare(st, ex.state.positions, now, claims=it.strike_claims(ex))
+        reset_books()
+        ORDERS.clear()
+        ex.fast_rows = {'NIFTY': dict(eligible=True, token=row['token'], exchange='NFO')}  # scalping claims it now
+        res = ex.evaluate_and_enter('NIFTY', 'CE', chain, SPOT, st.snap, row['days'], 'intraday_trend',
+                                    it.signal_id(dict(row, episode=row['episode'] + ':late')), 'TREND', 0.0,
+                                    trend_context=lambda: lane.revalidate(st, ex))
+        check('no intraday order on the newly claimed strike', all(o[1] != row['token'] for o in ORDERS))
+        check('intraday re-ranks to its next contract instead', res['ok'] and len(ORDERS) == 1
+              and ORDERS[0][1] == lane.rows['NIFTY']['token'] != row['token'])
+        lane.settle('NIFTY', row, res)
+        last = it.recent_decisions(1)[0]
+        check('dispatch record logs the contract actually submitted',
+              last['record_stage'] == 'DISPATCH' and last['submitted']['token'] == ORDERS[0][1])
     finally:
         os.environ.pop('KADIMA_INTRADAY_TREND_LIVE', None)
 
@@ -364,14 +445,14 @@ def test_executor_dispatch():
         st = state(now, chain)
         auto_executor._poll_ltp = lambda exch, toks: {t: chain.quotes[t].ltp for t in toks}
         lane = lane_with(now)
-        row = lane.prepare(st, {}, now)
+        row = lane.prepare(st, {}, now, claims={})
         ex = auto_executor.AutoExecutor()
         ex._reconcile_blocked, ex._positions_verified = False, True
         reset_books()
         ORDERS.clear()
         sid = it.signal_id(row)
         res = ex.evaluate_and_enter('NIFTY', 'CE', chain, SPOT, st.snap, row['days'], 'intraday_trend', sid,
-                                    'TREND', 0.0, trend_context=lambda: lane.revalidate(st, ex.state.positions))
+                                    'TREND', 0.0, trend_context=lambda: lane.revalidate(st, ex))
         check('eligible setup reaches the shared ledger as one BUY', res.get('ok') and len(ORDERS) == 1
               and ORDERS[0][0] == 'BUY')
         check('exactly 1 lot of the lane-selected contract', ORDERS and ORDERS[0][1] == row['token']
@@ -382,7 +463,7 @@ def test_executor_dispatch():
         check('position carries the intraday_trend identity and lane stop',
               pos and pos.kind == 'intraday_trend' and pos.structural_stop > 0)
         res2 = ex.evaluate_and_enter('NIFTY', 'CE', chain, SPOT, st.snap, row['days'], 'intraday_trend', sid,
-                                     'TREND', 0.0, trend_context=lambda: lane.revalidate(st, ex.state.positions))
+                                     'TREND', 0.0, trend_context=lambda: lane.revalidate(st, ex))
         check('same episode cannot be submitted twice', not res2['ok'] and len(ORDERS) == 1)
 
         reset_books()
@@ -465,7 +546,7 @@ def test_engine_hooks():
             def observe_close(self, st):
                 raise RuntimeError('lane failure')
 
-            def prepare(self, st, positions):
+            def prepare(self, st, positions, claims=None):
                 raise RuntimeError('lane failure')
         fake = NS(trend_lane=Boom())
         st = NS(name='NIFTY')
@@ -481,11 +562,11 @@ def test_engine_hooks():
             pending = {'NIFTY': {}}
             rows = {}
 
-            def prepare(self, st, positions):
+            def prepare(self, st, positions, claims=None):
                 return dict(eligible=True, direction='CE', days=2.0, episode='IT:test', ts=datetime.now(IST).isoformat(),
                             underlying='NIFTY')
 
-            def revalidate(self, st, positions):
+            def revalidate(self, st, executor):
                 return None
 
             def settle(self, underlying, row, result):
@@ -546,6 +627,8 @@ if __name__ == '__main__':
     test_exit_policy()
     test_executor_dispatch()
     test_executor_exit()
+    test_strike_claims()
+    test_claim_appears_before_submission()
     test_engine_hooks()
     test_dispatch_parity()
     print('-' * 40)
