@@ -1,0 +1,140 @@
+{
+  "engine.py": {
+    "before_sha256": "e04de181ed97bc274f217a526e0a22e576dda76dc38125854dd59c32c0b026bc",
+    "after_sha256": "c1f83865c9f29a1d7c559ae0111f720f57d4651e7e8f00aa7bfb489690dbb496",
+    "patches": [
+      {
+        "label": "PR39 opcode at baseline line 100",
+        "old": "        self.fast_lane = FastLane()\n",
+        "new": "        self.fast_lane = FastLane()\n        from .intraday_trend import Lane as IntradayTrendLane   # INTRADAY TREND v1\n        self.trend_lane = IntradayTrendLane()\n"
+      },
+      {
+        "label": "PR39 opcode at baseline line 342",
+        "old": "            self._evaluate()\n",
+        "new": "            self._evaluate()\n            self._observe_intraday_trend(st)   # INTRADAY TREND v1: observation only here\n"
+      },
+      {
+        "label": "PR39 opcode at baseline line 344",
+        "old": "    # ------------------------------------------------------------------ OI\n",
+        "new": "    # ------------------------------------------------------------------ OI\n    # ------------------------------------------------------------ intraday trend\n    def _observe_intraday_trend(self, st):\n        \"\"\"Separate lane; its failure must never affect Shield, Gamma, CAS or fast.\"\"\"\n        if st.name not in INDICES:\n            return\n        try:\n            row = self.trend_lane.observe_close(st)\n            auto_executor.EXECUTOR.trend_rows = self.trend_lane.rows\n            audit.log('INTRADAY_TREND_OBSERVED', index=st.name, stage=row['stage'],\n                      episode=row.get('episode'), family=row.get('family'),\n                      direction=row.get('direction'), reasons=row['blocked_reasons'],\n                      evaluations=row.get('evaluations'))\n        except Exception as exc:                        # noqa: BLE001\n            audit.log('INTRADAY_TREND_LANE_ERROR', index=st.name, stage='observe',\n                      error_type=type(exc).__name__)\n\n    def _admit_intraday_trend(self, st):\n        if st.name not in INDICES or st.name not in self.trend_lane.pending:\n            return\n        try:\n            ex = auto_executor.EXECUTOR\n            row = self.trend_lane.prepare(st, ex.state.positions)\n            ex.trend_rows = self.trend_lane.rows\n            if row is None or not row['eligible']:\n                return\n            from .intraday_trend import signal_id\n            sid = signal_id(row)\n            result = ex.evaluate_and_enter(\n                st.name, row['direction'], st.chain, st.spot, st.snap, row['days'],\n                'intraday_trend', sid, 'TREND', 0.0,\n                trend_context=lambda state=st: self.trend_lane.revalidate(\n                    state, auto_executor.EXECUTOR.state.positions))\n            self.trend_lane.settle(st.name, dict(row, signal_id=sid), result)\n            audit.log('INTRADAY_TREND_DISPATCH_RESULT', signal_id=sid, index=st.name,\n                      episode=row['episode'], **result)\n        except Exception as exc:                        # noqa: BLE001\n            audit.log('INTRADAY_TREND_LANE_ERROR', index=st.name, stage='admit',\n                      error_type=type(exc).__name__)\n\n"
+      },
+      {
+        "label": "PR39 opcode at baseline line 395",
+        "old": "                                        st.name,st.chain,st.spot,st.snap,self._dte(st))\n",
+        "new": "                                        st.name,st.chain,st.spot,st.snap,self._dte(st))\n                                # INTRADAY TREND v1: admission on this fresh poll, after all existing lanes.\n                                self._admit_intraday_trend(st)\n"
+      }
+    ]
+  },
+  "auto_executor.py": {
+    "before_sha256": "d89711002f29f3c56f96b26236b7458635f71c0ad63f7098f805981387a832d1",
+    "after_sha256": "5470086eb7ca2208632aa8d5e37fae881ca4c0a58b23c67b9ca2eb88b0692d8b",
+    "patches": [
+      {
+        "label": "preserve CAS imports",
+        "old": "from . import fast_momentum, gap_and_go, cas_engine, cas_orders\n",
+        "new": "from . import fast_momentum, gap_and_go, cas_engine, cas_orders, intraday_trend\n"
+      },
+      {
+        "label": "context signature 27",
+        "old": "\n                           fast_context=None, gap_context=None):\n",
+        "new": "\n                           fast_context=None, gap_context=None, trend_context=None):\n"
+      },
+      {
+        "label": "context signature 33",
+        "old": "\n                                 fast_context=None, gap_context=None):\n",
+        "new": "\n                                 fast_context=None, gap_context=None, trend_context=None):\n"
+      },
+      {
+        "label": "forward through live serialized wrapper",
+        "old": "            fast_context=fast_context, gap_context=gap_context)\n",
+        "new": "            fast_context=fast_context, gap_context=gap_context, trend_context=trend_context)\n"
+      },
+      {
+        "label": "PR39 opcode at baseline line 582",
+        "old": "        gap = None\n",
+        "new": "        gap = None\n        trend = None\n"
+      },
+      {
+        "label": "PR39 opcode at baseline line 600",
+        "old": "        if celestial.enabled() and fast is None and gap is None:\n",
+        "new": "        if kind == intraday_trend.STRATEGY:   # INTRADAY TREND v1: separate lane, shared gates\n            if not ORDER_PLACEMENT_ENABLED:\n                return self._reject('broker_orders_disabled',index_name,direction)\n            trend = trend_context() if callable(trend_context) else None\n            if not intraday_trend.context_valid(trend, index_name, direction, now_ist()):\n                return self._reject('intraday_trend_context_or_live_gate_blocked',index_name,direction)\n        if celestial.enabled() and fast is None and gap is None and trend is None:\n"
+      },
+      {
+        "label": "PR39 opcode at baseline line 646",
+        "old": "        if fast is None and gap is None and not 0 <= time.monotonic() - getattr(chain, '_alignment_at', 0) <= 240:\n",
+        "new": "        if fast is None and gap is None and trend is None and not 0 <= time.monotonic() - getattr(chain, '_alignment_at', 0) <= 240:\n"
+      },
+      {
+        "label": "PR39 opcode at baseline line 652",
+        "old": "        if fast is None and gap is None and not trade_policy.eligible(kind, tier, score, direction, snap, spot,minimum=minimum,\n",
+        "new": "        if fast is None and gap is None and trend is None and not trade_policy.eligible(kind, tier, score, direction, snap, spot,minimum=minimum,\n"
+      },
+      {
+        "label": "PR39 opcode at baseline line 655",
+        "old": "        special = fast or gap\n",
+        "new": "        special = fast or gap or trend\n"
+      },
+      {
+        "label": "PR39 opcode at baseline line 683",
+        "old": "                      and chain.index.opt_exchange==gap['exchange']]\n",
+        "new": "                      and chain.index.opt_exchange==gap['exchange']]\n        if trend:\n            ranked = [r for r in ranked if r.quote.token==trend['token'] and r.quote.symbol==trend['symbol']\n                      and chain.index.opt_exchange==trend['exchange']]\n"
+      },
+      {
+        "label": "PR39 opcode at baseline line 713",
+        "old": "            max_lots=min(1, MAX_LOTS_PER_SIGNAL) if gap else MAX_LOTS_PER_SIGNAL)\n",
+        "new": "            max_lots=min(1, MAX_LOTS_PER_SIGNAL) if gap or trend else MAX_LOTS_PER_SIGNAL)\n"
+      },
+      {
+        "label": "PR39 opcode at baseline line 724",
+        "old": "        if fast is None and gap is None and proj_return is None:\n",
+        "new": "        if fast is None and gap is None and trend is None and proj_return is None:\n"
+      },
+      {
+        "label": "PR39 opcode at baseline line 726",
+        "old": "        if fast is None and gap is None and proj_return < MIN_PROJECTED_RETURN_PCT:\n",
+        "new": "        if fast is None and gap is None and trend is None and proj_return < MIN_PROJECTED_RETURN_PCT:\n"
+      },
+      {
+        "label": "PR39 opcode at baseline line 747",
+        "old": "        if fast is None and gap is None and not eq_verdict.allowed:\n",
+        "new": "        if fast is None and gap is None and trend is None and not eq_verdict.allowed:\n"
+      },
+      {
+        "label": "PR39 opcode at baseline line 752",
+        "old": "            self, SimpleNamespace(quote=chosen_quote), direction, verdict.lots)\n        if gap:\n            allowed_lots = min(1, allowed_lots)\n",
+        "new": "            self, SimpleNamespace(quote=chosen_quote), direction, verdict.lots)\n        if gap or trend:\n            allowed_lots = min(1, allowed_lots)\n"
+      },
+      {
+        "label": "PR39 opcode at baseline line 772",
+        "old": "                reason = 'gap_entry_price_ran_away' if gap else 'fast_entry_price_ran_away'\n",
+        "new": "                reason = ('gap_entry_price_ran_away' if gap else 'intraday_trend_entry_price_ran_away'\n                          if trend else 'fast_entry_price_ran_away')\n"
+      },
+      {
+        "label": "PR39 opcode at baseline line 803",
+        "old": "                or (fast is None and gap is None and not 0 <= clock - chain._alignment_at <= 240)):\n",
+        "new": "                or (fast is None and gap is None and trend is None and not 0 <= clock - chain._alignment_at <= 240)):\n"
+      },
+      {
+        "label": "PR39 opcode at baseline line 825",
+        "old": "                return self._reject('fast_invalidated_before_submission',index_name,direction)\n        if gap:\n            latest_gap = gap_context()\n            if (not latest_gap or not latest_gap.get('eligible')\n                    or not celestial.fresh(latest_gap.get('ts'))\n                    or any(latest_gap.get(k)!=gap.get(k)\n                           for k in ('episode','token','contract_symbol','exchange','direction','spot_stop'))\n                    or gap_and_go.live_blocks(index_name, now_ist())):\n                return self._reject('gap_invalidated_before_submission',index_name,direction)\n",
+        "new": "                return self._reject('fast_invalidated_before_submission',index_name,direction)\n        if gap:\n            latest_gap = gap_context()\n            if (not latest_gap or not latest_gap.get('eligible')\n                    or not celestial.fresh(latest_gap.get('ts'))\n                    or any(latest_gap.get(k)!=gap.get(k)\n                           for k in ('episode','token','contract_symbol','exchange','direction','spot_stop'))\n                    or gap_and_go.live_blocks(index_name, now_ist())):\n                return self._reject('gap_invalidated_before_submission',index_name,direction)\n        if trend:   # INTRADAY TREND v1\n            latest_trend = trend_context()\n            if not intraday_trend.still_valid(latest_trend, trend, index_name, direction, now_ist()):\n                return self._reject('intraday_trend_invalidated_before_submission',index_name,direction)\n"
+      },
+      {
+        "label": "PR39 opcode at baseline line 959",
+        "old": "                reason = fast_momentum.timeout_reason(pos,now)\n",
+        "new": "                reason = fast_momentum.timeout_reason(pos,now)\n            elif getattr(pos,'kind',None)==intraday_trend.STRATEGY and intraday_trend.exit_reason(pos,now):\n                reason = intraday_trend.exit_reason(pos,now)   # INTRADAY TREND v1 holding policy\n"
+      }
+    ]
+  },
+  "control_api.py": {
+    "before_sha256": "22defcb0dd6eada1ba678e54925f6a865a3cc014a4998a8c7f984200a94783c1",
+    "after_sha256": "c3d65b2ffd000052c5ab0b2b217be7500849974fb316168818513e0c040988bb",
+    "patches": [
+      {
+        "label": "PR39 opcode at baseline line 678",
+        "old": "    return _control_result(result)\n",
+        "new": "    return _control_result(result)\n\n\n# ---------------------------------------------------------------- intraday trend (INTRADAY TREND v1)\n# Read-only: its own lane rows, decision records and open intraday_trend positions.\n# Gamma/CAS rows are not relabelled or included here.\n@app.get('/api/kadima/intraday-trend')\ndef intraday_trend_view(limit: int = 50, authorization: Optional[str] = Header(None)):\n    _check_auth(authorization)\n    from . import intraday_trend\n    rows = list((getattr(EXECUTOR, 'trend_rows', None) or {}).values())\n    positions = []\n    if EXECUTOR is not None:\n        with EXECUTOR._execution_lock:\n            positions = [dict(signal_id=p.signal_id, index=p.index, symbol=p.symbol, status=p.status,\n                              entry_price=p.entry_price, effective_stop=p.effective_stop,\n                              remaining_qty=p.remaining_qty)\n                         for p in EXECUTOR.state.positions.values()\n                         if p.kind == intraday_trend.STRATEGY and p.status != 'closed']\n    return dict(strategy=intraday_trend.STRATEGY, policy_id=intraday_trend.POLICY_ID,\n                live_requested=intraday_trend.live_requested(), rows=rows, positions=positions,\n                decisions=intraday_trend.recent_decisions(max(1, min(int(limit), 200))))\n"
+      }
+    ]
+  }
+}

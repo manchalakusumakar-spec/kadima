@@ -9,6 +9,8 @@ tree and requires byte-identical output. No network, broker or AWS access.
     python tools/parity_scenarios.py --root /path/to/source/tree
 """
 import argparse
+import offline_safety
+offline_safety.install()
 import json
 import os
 import socket
@@ -33,7 +35,6 @@ os.environ['KADIMA_DATA_DIR'] = tempfile.mkdtemp(prefix='kadima-parity-')
 for k in ('KADIMA_CELESTIAL_ENABLED', 'KADIMA_SESSION_AUTOTRADE', 'KADIMA_FAST_MOMENTUM_LIVE',
           'KADIMA_INTRADAY_TREND_LIVE', 'KADIMA_GAP_AND_GO_LIVE'):
     os.environ.pop(k, None)
-os.environ['HOME'] = os.environ['KADIMA_DATA_DIR']      # capital_guard state file lives under ~
 sys.path.insert(0, args.root)
 
 from kadima import (angel_orders, auto_executor, capital_guard, celestial, config,  # noqa: E402
@@ -43,6 +44,8 @@ from kadima.config import IST, INDICES  # noqa: E402
 from kadima.indicators import Snapshot  # noqa: E402
 from kadima.option_chain import OptionQuote  # noqa: E402
 from kadima.greeks import bs_price  # noqa: E402
+
+capital_guard._STATE = capital_guard._CapitalState(os.path.join(os.environ['KADIMA_DATA_DIR'], 'capital_state.json'))
 
 NOW = datetime(2026, 10, 12, 11, 0, 30, tzinfo=IST)     # a Monday, mid-session
 CLOCK = {'now': NOW}
