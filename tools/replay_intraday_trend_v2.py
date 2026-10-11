@@ -2,10 +2,10 @@
 Never creates an executor or broker session.
 
 v2 inputs reconstructed here (documented approximations):
-- Bull Shield score per closed 5-min bar: intraday_trend.shield_score on the latest
-  3-minute snapshot, with the OI-shift leg from OI velocity in the exported polls
-  (an OI wall within 1.5% of spot losing >15% OI in >=10 min). Index volume is zero,
-  so the volume leg never scores; the VWAP leg uses what indicators.compute gives.
+- Shield score per closed 5-min bar: intraday_trend.shield_score (checklist v9.0) on the
+  latest 3-minute snapshot, OI leg from intraday_trend.oi_side on the exported polls.
+  Futures VWAP/volume are not in this export, so those legs sit out (max score 60).
+- Macro calendar not in the export: macro_active=False, recorded as macro_checked=false.
 - Bank Nifty bank confirmation: bank prices are not in this export unless supplied.
   --bank-mode require (default) blocks Bank Nifty setups (bank_confirmation_unavailable);
   --bank-mode skip does NOT apply the bank rule and the output says so.
@@ -65,21 +65,12 @@ def main():
     policy_before=json.dumps(lane.POLICY,sort_keys=True)
     shield_hist=collections.defaultdict(list);oi_hist=collections.defaultdict(collections.deque)
     last_chain_rows={};expiry_of={}
-    def oi_bias(name,now):
+    day_open={}
+    def oi_now(name,now):
         rows=last_chain_rows.get(name);st0=states[name]
         if not rows or not st0.spot:return None
-        hits={'CE':0,'PE':0}
-        for r in rows:
-            if not r.get('strike') or r.get('opt_type') not in hits:continue
-            if abs(r['strike']-st0.spot)>0.015*st0.spot:continue
-            hist=oi_hist[(name,r['token'])];then=None
-            for ts,oi in hist:
-                if (now-ts).total_seconds()>=600:then=oi
-                else:break
-            if then and r.get('oi') is not None and then>0 and (then-r['oi'])/then>0.15:hits[r['opt_type']]+=1
-        if hits['CE']>hits['PE']:return 'CE'      # CE walls dissolving = resistance lifting = bullish
-        if hits['PE']>hits['CE']:return 'PE'
-        return None
+        hist={r['token']:list(oi_hist[(name,r['token'])]) for r in rows}
+        return lane.oi_side(rows,hist,st0.spot,name,now,day_open.get((name,now.date())))
     gate_counts=collections.Counter()
     spread_guard_calls=0
     claim_reason_counts=collections.Counter()
@@ -134,7 +125,7 @@ def main():
                     ma_long_p=config.MA_LONG,rsi_p=config.RSI_PERIOD);st.technical_at=now
             if r['interval']==5:
                 if st.snap is not None:
-                    d,sc=lane.shield_score(st.snap,oi_bias(name,now))
+                    d,sc,_legs=lane.shield_score(st.snap,oi_side=oi_now(name,now),futures=None)
                     shield_hist[name].append(dict(closed_at=now,direction=d,score=sc));shield_hist[name]=shield_hist[name][-6:]
                 exp=expiry_of.get(name);dte=(exp.date()-now.date()).days if exp else None
                 # --bank-mode skip: the bank rule is NOT applied (two banks confirm each
@@ -143,7 +134,8 @@ def main():
                     if name=='BANKNIFTY' and a.bank_mode=='skip' else None
                 try:
                     setup,evaluations=lane.detect(histories[(r['token'],5)][-90:],st.spot,st.snap,st.technical_at,now,
-                        shield=list(shield_hist[name]),banks=banks,days_to_expiry=dte,underlying=name)
+                        shield=list(shield_hist[name]),banks=banks,days_to_expiry=dte,underlying=name,
+                        macro_active=False)   # no macro calendar in the export: recorded as macro_not_checked
                 except ValueError as exc:
                     stat(key(name,'ALL',day))['rejections'][str(exc)]+=1;continue
                 for family,reason in evaluations.items():
@@ -158,6 +150,9 @@ def main():
         elif kind==1:
             name=event[0]['index_name'];st=states[name]
             last_chain_rows[name]=event
+            opens=day_open.setdefault((name,now.date()),{})
+            for r in event:
+                if r.get('oi') is not None:opens.setdefault(r['token'],r['oi'])
             for r in event:
                 if r.get('oi') is not None:
                     h=oi_hist[(name,r['token'])];h.append((now,r['oi']))
@@ -172,7 +167,8 @@ def main():
                 p.last_quote=(now,ltp);p.peak_price=max(p.peak_price,ltp)
                 p.peak_ltp=max(p.peak_ltp,ltp)
                 p.effective_stop,active=trade_policy.ratchet(p.entry_price,p.peak_price,p.effective_stop,p.structural_stop)
-                reason=lane.exit_reason(p,now,snap=st.snap,ltp=ltp)
+                wall=lane.fresh_ce_wall(st.spot,event,p.oi_at_entry)
+                reason=lane.exit_reason(p,now,snap=st.snap,ltp=ltp,ce_wall=wall)
                 if ltp<=p.structural_stop:reason=reason or 'structural_stop_breached'
                 elif active and ltp<=p.effective_stop:reason=reason or 'dynamic_profit_trail_breached'
                 if not reason and hasattr(lane,'celestial_exit_guard'):
@@ -225,7 +221,8 @@ def main():
             p=NS(kind=lane.STRATEGY,index=name,direction=row['direction'],status='open',entry_ts=now,entry_price=row['entry'],peak_price=row['entry'],
                 structural_stop=row['stop'],effective_stop=row['stop'],token=row['token'],symbol=row['symbol'],exchange=row['exchange'],lot_size=qty,
                 strike=row['strike'],peak_ltp=chain.quotes[row['token']].ltp,
-                family=row['family'],split=key(name,row['family'],day)[0],exit_ts=None,last_quote=(now,chain.quotes[row['token']].ltp))
+                family=row['family'],split=key(name,row['family'],day)[0],
+                oi_at_entry={r['token']:r['oi'] for r in event if r.get('oi')},exit_ts=None,last_quote=(now,chain.quotes[row['token']].ltp))
             positions[name][str(sid)]=p;lanes[name].pending.pop(name,None)
         else:
             for name,ps in positions.items():
@@ -264,7 +261,8 @@ def main():
         claims_mode=a.claims_mode,claim_reason_counts=dict(claim_reason_counts),
         bank_mode=a.bank_mode,bank_rule_applied=a.bank_mode=='require',only_split=a.only_split,
         shield_min_override=a.shield_min,v2_gate_rejections=dict(gate_counts),
-        shield_score_note='engine weights; volume leg never scores (index volume 0); OI leg from exported OI velocity',spread_guard_evaluations=spread_guard_calls,
+        shield_score_note='checklist v9.0 legs; futures VWAP/volume not in this export, so those legs sit out (max 60); OI leg from exported chain',
+        macro_checked=False,futures_used=False,spread_guard_evaluations=spread_guard_calls,
         strike_claims='historical competing-engine claims not reconstructable; simulated-only assumes no external claims; unavailable passes None and fails closed'),indent=2)+'\n')
     storage.conn().close()
     shutil.rmtree(os.environ['KADIMA_DATA_DIR'])

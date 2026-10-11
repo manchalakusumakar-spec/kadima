@@ -12,12 +12,19 @@ The rules come from the checklist, not from fitting the replay:
   setups        pullback_recovery (09:45-14:30) and afternoon_breakout (13:00-14:30);
                 opening_continuation removed (bought the first spike, 0 of 6 won)
   confirmation  the setup bar must be confirmed by the NEXT closed 5-min bar (s.10)
-  Bull Shield   v2.1 score >= 70 in the trade direction on the setup bar and the
-                confirmation bar (Bank Nifty: one more bar, and >= 2 of HDFC, ICICI,
-                Kotak, SBI aligned); -20% after 13:00 on pre-expiry days
+  structure     CE needs a higher high + higher low, PE a lower high + lower low;
+                the opening range side is recorded as evidence only
+  Shield        Master Checklist v9.0 score (VWAP and volume from index futures,
+                EMA20/50, RSI > 55 / < 45, OI = writing / covering / unwinding,
+                failed break) >= 70 in the trade direction on the setup bar and the
+                confirmation bar (Bank Nifty: one more bar, >= 2 of HDFC, ICICI,
+                Kotak, SBI aligned, OI velocity 12%); -20% after 13:00 pre-expiry;
+                PUT OI > 500% after 12:30 makes the OI leg sit out
+  macro         no new entry in a FOMC/RBI/major US data window, or when unknown
   stop          beyond the structure level by max(5 pts, 0.25 x avg 5-min range)
   target        full exit at 2R (minimum RR 1:2; one lot cannot be part-booked)
   invalidation  exit if the EMA trend flips against the trade within 2 candles
+  CE wall       exit a CE trade when a CE strike within 50 pts builds >= 150% OI
   unchanged     no-progress exit at 45 min below +5%, 15:10 time exit, 1 lot,
                 at most 3 episodes per underlying per day, strike claims
 Known limits: index volume is zero, so the volume leg never scores and the VWAP
@@ -79,6 +86,13 @@ POLICY = dict(
     stop_buffer_min_points=5.0,
     target_r=2.0,                  # minimum RR 1:2; full exit at 2R (1 lot cannot be split)
     invalidation_bars=2,           # EMA flips against the trade within 2 candles -> exit
+    # trader's checklist (11 Oct 2026, 23:39) and v8.0 additions
+    rsi_bull=55.0, rsi_bear=45.0,  # Bull Shield RSI > 55, Bear Shield RSI < 45
+    rsi_recovery_min=50.0,         # v8.0 RSI recovery gate (CE never below 50)
+    oi_velocity_pct=15.0, oi_velocity_pct_banknifty=12.0,
+    put_oi_ambiguity_after=(12, 30), put_oi_ambiguity_pct=500.0,
+    ce_wall_build_pct=150.0, ce_wall_points=50.0,   # fresh CE wall -> exit (1 lot: full, not 40%)
+    macro_unknown_blocks=True,     # macro suppression window active or unknown -> no new entry
 )
 _SOURCE_SHA = hashlib.sha256(open(__file__, 'rb').read()).hexdigest()
 POLICY_ID = POLICY['id'] + ':' + hashlib.sha256(
@@ -217,38 +231,108 @@ FAMILIES = (('afternoon_breakout', _afternoon_breakout),
             ('pullback_recovery', _pullback_recovery))
 
 
-def shield_score(snap, oi_bias=None):
-    """Bull Shield v2.1 weighted score, same weights and legs as engine._score,
-    except that a fake index VWAP (equal to the close) sits out instead of voting PE.
-    oi_bias: 'CE', 'PE' or None (no OI-velocity evidence). Returns (direction, score).
-    Used where the engine's own per-bar score is not available (offline replay)."""
+def shield_score(snap, oi_side=None, futures=None):
+    """Bull/Bear Shield score (trader's checklist, 11 Oct 2026), v8.0 weights:
+      VWAP reclaim/rejection 25  - index-FUTURES session VWAP only; the index's own
+                                   "VWAP" is the close (no volume) and never counts
+      EMA20/50 20                - snapshot fast/slow EMAs
+      RSI 20                     - bull > 55, bear < 45; 45-55 scores neither side
+      Volume spike 15            - futures 5-min volume above each of the previous 5
+      OI shift 15                - oi_side(): bull = put writing / short covering,
+                                   bear = call writing / long unwinding
+      Failed breakdown/breakout 5
+    futures: dict(vwap, close, vol, prev_vols) or None (those legs sit out, no rescaling).
+    Returns (direction, score, legs)."""
     bull = bear = 0.0
-    above = getattr(snap, 'above_vwap', None)
-    vwap, close = getattr(snap, 'vwap', None), getattr(snap, 'close', None)
-    if vwap is not None and close is not None and vwap == close:
-        # Index spot has no volume: the candle builder's "VWAP" is then the close
-        # itself and close > vwap is always False, so the leg would always vote PE.
-        # Trader's 5 Oct rule: the VWAP factor sits out (no rescaling) until
-        # index-futures VWAP is live.
-        above = None
-    if above is not None:
-        bull, bear = (bull + 25.0, bear) if above else (bull, bear + 25.0)
+    legs = {}
+    fut = futures or {}
+    if _finite(fut.get('vwap'), fut.get('close')) and fut['vwap'] > 0:
+        side = 'CE' if fut['close'] > fut['vwap'] else 'PE' if fut['close'] < fut['vwap'] else None
+        if side:
+            legs['vwap'] = side
     if getattr(snap, 'ema_bull', None) is not None:
-        bull, bear = (bull + 20.0, bear) if snap.ema_bull else (bull, bear + 20.0)
+        legs['ema'] = 'CE' if snap.ema_bull else 'PE'
     rsi = getattr(snap, 'rsi', None)
-    if rsi is not None:
-        bull, bear = (bull + 20.0, bear) if rsi > 50 else (bull, bear + 20.0)
-    if getattr(snap, 'avg_vol', None) and getattr(snap, 'vol', 0) > snap.avg_vol * 1.5:
-        bull, bear = (bull + 15.0, bear) if above else (bull, bear + 15.0)
-    if oi_bias == 'CE':
-        bull += 15.0
-    elif oi_bias == 'PE':
-        bear += 15.0
+    if rsi is not None and _finite(rsi):
+        legs['rsi'] = 'CE' if rsi > POLICY['rsi_bull'] else 'PE' if rsi < POLICY['rsi_bear'] else None
+    prev = fut.get('prev_vols') or []
+    if len(prev) >= 5 and _finite(fut.get('vol'), *prev) and fut['vol'] > max(prev) and legs.get('vwap'):
+        legs['volume'] = legs['vwap']
+    if oi_side in ('CE', 'PE'):
+        legs['oi'] = oi_side
     if getattr(snap, 'failed_breakdown', None):
-        bull += 5.0
+        legs['failed_break'] = 'CE'
     elif getattr(snap, 'failed_breakout', None):
-        bear += 5.0
-    return ('CE' if bull >= bear else 'PE'), max(bull, bear)
+        legs['failed_break'] = 'PE'
+    weights = dict(vwap=25.0, ema=20.0, rsi=20.0, volume=15.0, oi=15.0, failed_break=5.0)
+    for leg, side in legs.items():
+        if side == 'CE':
+            bull += weights[leg]
+        elif side == 'PE':
+            bear += weights[leg]
+    return ('CE' if bull >= bear else 'PE'), max(bull, bear), legs
+
+
+def oi_side(rows, history, spot, underlying, now, day_open=None):
+    """ATM OI direction from the polled option chain (+/-1.5% of spot), 10-min window.
+      bull: put writing (PE OI up) or call short covering (CE wall OI down)
+      bear: call writing (CE OI up) or put long unwinding (PE wall OI down)
+    Threshold 15% (Bank Nifty 12%, checklist variant). PUT OI ambiguity rule: after
+    12:30, a put strike whose OI is up >500% on the day makes the OI leg sit out.
+    rows: latest poll [{token, strike, opt_type, oi}], history: {token: [(ts, oi)]},
+    day_open: {token: first OI of the day}. Returns 'CE', 'PE' or None."""
+    if not rows or not _finite(spot) or spot <= 0:
+        return None
+    thr = (POLICY['oi_velocity_pct_banknifty'] if underlying == 'BANKNIFTY'
+           else POLICY['oi_velocity_pct']) / 100
+    bull = bear = 0
+    for r in rows:
+        strike, typ, oi = r.get('strike'), r.get('opt_type'), r.get('oi')
+        if typ not in ('CE', 'PE') or not _finite(strike, oi) or abs(strike - spot) > 0.015 * spot:
+            continue
+        opened = (day_open or {}).get(r['token'])
+        if typ == 'PE' and opened and now.time() >= _t(POLICY['put_oi_ambiguity_after']) \
+                and oi > opened * (1 + POLICY['put_oi_ambiguity_pct'] / 100):
+            return None
+        then = None
+        for ts, past in history.get(r['token'], ()):
+            if (now - ts).total_seconds() >= 600:
+                then = past
+            else:
+                break
+        if not then:
+            continue
+        change = (oi - then) / then
+        if change >= thr:
+            bull, bear = (bull + 1, bear) if typ == 'PE' else (bull, bear + 1)
+        elif change <= -thr:
+            bull, bear = (bull + 1, bear) if typ == 'CE' else (bull, bear + 1)
+    return 'CE' if bull > bear else 'PE' if bear > bull else None
+
+
+def structure_ok(bars, direction):
+    """Checklist market structure on 5-min swings: CE needs a higher high and a higher
+    low versus the previous 6 bars; PE a lower high and a lower low."""
+    if len(bars) < 12:
+        return False
+    recent, prior = bars[-6:], bars[-12:-6]
+    if direction == 'CE':
+        return max(b['high'] for b in recent) > max(b['high'] for b in prior) and \
+            min(b['low'] for b in recent) > min(b['low'] for b in prior)
+    return max(b['high'] for b in recent) < max(b['high'] for b in prior) and \
+        min(b['low'] for b in recent) < min(b['low'] for b in prior)
+
+
+def opening_range_side(bars):
+    """Opening range (09:15-09:30) position of the latest close: evidence only."""
+    opening = [b for b in bars if b['at'].time() < _t(POLICY['first_decision'])]
+    if len(opening) != 3:
+        return None
+    if bars[-1]['close'] > max(b['high'] for b in opening):
+        return 'CE'
+    if bars[-1]['close'] < min(b['low'] for b in opening):
+        return 'PE'
+    return 'inside'
 
 
 def _shield_gate(direction, shield, underlying, bar_close, days_to_expiry):
@@ -275,7 +359,7 @@ def _shield_gate(direction, shield, underlying, bar_close, days_to_expiry):
 
 
 def detect(rows, spot, snap, technical_at, now, shield=None, banks=None,
-           days_to_expiry=None, underlying=None):
+           days_to_expiry=None, underlying=None, macro_active=None):
     """v2: a setup found on the previous closed 5-min bar and confirmed by the
     latest closed bar (checklist s.10), then the Bull Shield and bank gates.
 
@@ -294,6 +378,8 @@ def detect(rows, spot, snap, technical_at, now, shield=None, banks=None,
     if not _finite(avg) or avg <= 0:
         raise ValueError('flat_underlying')
     bar_close = last['at'] + timedelta(minutes=5)
+    if macro_active or (macro_active is None and POLICY['macro_unknown_blocks']):
+        raise ValueError('macro_suppression_window_or_unknown')
     evaluations = {}
     for family, fn in FAMILIES:
         setup, reason = fn(setup_bars, setup_bar, avg)
@@ -323,6 +409,9 @@ def detect(rows, spot, snap, technical_at, now, shield=None, banks=None,
         if not all(aligned.values()):
             evaluations[family] = 'trend_not_aligned:' + ','.join(k for k, v in aligned.items() if not v)
             continue
+        if not structure_ok(bars, direction):
+            evaluations[family] = 'structure_not_hh_hl' if direction == 'CE' else 'structure_not_lh_ll'
+            continue
         gate = _shield_gate(direction, shield, underlying, bar_close, days_to_expiry)
         if gate:
             evaluations[family] = gate
@@ -339,7 +428,8 @@ def detect(rows, spot, snap, technical_at, now, shield=None, banks=None,
         return dict(family=family, direction=direction, level=setup['level'],
                     spot_stop=round(spot_stop, 2), structure_level=structure,
                     setup_bar_start=setup_bar['at'].isoformat(), bar_start=last['at'].isoformat(),
-                    decided_at=bar_close.isoformat(), avg_range=round(avg, 2)), evaluations
+                    decided_at=bar_close.isoformat(), avg_range=round(avg, 2),
+                    opening_range=opening_range_side(bars)), evaluations
     return None, evaluations
 
 
@@ -473,7 +563,21 @@ def celestial_exit_guard(pos, now):
     return None
 
 
-def exit_reason(pos, now, snap=None, ltp=None):
+def fresh_ce_wall(spot, rows_now, oi_at_entry):
+    """Checklist OI wall rule: a CE strike within ce_wall_points of spot whose OI has
+    grown by >= ce_wall_build_pct since entry."""
+    if not _finite(spot) or not rows_now or not oi_at_entry:
+        return False
+    for r in rows_now:
+        base = oi_at_entry.get(r.get('token'))
+        if r.get('opt_type') == 'CE' and _finite(r.get('strike'), r.get('oi'), base) and base > 0 \
+                and abs(r['strike'] - spot) <= POLICY['ce_wall_points'] \
+                and r['oi'] >= base * (1 + POLICY['ce_wall_build_pct'] / 100):
+            return True
+    return False
+
+
+def exit_reason(pos, now, snap=None, ltp=None, ce_wall=False):
     """Intraday-trend holding policy only; every other kind returns None.
     v2 adds: full exit at target_r x initial risk (checklist minimum RR 1:2), and
     exit when the EMA trend flips against the trade within invalidation_bars
@@ -488,6 +592,8 @@ def exit_reason(pos, now, snap=None, ltp=None):
     if ltp is not None and _finite(ltp, stop) and 0 < stop < pos.entry_price and \
             ltp >= pos.entry_price + POLICY['target_r'] * (pos.entry_price - stop):
         return 'intraday_trend_target_2r'
+    if ce_wall and getattr(pos, 'direction', None) == 'CE':
+        return 'intraday_trend_fresh_ce_wall'
     held = (now - pos.entry_ts).total_seconds()
     if snap is not None and held <= POLICY['invalidation_bars'] * 300 and \
             getattr(pos, 'direction', None) in ('CE', 'PE') and \
@@ -561,7 +667,8 @@ class Lane:
                                         shield=getattr(st, 'trend_shield', None),
                                         banks=getattr(st, 'trend_banks', None),
                                         days_to_expiry=getattr(st, 'trend_days_to_expiry', None),
-                                        underlying=st.name)
+                                        underlying=st.name,
+                                        macro_active=getattr(st, 'trend_macro_active', None))
             row['evaluations'] = evaluations
             if st.name in self.pending:
                 self._close(st.name, 'SETUP_EXPIRED', reason='superseded_by_next_bar')
@@ -575,7 +682,8 @@ class Lane:
         except ValueError as exc:
             row['blocked_reasons'].append(str(exc) if str(exc) in {
                 'invalid_bars', 'candle_warmup', 'stale_candles', 'before_first_decision',
-                'after_last_entry', 'flat_underlying'} else 'invalid_market_inputs')
+                'after_last_entry', 'flat_underlying',
+                'macro_suppression_window_or_unknown'} else 'invalid_market_inputs')
         except (TypeError, KeyError, AttributeError, OverflowError):
             row['blocked_reasons'].append('invalid_market_inputs')
         self.rows[st.name] = row

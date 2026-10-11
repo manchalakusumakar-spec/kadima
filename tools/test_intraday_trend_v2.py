@@ -68,12 +68,13 @@ def shield(now, n=2, score=75.0, direction="CE"):
             for i in range(n)][::-1]
 
 
-def run(rows, now, spot=None, snap=SNAP_BULL, sh="default", banks=None, dte=None, underlying="NIFTY"):
+def run(rows, now, spot=None, snap=SNAP_BULL, sh="default", banks=None, dte=None, underlying="NIFTY",
+        macro=False):
     spot = spot if spot is not None else rows[-1]["close"]
     if sh == "default":
         sh = shield(now)
     return it.detect(rows, spot, snap, now - timedelta(seconds=30), now, shield=sh,
-                     banks=banks, days_to_expiry=dte, underlying=underlying)
+                     banks=banks, days_to_expiry=dte, underlying=underlying, macro_active=macro)
 
 
 def test_policy():
@@ -153,16 +154,61 @@ def test_trend_alignment_still_required():
 
 
 def test_shield_score():
-    print("shield_score mirrors engine weights")
-    check("all bull legs without OI/volume = 65", it.shield_score(SNAP_BULL) == ("CE", 65.0))
-    check("plus OI shift CE = 80", it.shield_score(SNAP_BULL, oi_bias="CE") == ("CE", 80.0))
-    fb = NS(**{**vars(SNAP_BULL), "failed_breakdown": True})
-    check("plus failed breakdown = 70", it.shield_score(fb) == ("CE", 70.0))
-    check("bear snapshot scores PE", it.shield_score(SNAP_BEAR, oi_bias="PE") == ("PE", 80.0))
-    fake = NS(**{**vars(SNAP_BULL), "vwap": 25100.0, "close": 25100.0, "above_vwap": False})
-    check("fake index VWAP (== close) sits out instead of voting PE", it.shield_score(fake) == ("CE", 40.0))
-    check("so without OI/volume the most an index can score is 60",
-          it.shield_score(NS(**{**vars(fake), "failed_breakdown": True}), oi_bias="CE") == ("CE", 60.0))
+    print("Shield score: checklist v9.0 legs")
+    d, sc, legs = it.shield_score(SNAP_BULL)
+    check("EMA + RSI>55 only = 40, VWAP/volume sit out without futures", (d, sc) == ("CE", 40.0)
+          and "vwap" not in legs and "volume" not in legs)
+    fut = dict(vwap=25000.0, close=25050.0, vol=900, prev_vols=[300, 400, 500, 350, 450])
+    check("futures VWAP reclaim + volume above previous 5 = +40",
+          it.shield_score(SNAP_BULL, futures=fut)[:2] == ("CE", 80.0))
+    check("plus OI shift CE = 95", it.shield_score(SNAP_BULL, oi_side="CE", futures=fut)[:2] == ("CE", 95.0))
+    weak = dict(fut, vol=450)
+    check("volume not above every one of the previous 5 -> no volume leg",
+          it.shield_score(SNAP_BULL, futures=weak)[:2] == ("CE", 65.0))
+    mid = NS(**{**vars(SNAP_BULL), "rsi": 52.0})
+    check("RSI 52 (between 45 and 55) scores neither side", it.shield_score(mid)[2].get("rsi") is None)
+    check("bear snapshot + PE OI = PE 55", it.shield_score(SNAP_BEAR, oi_side="PE")[:2] == ("PE", 55.0))
+    check("index's own VWAP never counts", "vwap" not in it.shield_score(
+        NS(**{**vars(SNAP_BULL), "vwap": 1.0, "close": 2.0}))[2])
+
+
+def test_oi_side():
+    print("ATM OI direction (writing / unwinding) and PUT OI ambiguity")
+    now = DAY.replace(hour=11)
+    hist = lambda oi: [(now - timedelta(minutes=11), oi)]
+    rows = [dict(token="P1", strike=25000.0, opt_type="PE", oi=1200), dict(token="C1", strike=25050.0, opt_type="CE", oi=1000)]
+    check("put writing (+20% PE OI) -> CE", it.oi_side(rows, {"P1": hist(1000), "C1": hist(1000)}, 25020, "NIFTY", now) == "CE")
+    rows2 = [dict(token="C1", strike=25050.0, opt_type="CE", oi=1200)]
+    check("call writing (+20% CE OI) -> PE", it.oi_side(rows2, {"C1": hist(1000)}, 25020, "NIFTY", now) == "PE")
+    rows3 = [dict(token="C1", strike=25050.0, opt_type="CE", oi=870)]
+    check("CE wall -13%: below 15% for NIFTY", it.oi_side(rows3, {"C1": hist(1000)}, 25020, "NIFTY", now) is None)
+    check("CE wall -13%: counts for BANKNIFTY (12%) -> CE", it.oi_side(rows3, {"C1": hist(1000)}, 25020, "BANKNIFTY", now) == "CE")
+    late = DAY.replace(hour=13)
+    rows4 = [dict(token="P1", strike=25000.0, opt_type="PE", oi=7000)]
+    check("PUT OI +600% on the day after 12:30 -> ambiguous, sits out",
+          it.oi_side(rows4, {"P1": [(late - timedelta(minutes=11), 1000)]}, 25020, "NIFTY", late, day_open={"P1": 1000}) is None)
+    far = [dict(token="P9", strike=26000.0, opt_type="PE", oi=2000)]
+    check("strikes beyond 1.5% of spot ignored", it.oi_side(far, {"P9": hist(1000)}, 25020, "NIFTY", now) is None)
+
+
+def test_structure_and_macro():
+    print("market structure and macro suppression")
+    rows, now = scenario()
+    setup, _ = run(rows, now)
+    check("uptrend has HH+HL -> setup", setup is not None)
+    check("opening-range side recorded as evidence", setup and setup.get("opening_range") in ("CE", "PE", "inside", None))
+    flat = bars([25100] * 6 + [25150, 25140, 25130])
+    check("structure_ok rejects too few bars", it.structure_ok(it.closed_bars(flat, DAY + timedelta(minutes=45)), "CE") is False)
+    try:
+        run(rows, now, macro=True); blocked = False
+    except ValueError as exc:
+        blocked = str(exc) == "macro_suppression_window_or_unknown"
+    check("macro window active -> no entry", blocked)
+    try:
+        run(rows, now, macro=None); unknown = False
+    except ValueError as exc:
+        unknown = str(exc) == "macro_suppression_window_or_unknown"
+    check("macro status unknown -> no entry", unknown)
 
 
 def pos(entry=100.0, stop=90.0, minutes=10, peak=None, direction="CE"):
@@ -184,6 +230,14 @@ def test_exits():
     p4, _ = pos()
     late = DAY.replace(hour=15, minute=10)
     check("15:10 time exit first", it.exit_reason(p4, late, ltp=200.0) == "intraday_trend_time_exit")
+    p5, now5 = pos()
+    check("fresh CE wall -> CE trade exits", it.exit_reason(p5, now5, ce_wall=True) == "intraday_trend_fresh_ce_wall")
+    p6, now6 = pos(direction="PE")
+    check("CE wall rule not applied to PE trades", it.exit_reason(p6, now6, ce_wall=True) is None)
+    wall_now = [dict(token="C1", strike=25050.0, opt_type="CE", oi=2600)]
+    check("CE OI +160% within 50 pts = fresh wall", it.fresh_ce_wall(25020, wall_now, {"C1": 1000}) is True)
+    check("CE OI +140% is not", it.fresh_ce_wall(25020, [dict(wall_now[0], oi=2400)], {"C1": 1000}) is False)
+    check("wall 80 pts away is not", it.fresh_ce_wall(24970, wall_now, {"C1": 1000}) is False)
     other = NS(kind="gamma_blast", entry_ts=None, entry_price=None)
     check("other engines untouched", it.exit_reason(other, now, ltp=500.0, snap=SNAP_BEAR) is None)
 
@@ -195,9 +249,14 @@ def test_live_hook_fails_closed():
             chain=NS(index=NS(token="99926000")))
     it.storage.recent_candles = lambda token, interval, n: rows
     lane = it.Lane()
+    st.trend_macro_active = False
     row = lane.observe_close(st, now=now)
     check("no setup without Shield history", row["stage"] == "NO_SETUP"
           and row["evaluations"].get("pullback_recovery") == "shield_unavailable")
+    del st.trend_macro_active
+    row = lane.observe_close(st, now=now)
+    check("unknown macro status blocks in the live hook",
+          "macro_suppression_window_or_unknown" in row["blocked_reasons"])
 
 
 if __name__ == "__main__":
