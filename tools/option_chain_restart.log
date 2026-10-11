@@ -1,0 +1,23 @@
+Restart IST: 2026-10-10T02:37:38.289556+05:30
+State: active
+Oct 09 15:48:18 ip-172-31-41-95 systemd[1]: Stopping kadima.service - KADIMA Trading Engine...
+Oct 09 15:48:19 ip-172-31-41-95 systemd[1]: kadima.service: Deactivated successfully.
+Oct 09 15:48:19 ip-172-31-41-95 systemd[1]: Stopped kadima.service - KADIMA Trading Engine.
+Oct 09 15:48:19 ip-172-31-41-95 systemd[1]: kadima.service: Consumed 23.949s CPU time over 2h 5min 42.055s wall clock time, 261.3M memory peak.
+Oct 09 15:48:19 ip-172-31-41-95 systemd[1]: Started kadima.service - KADIMA Trading Engine.
+Oct 09 17:34:16 ip-172-31-41-95 systemd[1]: Stopping kadima.service - KADIMA Trading Engine...
+Oct 09 17:34:29 ip-172-31-41-95 systemd[1]: kadima.service: Deactivated successfully.
+Oct 09 17:34:29 ip-172-31-41-95 systemd[1]: Stopped kadima.service - KADIMA Trading Engine.
+Oct 09 17:34:29 ip-172-31-41-95 systemd[1]: kadima.service: Consumed 21.505s CPU time over 1h 46min 9.830s wall clock time, 252.2M memory peak, 158.1M memory swap peak.
+Oct 09 17:34:29 ip-172-31-41-95 systemd[1]: Started kadima.service - KADIMA Trading Engine.
+Oct 09 18:54:19 ip-172-31-41-95 systemd[1]: Stopping kadima.service - KADIMA Trading Engine...
+Oct 09 18:54:33 ip-172-31-41-95 systemd[1]: kadima.service: Deactivated successfully.
+Oct 09 18:54:33 ip-172-31-41-95 systemd[1]: Stopped kadima.service - KADIMA Trading Engine.
+Oct 09 18:54:33 ip-172-31-41-95 systemd[1]: kadima.service: Consumed 14.917s CPU time over 1h 20min 4.626s wall clock time, 252.1M memory peak, 179.9M memory swap peak.
+Oct 09 18:56:17 ip-172-31-41-95 systemd[1]: Started kadima.service - KADIMA Trading Engine.
+Oct 09 21:07:38 ip-172-31-41-95 systemd[1]: Stopping kadima.service - KADIMA Trading Engine...
+Oct 09 21:07:49 ip-172-31-41-95 systemd[1]: kadima.service: Deactivated successfully.
+Oct 09 21:07:49 ip-172-31-41-95 systemd[1]: Stopped kadima.service - KADIMA Trading Engine.
+Oct 09 21:07:49 ip-172-31-41-95 systemd[1]: kadima.service: Consumed 23.247s CPU time over 2h 11min 32.786s wall clock time, 229.6M memory peak, 150.8M memory swap peak.
+Oct 09 21:07:49 ip-172-31-41-95 systemd[1]: Started kadima.service - KADIMA Trading Engine.
+Controls unchanged: True

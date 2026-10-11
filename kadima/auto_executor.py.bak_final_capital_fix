@@ -1,0 +1,701 @@
+"""
+auto_executor.py — places, monitors, and exits real orders.
+
+DESIGN, AS AGREED WITH THE TRADER (2026-08-20 session):
+
+    Decision-maker: this module (Python, server-side), not ChatGPT.
+    ChatGPT stays as interface/monitoring/pre-market research. Reasoning:
+    Angel One caps getOrderBook/getPosition/getTradeBook at 1 request/sec
+    each -- a tight, unforgiving budget that needs a persistent, precisely
+    timed process, not requests arriving on an LLM's schedule. Order
+    placement is capped at 10/sec (SEBI, in force since Aug 2025). Both
+    budgets are enforced here via RateLimiter, not assumed.
+
+    Order type: LIMIT only. Market and IOC orders are strictly prohibited
+    for algorithmic trading under SEBI's retail algo framework (in force
+    since April 2026, https://www.angelone.in -- "What's Changing in
+    Angel One's SmartAPI Access from April 1, 2026").
+
+    Product type: INTRADAY (again, as of 2026-08-23; see angel_orders.py's
+    module docstring for the full NRML story -- tried 2026-08-20, Angel
+    One's live order API rejected it outright, reverted after confirming
+    INTRADAY works via test_order_pathway.py, same day). Angel One's own
+    MIS auto-square-off for F&O (3:20 PM, confirmed on their support
+    page) is the primary overnight-carry backstop again as a result.
+    EOD_FORCE_CLOSE_HHMM below is timed to close cleanly BEFORE that
+    broker-side cutoff; eod_watchdog.py now runs AFTER it, as independent
+    verification rather than the primary safety net it briefly was.
+
+    Entry: CE/PE BUYING only (never selling/writing -- confirmed
+    explicitly; writing needs margin far beyond this account's capital
+    ceiling for index options). Only enter where projected return is
+    ASSESSED >=10% (delta x expected-move estimate, not a flat number
+    blind to the option's own mechanics) -- this is a MINIMUM CRITERION
+    TO ENTER, not a target and not an exit trigger. Bull Shield signals
+    stop at 15:10 (config.SIGNAL_CUTOFF); gamma signals stop later, at
+    15:35 (config.GAMMA_SIGNAL_CUTOFF) -- deliberately different cutoffs,
+    since gamma blasts and Bull Shield's trend-confirmation are different
+    phenomena and only the former has been observed clustering late.
+
+    Exit: below 10% gain, the existing fixed 30% stop-loss on premium is
+    the only protection. At or above 10% gain, a trailing stop takes
+    over: exits once price has given back >=30% of the PEAK GAIN reached
+    (not 30% of premium, not fixed points -- a percentage of the gain
+    itself, so it scales correctly whether the move was small or huge).
+    This supersedes exit_manager.py's fixed-points trail (20pt
+    activation / 10pt trail) -- that design is superseded by this one,
+    per explicit confirmation. stops.py was already superseded earlier
+    the same session and stays deprecated.
+
+    End of day: hard force-close at 15:38 IST (EOD_FORCE_CLOSE_HHMM),
+    extended from 15:15 on 2026-08-24 alongside SIGNAL_CUTOFF's extension
+    to 15:35 -- trader's explicit instruction to keep auto-trading active
+    through the true 15:40 close. Honest tradeoff, not a free extension:
+    Angel One's MIS auto-square-off already fired once at 3:20 PM and
+    never fires again, so anything entered after that has NO broker-side
+    backstop at all -- this close and eod_watchdog.py's one-minute-later
+    run are the only two things protecting that window, with roughly a
+    minute of runway before the exchange itself closes. No overnight
+    carry under any circumstance regardless -- no expiry-day exception,
+    no gap-anticipation exception. Confirmed.
+
+WHY POSITION MONITORING DOESN'T REUSE THE OPTION CHAIN'S LADDER:
+    option_chain.OptionChain.rebuild_ladder() replaces self.quotes
+    entirely whenever ATM shifts. A held position's strike can drift
+    outside the ATM+-N tracked window as spot moves -- at that point the
+    chain silently stops polling it. Exit monitoring cannot depend on
+    ladder membership, so this module polls held positions' LTP directly,
+    on its own cadence, via the same getMarketData endpoint but scoped
+    only to currently-held tokens (MAX_CONCURRENT_POSITIONS=1 keeps this
+    trivially cheap regardless).
+
+STARTUP SAFETY:
+    A systemd restart (Restart=always), a crash, or a redeploy while a
+    position is open must not lose track of it. reconcile_on_startup()
+    treats the BROKER's position book as ground truth and rebuilds
+    in-memory state from it, using the local positions table only to
+    recover metadata (signal_id, peak_price, trail_active) the broker's
+    response doesn't carry. If the broker call itself fails, this fails
+    CLOSED -- new entries are blocked until reconciliation succeeds,
+    rather than risk opening a second position on top of one that
+    couldn't be confirmed absent.
+
+THE ORDER_PLACEMENT_ENABLED GATE IS UNCHANGED BY THIS FILE EXISTING.
+    Building this module does not turn live trading on. config.py's
+    ORDER_PLACEMENT_ENABLED still defaults to False -- every order path
+    below checks it and, when False, logs what WOULD have been sent and
+    returns without calling the broker. Flipping it is a deliberate,
+    separate action, not a side effect of deployment.
+"""
+
+from __future__ import annotations
+
+import math
+import threading
+import time
+from collections import deque
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from types import SimpleNamespace
+from typing import Optional
+
+from . import (alerts, audit, capital_guard, entry_quality, exit_manager,
+              killswitch, risk_budget, storage, strike_selector)
+from . import angel_orders
+from .config import (DAILY_LOSS_LIMIT_INR, IST, MAX_CONCURRENT_POSITIONS,
+                     MAX_LOTS_PER_SIGNAL, ORDER_PLACEMENT_ENABLED)
+from .instrument_master import get_lot_size
+from . import config
+from .rate_limiter import ORDER_STATUS, QUOTE
+from .session import SESSION
+from .utils import in_market_hours, now_ist, past_signal_cutoff
+
+# ---------------------------------------------------------------- config
+MIN_PROJECTED_RETURN_PCT = 10.0   # entry criterion, not a target
+
+# Exit-math percentages are DERIVED from exit_manager.py's constants, not
+# re-declared here with their own literal values. exit_manager.py is the
+# canonical source (it says so in its own docstring) — two copies of the
+# same number is how they silently drift apart the first time one gets
+# recalibrated (per the 30-sample rule) and the other doesn't.
+GIVEBACK_FLOOR_PCT = exit_manager.GAIN_ACTIVATION_PCT * 100.0   # trail only protects gains above this
+GIVEBACK_TRAIL_PCT = exit_manager.GIVEBACK_PCT * 100.0          # exit once this much of the PEAK GAIN is lost
+FIXED_STOPLOSS_PCT = exit_manager.INITIAL_SL_PCT * 100.0        # protects the position below the floor
+
+EOD_FORCE_CLOSE_HHMM = (15, 38)   # hard close, independent of P&L or trail.
+                                  # Extended 15:15 -> 15:38 on 2026-08-24,
+                                  # same night as SIGNAL_CUTOFF's extension
+                                  # to 15:35 -- trader's explicit
+                                  # instruction to keep auto-trading active
+                                  # through the 15:40 close.
+                                  #
+                                  # HONEST RISK NOTE, not just a number
+                                  # change: Angel One's MIS auto-square-off
+                                  # already fired once at 3:20 PM and does
+                                  # NOT fire again. Anything entered after
+                                  # 3:20 PM has NO broker-side backstop at
+                                  # all -- this 15:38 close and
+                                  # eod_watchdog.py's retimed run (now
+                                  # 15:39, one minute later) are the ONLY
+                                  # two things standing between a position
+                                  # opened in this window and an actual
+                                  # overnight carry. That leaves eod_
+                                  # watchdog roughly ONE MINUTE of runway
+                                  # before the true 3:40 PM exchange close
+                                  # -- thin, and worth knowing is thin,
+                                  # not a robust safety margin like the
+                                  # earlier 3:20 PM design had.
+LIMIT_ORDER_BUFFER_PCT = 2.5      # bias the limit price toward a fill.
+                                  # Widened 0.5% -> 1.5% -> 2.5% on
+                                  # 2026-08-24, day one of live trading.
+                                  # Trader's explicit priority: fill
+                                  # probability over price optimization.
+                                  # Note this addresses EXECUTION slippage
+                                  # (order-sent to order-reaches-exchange,
+                                  # milliseconds to seconds) -- it does
+                                  # NOT address DETECTION lag (candle
+                                  # close / poll cadence noticing a move
+                                  # late), which was the larger factor in
+                                  # today's missed 15:20-15:25 move. Still
+                                  # a genuine LIMIT order throughout --
+                                  # SEBI's algo framework prohibits
+                                  # market/IOC orders outright, not wide
+                                  # limits.
+POSITION_MONITOR_INTERVAL_SEC = 10
+
+
+# ---------------------------------------------------------------- premium history
+@dataclass
+class _PremiumHistory:
+    day_high: Optional[float] = None
+    day_low: Optional[float] = None
+    samples: deque = field(default_factory=lambda: deque(maxlen=400))  # (ts, ltp)
+
+
+class PremiumTracker:
+    """Per-contract intraday premium day-high/day-low and a rolling
+    recent-price history, fed by the SAME option-chain poll cycle
+    engine.py already runs -- no extra API calls. Exists because
+    entry_quality.py's chase-prevention gate needs premium_day_high,
+    premium_day_low, and a ~30-minutes-ago base price, none of which
+    option_chain.py tracks itself (it only holds the latest snapshot)."""
+
+    def __init__(self) -> None:
+        self._hist: dict[str, _PremiumHistory] = {}
+        self._day: Optional[str] = None
+        self._lock = threading.Lock()
+
+    def _roll_day(self, today: str) -> None:
+        if self._day != today:
+            self._hist = {}
+            self._day = today
+
+    def record(self, token: str, ltp: Optional[float], ts: datetime) -> None:
+        if ltp is None or ltp <= 0:
+            return
+        with self._lock:
+            self._roll_day(ts.date().isoformat())
+            h = self._hist.setdefault(token, _PremiumHistory())
+            h.day_high = ltp if h.day_high is None else max(h.day_high, ltp)
+            h.day_low = ltp if h.day_low is None else min(h.day_low, ltp)
+            h.samples.append((ts, ltp))
+
+    def record_chain(self, chain) -> None:
+        now = now_ist()
+        for q in chain.quotes.values():
+            self.record(q.token, q.ltp, now)
+
+    def snapshot(self, token: str) -> tuple[Optional[float], Optional[float], Optional[float]]:
+        """Returns (day_high, day_low, base_30min_ago)."""
+        with self._lock:
+            h = self._hist.get(token)
+            if h is None:
+                return None, None, None
+            cutoff = now_ist() - timedelta(minutes=30)
+            base = None
+            for ts, ltp in h.samples:
+                if ts <= cutoff:
+                    base = ltp
+                else:
+                    break
+            return h.day_high, h.day_low, base
+
+
+# ---------------------------------------------------------------- position
+@dataclass
+class Position:
+    signal_id: int
+    kind: str                      # "bull_shield" | "gamma_blast"
+    index: str
+    direction: str                 # CE | PE
+    symbol: str
+    token: str
+    exchange: str
+    entry_price: float
+    entry_ts: Optional[datetime]
+    lots: int
+    lot_size: int
+    remaining_qty: int             # capital_guard reads this directly
+    order_id: Optional[str] = None
+    status: str = "open"
+    peak_price: Optional[float] = None
+    trail_active: bool = False
+    exit_price: Optional[float] = None
+    exit_ts: Optional[datetime] = None
+    exit_reason: Optional[str] = None
+    exit_order_id: Optional[str] = None
+
+
+class ExecutorState:
+    def __init__(self) -> None:
+        self.positions: dict[str, Position] = {}   # keyed by str(signal_id)
+        self.premium_tracker = PremiumTracker()
+
+
+# ---------------------------------------------------------------- broker calls
+# Order placement itself lives in angel_orders.py (rate limiting, LIMIT-only
+# enforcement, dry-run gating, response parsing — all tested there). This
+# module only decides WHEN to call it, never talks to SESSION.api directly
+# for order placement, so there's exactly one place that logic can go wrong.
+
+def _poll_ltp(exchange: str, tokens: list[str]) -> dict[str, float]:
+    """Direct LTP poll for specific tokens, independent of any
+    OptionChain's ladder -- see module docstring for why this can't
+    reuse option_chain's polling."""
+    if not tokens:
+        return {}
+    if not QUOTE.wait_and_allow(timeout_sec=3.0):
+        audit.log("position_ltp_poll_rate_limited", tokens=tokens)
+        return {}
+    SESSION.ensure()
+    payload = {"mode": "LTP", "exchangeTokens": {exchange: tokens}}
+    try:
+        resp = SESSION.api.getMarketData(**payload)
+    except TypeError:
+        resp = SESSION.api.getMarketData("LTP", {exchange: tokens})
+    except Exception as exc:                        # noqa: BLE001
+        audit.log("position_ltp_poll_failed", error=str(exc), tokens=tokens)
+        return {}
+    if not resp or not resp.get("status"):
+        return {}
+    out: dict[str, float] = {}
+    for row in resp.get("data", {}).get("fetched", []):
+        token = str(row.get("symbolToken"))
+        ltp = row.get("ltp")
+        if ltp is not None:
+            try:
+                out[token] = float(ltp)
+            except (TypeError, ValueError):
+                pass
+    return out
+
+
+def fetch_broker_positions() -> Optional[list[dict]]:
+    """Ground truth from the broker, for startup reconciliation. Returns
+    None if unreadable -- callers must NOT treat that as 'no positions',
+    same fail-closed convention as capital_guard's margin check."""
+    if not ORDER_STATUS.wait_and_allow(timeout_sec=5.0):
+        audit.log("broker_position_fetch_rate_limited")
+        return None
+    SESSION.ensure()
+    try:
+        resp = SESSION.api.position()
+    except Exception as exc:                        # noqa: BLE001
+        audit.log("broker_position_fetch_failed", error=str(exc))
+        return None
+    if not resp or not resp.get("status"):
+        return None
+    return resp.get("data") or []
+
+
+# ---------------------------------------------------------------- entry math
+def projected_return_pct(quote, spot: float, days_to_expiry: float) -> Optional[float]:
+    """Delta x expected-underlying-move estimate of premium appreciation,
+    as a % of current premium. This is the MINIMUM ENTRY CRITERION
+    (>=10%), not a promise of that return -- it's a linear approximation
+    (real option payoff is convex, not linear), whose job is only to
+    stop 'cheap premium, needs an implausible move' entries from ever
+    reaching the order path. Same purpose risk_budget.py already serves
+    for rupee risk; this is the return-side equivalent. Returns None if
+    IV or delta aren't available -- caller must treat that as a reason to
+    reject the candidate, not as an assumed pass."""
+    if not quote.iv or not quote.delta or not spot or spot <= 0:
+        return None
+    if not quote.ltp or quote.ltp <= 0:
+        return None
+    expected_move = spot * (quote.iv / 100.0) * math.sqrt(max(days_to_expiry, 0) / 365.0)
+    projected_premium_move = abs(quote.delta) * expected_move
+    return projected_premium_move / quote.ltp * 100.0
+
+
+# ---------------------------------------------------------------- executor
+class AutoExecutor:
+    def __init__(self) -> None:
+        self.state = ExecutorState()
+        self._lock = threading.Lock()
+        self._reconcile_blocked = True   # stays True until reconcile_on_startup() runs
+        self._stop = threading.Event()
+
+    # -------------------------------------------------------- startup
+    def reconcile_on_startup(self) -> None:
+        """Broker's position book is ground truth. Rebuilds in-memory
+        state from it; local storage only fills in metadata the broker's
+        response doesn't carry. Fails closed on an unreadable broker call."""
+        broker_positions = fetch_broker_positions()
+        if broker_positions is None:
+            audit.log("startup_reconcile_broker_unreadable",
+                      note="cannot confirm no live positions; blocking new entries")
+            self._reconcile_blocked = True
+            return
+
+        live_tokens = {str(p.get("symboltoken")) for p in broker_positions
+                       if float(p.get("netqty", 0) or 0) != 0}
+
+        for row in storage.load_open_positions():
+            entry_ts = datetime.fromisoformat(row["entry_ts"]) if row.get("entry_ts") else None
+            pos = Position(
+                signal_id=row["signal_id"], kind=row["kind"], index=row["index"],
+                direction=row["direction"], symbol=row["symbol"], token=row["token"],
+                exchange=row["exchange"], entry_price=row["entry_price"],
+                entry_ts=entry_ts, lots=row["lots"], lot_size=row["lot_size"],
+                remaining_qty=row["remaining_qty"], order_id=row["order_id"],
+                status=row["status"], peak_price=row["peak_price"],
+                trail_active=bool(row["trail_active"]),
+            )
+            if pos.token in live_tokens:
+                self.state.positions[str(pos.signal_id)] = pos
+                audit.log("startup_reconcile_restored", signal_id=pos.signal_id,
+                          symbol=pos.symbol)
+            else:
+                storage.close_position(pos.signal_id, None, now_ist().isoformat(),
+                                       "reconciled_closed_while_down", None)
+                audit.log("startup_reconcile_phantom_closed", signal_id=pos.signal_id,
+                          symbol=pos.symbol)
+
+        self._reconcile_blocked = False
+        audit.log("startup_reconcile_complete",
+                  restored=len(self.state.positions), broker_live=len(live_tokens))
+
+    def manual_exit(self, signal_id: int, reason: str = "manual_exit_dashboard") -> dict:
+        """Manually exit one open position by signal_id, via the dashboard's
+        Live Trade panel. Reuses the exact _close_position() path check_exits()
+        already uses for automatic exits — no new order logic, no new risk logic."""
+        if self._reconcile_blocked:
+            return {"ok": False, "reason": "startup_reconcile_not_complete"}
+
+        with self._lock:
+            pos = self.state.positions.get(str(signal_id))
+            if pos is None:
+                return {"ok": False, "reason": "position_not_found", "signal_id": signal_id}
+            if pos.status != "open":
+                return {"ok": False, "reason": f"position_not_open (status={pos.status})", "signal_id": signal_id}
+
+        ltp_map = _poll_ltp(pos.exchange, [pos.token])
+        ltp = ltp_map.get(pos.token)
+        if ltp is None:
+            ltp = pos.peak_price or pos.entry_price
+            audit.log("manual_exit_ltp_unavailable_fallback", signal_id=signal_id,
+                       token=pos.token, fallback_price=ltp)
+
+        try:
+            self._close_position(pos, ltp, reason)
+        except Exception as exc:                    # noqa: BLE001
+            audit.log("manual_exit_failed", signal_id=signal_id, error=str(exc))
+            return {"ok": False, "reason": f"close_position_failed: {exc}", "signal_id": signal_id}
+
+        audit.log("manual_exit_completed", signal_id=signal_id, exit_price=ltp, reason=reason)
+        return {"ok": True, "signal_id": signal_id, "exit_price": ltp, "reason": reason}
+
+    # -------------------------------------------------------- entry
+    def evaluate_and_enter(self, index_name: str, direction: str, chain, spot: float,
+                           snap, days_to_expiry: float, kind: str,
+                           source_signal_id: int, tier: str, score: float) -> None:
+        """snap: indicators.Snapshot from the calling IndexState, used for
+        real VWAP (not a stub) in the entry-quality check."""
+        if self._reconcile_blocked:
+            return self._reject("startup_reconcile_not_complete", index_name, direction)
+        if killswitch.engaged():
+            return self._reject("killswitch_engaged", index_name, direction)
+        if not in_market_hours():
+            return self._reject("outside_market_hours", index_name, direction)
+        if past_signal_cutoff():
+            return self._reject("past_signal_cutoff", index_name, direction)
+        if exit_manager.realized_pnl_today() <= -DAILY_LOSS_LIMIT_INR:
+            # Was never actually wired in until 2026-08-23: config declared
+            # this limit, exit_manager had a check function, but nothing
+            # called it and nothing fed it real rupee P&L (see
+            # realized_pnl_today()'s fix, same date). Live trading had
+            # zero daily-loss enforcement until now.
+            return self._reject("daily_loss_limit_breached", index_name, direction)
+        with self._lock:
+            open_count = len(self.state.positions)
+        if open_count >= MAX_CONCURRENT_POSITIONS:
+            return self._reject("max_concurrent_positions", index_name, direction)
+
+        self.state.premium_tracker.record_chain(chain)
+
+        ranked = [r for r in strike_selector.rank(chain, direction, spot, days_to_expiry)
+                  if not r.rejected]
+        if not ranked:
+            return self._reject("no_tradeable_strike", index_name, direction)
+
+        candidates = [
+            risk_budget.StrikeCandidate(
+                symbol=r.quote.symbol, token=r.quote.token, strike=r.quote.strike,
+                option_type=r.quote.opt_type, ltp=r.quote.ltp, bid=r.quote.bid,
+                ask=r.quote.ask, delta=r.quote.delta, volume=r.quote.volume,
+                open_interest=r.quote.oi)
+            for r in ranked
+        ]
+
+        max_risk_inr = capital_guard.get_capital_for_tier(tier) * 0.03
+
+        verdict = risk_budget.select_within_budget(
+            candidates, spot, max_risk_inr=max_risk_inr, max_lots=MAX_LOTS_PER_SIGNAL)
+        if verdict.candidate is None:
+            return self._reject(f"risk_budget_{verdict.reason}", index_name, direction)
+
+        chosen_quote = next(r.quote for r in ranked
+                            if r.quote.token == verdict.candidate.token)
+
+        proj_return = projected_return_pct(chosen_quote, spot, days_to_expiry)
+        if proj_return is None:
+            return self._reject("projected_return_uncomputable", index_name, direction)
+        if proj_return < MIN_PROJECTED_RETURN_PCT:
+            return self._reject(
+                f"projected_return_{proj_return:.1f}pct_under_{MIN_PROJECTED_RETURN_PCT:.0f}pct_minimum",
+                index_name, direction)
+
+        day_high, day_low, base_30min = self.state.premium_tracker.snapshot(chosen_quote.token)
+        # swing_level is a PREMIUM-level proxy, not true pivot detection:
+        # day_low for CE (a break back below today's low invalidates a
+        # bullish premium thesis), day_high for PE (mirror case). This is
+        # an honest approximation of entry_quality.py's structural-stop
+        # input using what's actually tracked -- flagged here, not hidden,
+        # since a real pivot detector would be more precise but is out of
+        # scope for this pass.
+        swing_level = day_low if direction == "CE" else day_high
+        ctx = entry_quality.EntryContext(
+            ltp=chosen_quote.ltp,
+            premium_day_high=day_high or chosen_quote.ltp,
+            premium_day_low=day_low or chosen_quote.ltp,
+            premium_base_30min=base_30min,
+            spot=spot,
+            vwap=snap.vwap if snap and snap.vwap else spot,
+            swing_level=swing_level,
+            target_premium=None,
+            direction=direction,
+            spread_pct=chosen_quote.spread_pct,
+        )
+        eq_verdict = entry_quality.evaluate_entry(ctx)
+        if not eq_verdict.allowed:
+            return self._reject(f"entry_quality_{eq_verdict.reason}", index_name, direction)
+
+        allowed_lots, cap_reason = capital_guard.enforce(
+            self, SimpleNamespace(quote=chosen_quote), direction, verdict.lots)
+        if allowed_lots == 0:
+            return self._reject(f"capital_guard_{cap_reason}", index_name, direction)
+
+        lot_size = get_lot_size(chosen_quote.symbol, chosen_quote.token)
+        if lot_size is None:
+            return self._reject("lot_size_unresolvable_at_order_time", index_name, direction)
+
+        # chosen_quote.ltp reflects the LAST OI-poll-cycle snapshot the
+        # chain object holds (up to ~OI_POLL_SEC old, ~10-14s cycle time
+        # as of 2026-08-24). By this point in the pipeline, strike
+        # selection, risk budget, entry quality, and capital guard have
+        # ALL already run -- real elapsed time on top of that poll-cycle
+        # staleness, not just network transit. Trader's own words:
+        # "minimum possible market price at that particular time... as
+        # the market is moving by the time the strike hits." Fetching a
+        # fresh LTP right here, immediately before pricing the order,
+        # closes that specific gap -- the exit side (check_exits) already
+        # does this correctly (its own dedicated poll every monitoring
+        # cycle, no separate cached quote involved); this was the one
+        # place in the entry path relying on a snapshot that could be
+        # meaningfully older than "right now." Falls back to
+        # chosen_quote.ltp if the fresh fetch fails for any reason --
+        # never blocks the entry over a single failed poll, matches this
+        # codebase's fail-safe-not-fail-blocking convention elsewhere.
+        fresh_ltp_map = _poll_ltp(chain.index.opt_exchange, [chosen_quote.token])
+        pricing_ltp = fresh_ltp_map.get(chosen_quote.token) or chosen_quote.ltp
+
+        limit_price = round(pricing_ltp * (1 + LIMIT_ORDER_BUFFER_PCT / 100.0), 1)
+        quantity = allowed_lots * lot_size
+
+        result = angel_orders.place_limit_order(
+            tradingsymbol=chosen_quote.symbol, symboltoken=chosen_quote.token,
+            exchange=chain.index.opt_exchange, transactiontype="BUY",
+            quantity=quantity, price=limit_price)
+
+        if not result.ok:
+            return self._reject(f"order_placement_failed_{result.reason}", index_name, direction)
+        order_id = result.order_id
+
+        pos = Position(
+            signal_id=source_signal_id, kind=kind, index=index_name, direction=direction,
+            symbol=chosen_quote.symbol, token=chosen_quote.token,
+            exchange=chain.index.opt_exchange, entry_price=chosen_quote.ltp,
+            entry_ts=now_ist(), lots=allowed_lots, lot_size=lot_size,
+            remaining_qty=quantity, order_id=order_id, peak_price=chosen_quote.ltp,
+        )
+        with self._lock:
+            self.state.positions[str(source_signal_id)] = pos
+        storage.upsert_position(pos)
+
+        dry_run = result.dry_run
+        audit.log("position_opened", signal_id=source_signal_id, symbol=pos.symbol,
+                  direction=direction, lots=allowed_lots, entry_price=pos.entry_price,
+                  projected_return_pct=round(proj_return, 1), order_id=order_id,
+                  dry_run=dry_run)
+        alerts.send(
+            f"\U0001F7E2 <b>ENTRY</b> {index_name} {direction} {pos.symbol}\n"
+            f"{allowed_lots} lot(s) @ {pos.entry_price} | proj {proj_return:.0f}% | "
+            f"signal #{source_signal_id}"
+            + ("" if not dry_run else " (DRY RUN \u2014 ORDER_PLACEMENT_ENABLED is False)"),
+            key=f"entry:{source_signal_id}")
+
+    def _reject(self, reason: str, index_name: str, direction: str) -> None:
+        audit.log("auto_executor_entry_rejected", reason=reason,
+                  index=index_name, direction=direction)
+
+    # -------------------------------------------------------- exit
+    def check_exits(self) -> None:
+        """Call periodically (e.g. every POSITION_MONITOR_INTERVAL_SEC)
+        from a dedicated thread. Independent of any OptionChain's ladder."""
+        with self._lock:
+            open_positions = [p for p in self.state.positions.values()
+                              if p.status == "open"]
+        if not open_positions:
+            return
+
+        by_exchange: dict[str, list[str]] = {}
+        for p in open_positions:
+            by_exchange.setdefault(p.exchange, []).append(p.token)
+
+        ltp_by_token: dict[str, float] = {}
+        for exch, tokens in by_exchange.items():
+            ltp_by_token.update(_poll_ltp(exch, tokens))
+
+        now = now_ist()
+        eod_hh, eod_mm = EOD_FORCE_CLOSE_HHMM
+        force_close = now.hour > eod_hh or (now.hour == eod_hh and now.minute >= eod_mm)
+        # Computed once per cycle, not per position -- same realized_pnl_today()
+        # query the entry gate uses. Checked with top priority below: if the
+        # day's loss limit is breached, that overrides even an active trail,
+        # matching exit_manager's original documented intent ("refuse new
+        # entries and flatten open positions") which was written but never
+        # actually connected to anything until 2026-08-23.
+        daily_loss_breached = exit_manager.realized_pnl_today() <= -DAILY_LOSS_LIMIT_INR
+
+        for pos in open_positions:
+            if config.in_no_auto_exit_window():
+                continue
+            ltp = ltp_by_token.get(pos.token)
+            if ltp is None:
+                audit.log("position_ltp_unavailable", signal_id=pos.signal_id,
+                          token=pos.token)
+                if force_close:
+                    # EOD close must not silently skip just because this
+                    # cycle's LTP poll came back empty -- fall back to
+                    # last known peak_price so the position still exits.
+                    ltp = pos.peak_price or pos.entry_price
+                else:
+                    continue
+
+            pos.peak_price = ltp if pos.peak_price is None else max(pos.peak_price, ltp)
+            gain_pct = ((ltp - pos.entry_price) / pos.entry_price * 100.0
+                       if pos.entry_price else 0.0)
+            peak_gain = (pos.peak_price - pos.entry_price) if pos.peak_price else 0.0
+
+            if not pos.trail_active and gain_pct >= GIVEBACK_FLOOR_PCT:
+                pos.trail_active = True
+                storage.upsert_position(pos)
+                audit.log("trail_activated", signal_id=pos.signal_id,
+                          gain_pct=round(gain_pct, 1))
+
+            reason = None
+            if daily_loss_breached:
+                reason = "daily_loss_limit_breached"
+            elif force_close:
+                reason = "eod_force_close"
+            elif pos.trail_active:
+                giveback = pos.peak_price - ltp
+                if peak_gain > 0 and giveback >= (GIVEBACK_TRAIL_PCT / 100.0) * peak_gain:
+                    reason = f"trail_giveback_{GIVEBACK_TRAIL_PCT:.0f}pct_of_peak_gain"
+            else:
+                loss_pct = ((pos.entry_price - ltp) / pos.entry_price * 100.0
+                           if pos.entry_price else 0.0)
+                if loss_pct >= FIXED_STOPLOSS_PCT:
+                    reason = f"fixed_stoploss_{FIXED_STOPLOSS_PCT:.0f}pct"
+
+            if reason:
+                self._close_position(pos, ltp, reason)
+
+    def _close_position(self, pos: Position, ltp: float, reason: str) -> None:
+        # Sell limit biased slightly below LTP -- the mirror of the entry
+        # buffer -- to help the exit actually fill rather than sit unfilled
+        # while the reason for exiting is still true.
+        limit_price = round(ltp * (1 - LIMIT_ORDER_BUFFER_PCT / 100.0), 1)
+        result = angel_orders.place_limit_order(
+            tradingsymbol=pos.symbol, symboltoken=pos.token, exchange=pos.exchange,
+            transactiontype="SELL", quantity=pos.remaining_qty,
+            price=limit_price)
+        order_id = result.order_id
+
+        pos.status = "closed"
+        pos.exit_price = ltp
+        pos.exit_ts = now_ist()
+        pos.exit_reason = reason
+        pos.exit_order_id = order_id
+
+        with self._lock:
+            self.state.positions.pop(str(pos.signal_id), None)
+        storage.close_position(pos.signal_id, pos.exit_price,
+                               pos.exit_ts.isoformat(), pos.exit_reason,
+                               pos.exit_order_id)
+
+        pnl_pct = ((pos.exit_price - pos.entry_price) / pos.entry_price * 100.0
+                  if pos.entry_price else 0.0)
+        dry_run = result.dry_run
+
+        # NEW (2026-08-28 patch): record rupee P&L into capital_guard's persisted
+        # equity tracker, so the dynamic capital ceiling compounds correctly.
+        # remaining_qty is total quantity (lots * lot_size, set at entry) --
+        # confirmed via the entry-time assignment, so no separate lot_size
+        # multiplication is needed here. Skipped for dry-run closes since those
+        # never moved real capital and shouldn't move the tracked equity.
+        pnl_rupees = (pos.exit_price - pos.entry_price) * pos.remaining_qty
+        if not dry_run:
+            capital_guard.record_realized_pnl(pnl_rupees)
+
+        audit.log("position_closed", signal_id=pos.signal_id, symbol=pos.symbol,
+                  exit_price=ltp, reason=reason, pnl_pct=round(pnl_pct, 1),
+                  pnl_rupees=round(pnl_rupees, 2),
+                  order_id=order_id, dry_run=dry_run)
+        emoji = "\U0001F534" if pnl_pct < 0 else "\U0001F7E2"
+        alerts.send(
+            f"{emoji} <b>EXIT</b> {pos.index} {pos.direction} {pos.symbol}\n"
+            f"{reason} | {pnl_pct:+.1f}% | signal #{pos.signal_id}"
+            + ("" if not dry_run else " (DRY RUN)"),
+            key=f"exit:{pos.signal_id}")
+
+    # -------------------------------------------------------- lifecycle
+    def start_monitor_thread(self) -> None:
+        threading.Thread(target=self._monitor_loop, daemon=True,
+                         name="auto-executor-monitor").start()
+
+    def _monitor_loop(self) -> None:
+        while not self._stop.is_set():
+            try:
+                self.check_exits()
+            except Exception as exc:                    # noqa: BLE001
+                audit.log("position_monitor_loop_error", error=str(exc))
+            time.sleep(POSITION_MONITOR_INTERVAL_SEC)
+
+    def stop(self) -> None:
+        self._stop.set()
+
+
+EXECUTOR = AutoExecutor()
+

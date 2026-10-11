@@ -1,0 +1,30 @@
+01 PASS: KADIMA_FAST_MOMENTUM_LIVE=1, KADIMA_CELESTIAL_ENABLED=1, KADIMA_SESSION_AUTOTRADE=1; API token=present [MASKED]; files=/etc/kadima/auto-execution.env, /etc/kadima/session-auto.env, /var/lib/kadima-autotrading-20260928/trading.env; fix: none
+02 PASS: ORDER_PLACEMENT_ENABLED=True; fix: none
+03 FAIL: {"auto_trade_enabled": false, "kill_latched": true, "score_threshold": 65, "revision": 35}; fix: after verifying broker flat: Celestial Reset kill, then Resume (user action)
+04 PASS: KILL exists=False; fix: none
+05 WARN: next session=2026-10-12T09:16:00+05:30; calendar=None; actual future permit=session_permit_not_granted; issuer timer=active; policy/boot/lease readable; fix: re-run at 09:00 and 09:16 next trading day; issuer must renew a current boot-bound 150s lease (never forge a future lease)
+06 PASS: nonterminal=[]; fix: none
+07 PASS: stuck=[]; loaded active rows=0; historical closed rows retaining old quantity=5 (excluded by storage.load_open_positions); fix: none
+08 FAIL: no authenticated broker capture; session is engine-memory-only; fix: supply a fresh authenticated position book/order book/RMS capture via --broker-json; no login/refresh is performed by this tool
+09 FAIL: RMS cash=None; BANKNIFTY BANKNIFTY27OCT2655300CE premium=811.75, lot=30, one-lot buffered cost=25210.93; sample=2026-10-09T15:40:03.569208+05:30 | NIFTY NIFTY13OCT2622500CE premium=137.9, lot=65, one-lot buffered cost=9279.46; sample=2026-10-09T15:39:36.556972+05:30; risk fraction=0.15; max lots=2; starting-capital constant unused by available_equity(); no MAX_RISK_PER_TRADE_INR cap in risk_budget; fix: verify live RMS plus fresh ATM quote, bid/ask and structural stop; then apply risk_budget/portfolio_capacity (old premiums cannot certify Monday sizing)
+10 PASS: IST day=2026-10-10; exit_manager.realized_pnl_today=0.0; daily limit=10000; query uses IST-day prefix; fix: none
+11 PASS: next-day 09:30 index reasons={'BANKNIFTY': None, 'NIFTY': None, 'SENSEX': None}; news health exists=True; last health=2026-10-10T00:30:24.581661+05:30; fix: none
+12 PASS: credentials present [MASKED]=True; configured IP=18.61.12.184; EC2 IP=18.61.12.184; authentication itself unverified; fix: none
+13 PASS: services={'kadima': 'active', 'nginx': 'active'}; root free=2.40 GiB; used=86.7%; fix: none
+Largest files/directories (nested directory sizes overlap):
+  5.387 GiB /var/lib/kadima
+  3.992 GiB /var/lib/kadima/kadima.db
+  1.698 GiB /home/ubuntu
+  1.104 GiB /home/ubuntu/.codex
+  0.841 GiB /home/ubuntu/.codex/packages
+  0.422 GiB /var/lib/kadima/audit
+  0.422 GiB /home/ubuntu/.codex/packages/app-server-daemon
+  0.422 GiB /home/ubuntu/.codex/packages/app-server-daemon/releases
+  0.422 GiB /home/ubuntu/.codex/packages/app-server-daemon/releases/0.162.0-x86_64-unknown-linux-musl
+  0.420 GiB /home/ubuntu/.codex/packages/standalone
+  WARN: size inventory incomplete due to read permissions/time limit
+14 PASS: config.IST=Asia/Kolkata; checker and gate timestamps explicitly IST; fix: none
+15 FAIL: [["BANKNIFTY27OCT2655100CE", "2026-10-09T09:30:21.468847+05:30", 74.41, ["auto_paused", "kill_latched"]], ["BANKNIFTY27OCT2655200CE", "2026-10-09T09:33:26.764796+05:30", 89.15, ["auto_paused", "kill_latched"]]]; current persisted config; lane gates only; executor session/freshness/quality/funds also required; fix: resolve reported blockers and rerun morning preflight; historical records do not certify live executor eligibility
+AUTO-TRADE READY: NO
+Remaining FAILs: 3, 8, 9, 15
+Unverified readiness checks: 5

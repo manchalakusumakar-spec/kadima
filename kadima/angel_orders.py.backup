@@ -1,0 +1,215 @@
+"""
+angel_orders.py — thin, rate-limited wrapper around Angel One SmartAPI's
+order placement and status endpoints.
+
+WHY THIS FILE EXISTS SEPARATELY FROM auto_executor.py:
+    Keeps "how to talk to the broker" isolated from "when to trade".
+    auto_executor.py never touches SESSION.api directly — everything
+    goes through here, so the rate limiting and compliance rules (limit
+    orders only, INTRADAY product type, no MARKET/IOC) are enforced in
+    exactly one place and cannot be accidentally bypassed by a shortcut
+    taken elsewhere.
+
+COMPLIANCE, NOT JUST CONVENTION:
+    Market and IOC orders are prohibited for algorithmic trading under
+    the SEBI retail algo framework (in force since Apr 2026). This module
+    hard-codes ordertype=LIMIT and duration=DAY — there is no parameter
+    to override this, on purpose. If a caller needs a different order
+    type, that's a deliberate decision that belongs in a new, explicit
+    function, not a flag on this one.
+
+    producttype=INTRADAY (again, as of 2026-08-23). Was briefly NRML
+    (2026-08-20 to 2026-08-23), specifically to hold positions through
+    the trader's observed 3:15-3:35 PM gamma-blast window without Angel
+    One's MIS auto-square-off cutting in at 3:20 PM. That reasoning was
+    sound, but empirical testing (test_order_pathway.py, 2026-08-23)
+    showed Angel One's live order API rejects NRML orders outright for
+    this account — confirmed with a real, unambiguous order ID placed,
+    confirmed in the order book, and cancelled under INTRADAY immediately
+    after, same code path, same day, only producttype changed. Root cause
+    of the NRML rejection was never identified (price, static IP, and F&O
+    segment activation were all separately ruled out first) and would
+    need Angel One's own support to diagnose further. Given live trading
+    needed to actually work, reverting to the known-working value took
+    priority over the late-window capability — see config.py's
+    GAMMA_SIGNAL_CUTOFF and auto_executor.py's EOD_FORCE_CLOSE_HHMM, both
+    retimed the same day around the resulting 3:20 PM hard cutoff.
+    Revisit NRML only after Angel One's support can explain the rejection.
+
+RESPONSE SHAPE — VERIFY BEFORE FIRST LIVE RUN:
+    Written against the standard smartapi-python SDK's documented
+    interface (SmartConnect.placeOrder / .modifyOrder / .cancelOrder /
+    .orderBook / .position). SDK response shapes have changed across
+    versions before; every parse below is defensive (checks for
+    expected keys rather than assuming them) and fails closed — an
+    unparseable response is treated as an unknown/failed order, never
+    as an assumed success. Confirm this against your installed
+    `smartapi-python` version's actual response structure before the
+    ORDER_PLACEMENT_ENABLED switch is ever flipped to True.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+from typing import Optional
+
+from . import audit
+from .config import ORDER_PLACEMENT_ENABLED
+from .rate_limiter import ORDER_STATUS, ORDER_WRITE
+from .session import SESSION
+
+
+@dataclass
+class OrderResult:
+    ok: bool
+    order_id: Optional[str]
+    reason: str
+    dry_run: bool = False
+
+
+@dataclass
+class OrderStatus:
+    order_id: str
+    status: str              # broker's own status string, passed through
+    filled_qty: int
+    avg_price: Optional[float]
+    raw: dict
+
+
+# ---------------------------------------------------------------- place
+def place_limit_order(*, tradingsymbol: str, symboltoken: str, exchange: str,
+                      transactiontype: str, quantity: int, price: float,
+                      producttype: str = "INTRADAY") -> OrderResult:
+    """
+    transactiontype: "BUY" (entry) or "SELL" (exit, squaring off a long).
+    price: the limit price. Caller decides this — this function does not
+    adjust it (no chasing logic here; that belongs in the caller, which
+    has the context of why it's placing the order).
+
+    producttype: defaults to INTRADAY, matching the live trading path
+    (auto_executor.py never overrides this — see module docstring for
+    the full history of NRML being tried and reverted). The override
+    exists for diagnostic use (test_order_pathway.py isolating exactly
+    this variable, 2026-08-23, which is how the NRML rejection was
+    actually found) — nothing in the real trading pipeline should pass
+    a different value here without the same kind of deliberate testing.
+
+    When ORDER_PLACEMENT_ENABLED is False, does everything EXCEPT the
+    actual broker call: validates inputs, logs exactly what would have
+    been sent, and returns a synthetic dry-run order id. This lets the
+    rest of the system (position tracking, exit monitoring) run for
+    real against a fake fill, so the whole pipeline can be validated
+    before a single real order is ever placed.
+    """
+    if quantity <= 0:
+        return OrderResult(False, None, "invalid_quantity")
+    if price is None or price <= 0:
+        return OrderResult(False, None, "invalid_price")
+    if transactiontype not in ("BUY", "SELL"):
+        return OrderResult(False, None, "invalid_transactiontype")
+
+    orderparams = {
+        "variety": "NORMAL",
+        "tradingsymbol": tradingsymbol,
+        "symboltoken": symboltoken,
+        "transactiontype": transactiontype,
+        "exchange": exchange,
+        "ordertype": "LIMIT",          # hard-coded — see module docstring
+        "producttype": producttype,    # defaults to INTRADAY — see docstrings above
+        "duration": "DAY",             # hard-coded — IOC prohibited
+        "price": str(round(price, 1)),
+        "squareoff": "0",
+        "stoploss": "0",
+        "quantity": str(quantity),
+    }
+
+    if not ORDER_PLACEMENT_ENABLED:
+        dry_id = f"DRYRUN-{tradingsymbol}-{transactiontype}-{int(price*100)}"
+        audit.log("order_dry_run", dry_run_id=dry_id, **orderparams)
+        return OrderResult(True, dry_id, "dry_run_not_sent", dry_run=True)
+
+    if not ORDER_WRITE.allow():
+        audit.log("order_rejected_rate_limited", **orderparams)
+        return OrderResult(False, None, "rate_limited")
+
+    try:
+        SESSION.ensure()
+        resp = SESSION.api.placeOrder(orderparams)
+        order_id = _extract_order_id(resp)
+        if order_id is None:
+            audit.log("order_place_unparseable_response", response=str(resp)[:500],
+                      **orderparams)
+            return OrderResult(False, None, "unparseable_broker_response")
+        audit.log("order_placed", order_id=order_id, **orderparams)
+        return OrderResult(True, order_id, "ok")
+    except Exception as exc:                       # noqa: BLE001
+        audit.log("order_place_exception", error=str(exc), **orderparams)
+        return OrderResult(False, None, f"exception:{exc}")
+
+
+def _extract_order_id(resp) -> Optional[str]:
+    """Defensive parse — smartapi-python has returned order id as a bare
+    string in some versions and as resp['data']['orderid'] in others.
+    Handle both; anything else is treated as unparseable, not guessed at."""
+    if isinstance(resp, str) and resp:
+        return resp
+    if isinstance(resp, dict):
+        data = resp.get("data")
+        if isinstance(data, dict):
+            for key in ("orderid", "orderId", "order_id"):
+                if data.get(key):
+                    return str(data[key])
+        if resp.get("status") is False:
+            return None
+    return None
+
+
+def cancel_order(order_id: str, variety: str = "NORMAL") -> OrderResult:
+    if not ORDER_PLACEMENT_ENABLED:
+        audit.log("order_cancel_dry_run", order_id=order_id)
+        return OrderResult(True, order_id, "dry_run_not_sent", dry_run=True)
+
+    if not ORDER_WRITE.allow():
+        return OrderResult(False, order_id, "rate_limited")
+
+    try:
+        SESSION.ensure()
+        resp = SESSION.api.cancelOrder(order_id, variety)
+        audit.log("order_cancelled", order_id=order_id, response=str(resp)[:300])
+        return OrderResult(True, order_id, "ok")
+    except Exception as exc:                        # noqa: BLE001
+        audit.log("order_cancel_exception", order_id=order_id, error=str(exc))
+        return OrderResult(False, order_id, f"exception:{exc}")
+
+
+# ---------------------------------------------------------------- status
+def get_order_status(order_id: str) -> Optional[OrderStatus]:
+    """Reserved for periodic reconciliation, NOT the exit-monitoring hot
+    loop — this endpoint is capped at 1 req/sec. check_exits() in
+    auto_executor.py reads live premium from the WebSocket feed instead;
+    this is only for confirming an order actually filled, or diagnosing
+    a fill that didn't arrive as expected."""
+    if not ORDER_STATUS.wait_and_allow(timeout_sec=3.0):
+        audit.log("order_status_rate_limited", order_id=order_id)
+        return None
+
+    try:
+        SESSION.ensure()
+        resp = SESSION.api.orderBook()
+        orders = (resp or {}).get("data") or []
+        for o in orders:
+            oid = o.get("orderid") or o.get("orderId")
+            if str(oid) == str(order_id):
+                return OrderStatus(
+                    order_id=order_id,
+                    status=o.get("status", "unknown"),
+                    filled_qty=int(o.get("filledshares") or o.get("filledQty") or 0),
+                    avg_price=float(o["averageprice"]) if o.get("averageprice") else None,
+                    raw=o,
+                )
+        audit.log("order_status_not_found", order_id=order_id)
+        return None
+    except Exception as exc:                        # noqa: BLE001
+        audit.log("order_status_exception", order_id=order_id, error=str(exc))
+        return None
+

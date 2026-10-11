@@ -1,0 +1,20 @@
+[Unit]
+Description=KADIMA Macro & News Watch
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/kadima-py
+Environment="ANGEL_API_KEY=REDACTED"
+Environment="ANGEL_CLIENT_ID=REDACTED"
+Environment="ANGEL_PASSWORD=REDACTED"
+Environment="ANGEL_TOTP_SECRET=REDACTED"
+Environment="KADIMA_API_TOKEN=REDACTED"
+Environment="MARKETAUX_API_KEY=REDACTED"
+ExecStart=/home/ubuntu/kadima-py/venv/bin/python3 -m kadima.macro_watch
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,345 @@
+"""
+control_api.py — KADIMA order-control bridge (manual dashboard actions).
+
+Deliberately kept SEPARATE from kadima/api.py, whose docstring states it is
+built as a read-only bridge for LLM access ("an LLM reads this, and an LLM
+should not be able to reach anything consequential"). This file is the
+opposite: it exposes routes that DO have real, immediate consequences
+(closing a live position, cancelling/modifying a live order), and it is
+meant to be called by the dashboard's Live Trade panel — not by an LLM.
+
+No new order logic or risk logic lives here. Every route is a thin wrapper
+around functions that already exist and are already tested:
+    - EXECUTOR.manual_exit()      -> auto_executor.py (reuses _close_position())
+    - angel_orders.cancel_order() -> angel_orders.py
+    - angel_orders.modify_order() -> angel_orders.py
+    - get_order_book()            -> auto_executor.py (already deployed)
+
+Runs as its own uvicorn instance on port 8081, in its own thread, started
+from run.py alongside the existing port-8080 state_api thread. Reuses the
+existing KADIMA_API_TOKEN env var for auth, per Kusumakar's explicit
+decision (2026-08-29) despite api.py's docstring warning that a prior
+token value was flagged as exposed in an audit — rotate the token before
+relying on this in production if that hasn't been done yet.
+
+Confirmed against the live EC2 source on 2026-09-02:
+    - angel_orders.cancel_order(order_id: str, variety: str = "NORMAL") -> OrderResult
+    - angel_orders.modify_order(order_id: str, *, price: float | None = None, ...)
+    - auto_executor.EXECUTOR = AutoExecutor()   (module-level singleton, line 695)
+"""
+
+from __future__ import annotations
+
+import os
+from typing import Optional
+
+from fastapi import FastAPI, Header, HTTPException
+from pydantic import BaseModel
+
+from kadima import audit
+
+app = FastAPI(title="KADIMA Control API", version="1.0")
+
+# Set via register() at startup from run.py, same pattern as kadima/api.py's
+# register(engine) for ENGINE.
+EXECUTOR = None
+ANGEL_ORDERS = None
+
+
+def register(executor, angel_orders_module) -> None:
+    """Wire in the live EXECUTOR singleton and angel_orders module.
+
+    Called once from run.py at startup, after auto_executor.EXECUTOR and
+    angel_orders are constructed — mirrors kadima/api.py's register(engine).
+    """
+    global EXECUTOR, ANGEL_ORDERS
+    EXECUTOR = executor
+    ANGEL_ORDERS = angel_orders_module
+
+
+def _check_auth(authorization: Optional[str]) -> None:
+    expected = os.environ.get("KADIMA_API_TOKEN")
+    if not expected:
+        # Fail closed: if the token isn't configured, refuse everything
+        # rather than silently allowing unauthenticated control actions.
+        raise HTTPException(status_code=503, detail="control_api_token_not_configured")
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="missing_bearer_token")
+    token = authorization.removeprefix("Bearer ").strip()
+    if token != expected:
+        raise HTTPException(status_code=401, detail="invalid_token")
+
+
+class ManualExitBody(BaseModel):
+    reason: str = "manual_exit_dashboard"
+
+
+class ModifyOrderBody(BaseModel):
+    price: Optional[float] = None
+    quantity: Optional[int] = None
+
+
+class CancelOrderBody(BaseModel):
+    variety: str = "NORMAL"
+
+
+@app.get("/health")
+def health():
+    # Unauthenticated, matches api.py's convention for /health.
+    return {"ok": True, "service": "kadima-control-api"}
+
+
+@app.post("/manual_exit/{signal_id}")
+def manual_exit(signal_id: int, body: ManualExitBody, authorization: Optional[str] = Header(None)):
+    _check_auth(authorization)
+    if EXECUTOR is None:
+        raise HTTPException(status_code=503, detail="executor_not_registered")
+    audit.log("control_api_manual_exit_requested", signal_id=signal_id, reason=body.reason)
+    result = EXECUTOR.manual_exit(signal_id, reason=body.reason)
+    if not result.get("ok"):
+        raise HTTPException(status_code=409, detail=result)
+    return result
+
+
+@app.get("/order_book")
+def order_book(authorization: Optional[str] = Header(None)):
+    _check_auth(authorization)
+    if EXECUTOR is None:
+        raise HTTPException(status_code=503, detail="executor_not_registered")
+    # get_order_book() confirmed as a module-level function in
+    # auto_executor.py (def get_order_book() -> list[OrderStatus]:).
+    from kadima.angel_orders import get_order_book
+    return get_order_book()
+
+
+@app.post("/cancel_order/{order_id}")
+def cancel_order(order_id: str, body: CancelOrderBody, authorization: Optional[str] = Header(None)):
+    _check_auth(authorization)
+    if ANGEL_ORDERS is None:
+        raise HTTPException(status_code=503, detail="angel_orders_not_registered")
+    audit.log("control_api_cancel_order_requested", order_id=order_id, variety=body.variety)
+    # cancel_order(order_id, variety="NORMAL") -> OrderResult, confirmed
+    # live in angel_orders.py.
+    result = ANGEL_ORDERS.cancel_order(order_id, variety=body.variety)
+    if not getattr(result, "ok", False):
+        raise HTTPException(status_code=409, detail=str(result))
+    return result
+
+
+@app.post("/modify_order/{order_id}")
+def modify_order(order_id: str, body: ModifyOrderBody, authorization: Optional[str] = Header(None)):
+    _check_auth(authorization)
+    if ANGEL_ORDERS is None:
+        raise HTTPException(status_code=503, detail="angel_orders_not_registered")
+    audit.log(
+        "control_api_modify_order_requested",
+        order_id=order_id,
+        price=body.price,
+        quantity=body.quantity,
+    )
+    # modifyOrder() is confirmed live in angel_orders.py from the
+    # deployed screenshots.
+    result = ANGEL_ORDERS.modify_order(order_id, price=body.price, quantity=body.quantity)
+    if not getattr(result, "ok", False):
+        raise HTTPException(status_code=409, detail=str(result))
+    return result
+
+
+# ============================================================================
+# /dashboard_data -- added to feed the live dashboard's Session Ledger,
+# Live Trade card, and Entry/SL/Target panel. Read-only (like api.py's
+# routes), but lives here rather than in api.py because it reads EXECUTOR
+# state (positions), which api.py's docstring deliberately keeps out of
+# reach ("an LLM reads this, and an LLM should not be able to reach
+# anything consequential"). Every number here is either read directly off
+# an existing live object (Position, capital_guard, exit_manager) or
+# computed with the same formulas already used elsewhere in the codebase
+# (FIXED_STOPLOSS_PCT / GIVEBACK_TRAIL_PCT for the effective stop, 1R/2R/3R
+# for targets, expected-move-from-IV + normal CDF for probability of touch
+# -- the same design already described in the dashboard mockup's own note
+# text, just not wired to real data before now).
+# ============================================================================
+
+import json
+import math
+import re
+
+from kadima import capital_guard, config, exit_manager
+from kadima import greeks as _greeks
+from kadima.auto_executor import (
+    FIXED_STOPLOSS_PCT,
+    GIVEBACK_TRAIL_PCT,
+    _poll_ltp,
+)
+from kadima.utils import now_ist
+
+_STRIKE_RE = re.compile(r"(\d+(?:\.\d+)?)(CE|PE)$")
+
+
+def _resolve_strike(pos) -> float | None:
+    """Best-effort strike lookup: prefer the live option chain (has the
+    real OptionQuote.strike for this token if it's still in the ATM+/-N
+    ladder), else parse it out of the trading symbol as a fallback."""
+    try:
+        from kadima import api as _kadima_api
+        if _kadima_api.ENGINE is not None:
+            st = _kadima_api.ENGINE.states.get(pos.index)
+            chain = getattr(st, "chain", None) if st else None
+            q = chain.quotes.get(pos.token) if chain else None
+            if q is not None and getattr(q, "strike", None):
+                return float(q.strike)
+    except Exception:  # noqa: BLE001
+        pass
+    m = _STRIKE_RE.search(pos.symbol or "")
+    return float(m.group(1)) if m else None
+
+
+def _spot_and_dte(pos):
+    """(spot, days_to_expiry) for pos.index, reusing Engine._dte() rather
+    than re-deriving expiry logic here."""
+    try:
+        from kadima import api as _kadima_api
+        if _kadima_api.ENGINE is None:
+            return None, None
+        st = _kadima_api.ENGINE.states.get(pos.index)
+        if st is None:
+            return None, None
+        return st.spot, _kadima_api.ENGINE._dte(st)
+    except Exception:  # noqa: BLE001
+        return None, None
+
+
+def _prob_of_touch_pct(spot, iv_pct, days_to_expiry, distance) -> float | None:
+    """Same formula as the dashboard mockup's probOfTouch(): expected move
+    from IV, reflected normal-CDF approximation for probability of
+    touching a barrier before expiry. Not a guarantee; assumes no
+    directional drift -- see the note already printed under the panel."""
+    if not spot or not iv_pct or distance is None:
+        return None
+    expected_move = spot * (iv_pct / 100.0) * math.sqrt(max(days_to_expiry or 0.02, 0.02) / 365.0)
+    if expected_move <= 0:
+        return None
+    z = abs(distance) / expected_move
+    p = 2 * (1 - _greeks._norm_cdf(z))
+    return max(0.0, min(1.0, p)) * 100.0
+
+
+def _position_view(pos) -> dict:
+    ltp_map = _poll_ltp(pos.exchange, [pos.token])
+    ltp = ltp_map.get(pos.token, pos.peak_price or pos.entry_price)
+
+    fixed_stop = pos.entry_price * (1 - FIXED_STOPLOSS_PCT / 100.0)
+    peak = pos.peak_price or pos.entry_price
+    if pos.trail_active:
+        trail_stop = peak - (GIVEBACK_TRAIL_PCT / 100.0) * (peak - pos.entry_price)
+        effective_stop = max(fixed_stop, trail_stop)
+    else:
+        effective_stop = fixed_stop
+
+    risk = pos.entry_price - fixed_stop
+    targets = {
+        "T1": pos.entry_price + risk * 1,
+        "T2": pos.entry_price + risk * 2,
+        "T3": pos.entry_price + risk * 3,
+    }
+
+    pnl_rupees = (ltp - pos.entry_price) * pos.remaining_qty
+    pnl_pct = ((ltp - pos.entry_price) / pos.entry_price * 100.0) if pos.entry_price else 0.0
+
+    spot, dte = _spot_and_dte(pos)
+    strike = _resolve_strike(pos)
+    iv_pct = None
+    if spot and strike and dte is not None and ltp:
+        try:
+            iv_pct, _ = _greeks.implied_vol_and_greeks(spot, strike, ltp, dte, pos.direction)
+        except Exception:  # noqa: BLE001
+            iv_pct = None
+
+    def _level(price, distance):
+        prob = None if iv_pct is None else round(_prob_of_touch_pct(spot, iv_pct, dte, distance), 1)
+        return {"price": round(price, 2), "probability_touch_pct": prob}
+
+    levels = {
+        "SL": _level(effective_stop, ltp - effective_stop),
+    }
+    for tag, price in targets.items():
+        levels[tag] = _level(price, price - ltp)
+
+    return {
+        "signal_id": pos.signal_id,
+        "index": pos.index,
+        "direction": pos.direction,
+        "symbol": pos.symbol,
+        "entry_price": pos.entry_price,
+        "ltp": round(ltp, 2),
+        "lots": pos.lots,
+        "remaining_qty": pos.remaining_qty,
+        "trail_active": pos.trail_active,
+        "effective_stop": round(effective_stop, 2),
+        "unrealized_pnl_inr": round(pnl_rupees, 0),
+        "unrealized_pnl_pct": round(pnl_pct, 1),
+        "levels": levels,
+        "probability_note": (
+            "Implied vol unavailable for this strike right now; probabilities omitted."
+            if iv_pct is None else
+            "Expected-move approximation from live IV; not a guarantee, assumes no directional drift."
+        ),
+    }
+
+
+@app.get("/dashboard_data")
+def dashboard_data(authorization: Optional[str] = Header(None)):
+    _check_auth(authorization)
+    if EXECUTOR is None:
+        raise HTTPException(status_code=503, detail="executor_not_registered")
+
+    open_positions = [p for p in EXECUTOR.state.positions.values() if p.status == "open"]
+    position_views = [_position_view(p) for p in open_positions]
+
+    deployed = capital_guard.deployed_capital(EXECUTOR.state.positions)
+    ceiling = capital_guard._buffered_ceiling()
+    equity = capital_guard.available_equity()
+    realized_today = exit_manager.realized_pnl_today()
+    daily_loss_used = max(0.0, -realized_today)
+
+    return {
+        "ts": now_ist().isoformat(),
+        "positions": position_views,
+        "session": {
+            "realized_gain_today_inr": round(realized_today, 0),
+            "capital_deployed_inr": None if deployed == float("inf") else round(deployed, 0),
+            "capital_equity_inr": round(equity, 0),
+            "capital_ceiling_inr": round(ceiling, 0),
+            "daily_loss_used_inr": round(daily_loss_used, 0),
+            "daily_loss_limit_inr": config.DAILY_LOSS_LIMIT_INR,
+            "position_slots_used": len(open_positions),
+            "position_slots_max": config.MAX_CONCURRENT_POSITIONS,
+        },
+    }
+
+
+# ---------------------------------------------------------------------
+# /universe_snapshot -- serves stock_universe_scanner.py's real, currently
+# -tracked-stock scores to the dashboard. That scanner runs as a SEPARATE
+# process/systemd service (kadima-universe-scanner), deliberately isolated
+# from this engine process for memory-safety reasons -- so this route does
+# NOT talk to it directly. It reads the small JSON snapshot file the
+# scanner writes atomically after each scoring cycle (~30s cadence),
+# same hand-off pattern as last_known.py. Only ever contains up to
+# MAX_SHORTLIST (20) currently-tracked stocks -- the scanner only ever
+# scores a bounded rotating subset of the full F&O universe, by design.
+UNIVERSE_SNAPSHOT_PATH = os.path.expanduser("~/kadima-py/state/universe_snapshot.json")
+
+
+@app.get("/universe_snapshot")
+def universe_snapshot(authorization: Optional[str] = Header(None)):
+    _check_auth(authorization)
+    try:
+        with open(UNIVERSE_SNAPSHOT_PATH, "r") as f:
+            return json.load(f)
+    except FileNotFoundError:
+        # Scanner hasn't written a snapshot yet (fresh deploy, or it's
+        # not running) -- not an error, just nothing tracked yet.
+        return {"ts": None, "tracked": []}
+    except (OSError, json.JSONDecodeError) as exc:
+        raise HTTPException(status_code=503, detail=f"universe_snapshot_unavailable: {exc}")

@@ -1,0 +1,258 @@
+"""
+KADIMA orchestrator.
+
+Wires: feed -> candles -> indicators -> option chain -> four-index
+confirmation -> strike ranking -> alerts.
+
+The scoring weights below mirror Bull Shield v2.1. They are declared as data,
+not code, so that when the forecast-vs-actual tracker tells you a weight is
+miscalibrated you change one number here and nothing else.
+"""
+from __future__ import annotations
+
+import json
+import threading
+import time
+from dataclasses import dataclass, field
+from datetime import datetime
+
+from . import alerts, audit, indicators, killswitch, storage, strike_selector
+from .candles import Candle, CandleBuilder
+from .config import (EMA_FAST, EMA_SLOW, IST, INDICES, MA_LONG,
+                     NO_NEW_SIGNALS_AFTER_HOUR, OI_POLL_SEC, RSI_PERIOD)
+from .feed import TickFeed
+from .option_chain import OptionChain
+from .scrip_master import ScripMaster
+from .utils import in_market_hours, now_ist, past_signal_cutoff
+
+# ---------------------------------------------------------------- Bull Shield
+WEIGHTS = {
+    "vwap": 25.0,
+    "ema_cross": 20.0,
+    "rsi_50": 20.0,
+    "volume_spike": 15.0,
+    "oi_shift": 15.0,
+    "failed_break": 5.0,
+}
+TIER_WATCH = 40.0
+TIER_ACTIVE = 70.0
+TIER_CONFIRMED = 90.0
+
+EXCHANGE_TYPE = {"NSE": 1, "NFO": 2, "BSE": 3, "BFO": 4}
+
+
+@dataclass
+class IndexState:
+    name: str
+    spot: float | None = None
+    builder: CandleBuilder | None = None
+    chain: OptionChain | None = None
+    snap: indicators.Snapshot = field(default_factory=indicators.Snapshot)
+    score: float = 0.0
+    direction: str | None = None
+    tier: str = "NONE"
+    tier_since: datetime | None = None
+    components: dict = field(default_factory=dict)
+
+
+class Engine:
+    def __init__(self) -> None:
+        self.scrips = ScripMaster.load()
+        self.states: dict[str, IndexState] = {}
+        self.token_to_index: dict[str, str] = {}
+        self.feed = TickFeed(self._on_tick)
+        self._stop = threading.Event()
+
+        for name, idx in INDICES.items():
+            st = IndexState(name=name)
+            st.builder = CandleBuilder(idx.token, on_close=self._on_candle_close)
+            st.chain = OptionChain(name, self.scrips)
+            self.states[name] = st
+            self.token_to_index[idx.token] = name
+
+    # -------------------------------------------------------------- lifecycle
+    def start(self) -> None:
+        audit.log("engine_starting", indices=list(self.states))
+        for name, idx in INDICES.items():
+            self.feed.subscribe(EXCHANGE_TYPE[idx.exchange], [idx.token])
+        self.feed.start()
+        threading.Thread(target=self._oi_loop, daemon=True, name="oi-poll").start()
+        threading.Thread(target=self._shutdown_loop, daemon=True,
+                         name="scheduler").start()
+        alerts.send("🟢 KADIMA engine started (advisory mode — no orders).")
+
+    def stop(self) -> None:
+        self._stop.set()
+        self.feed.stop()
+        audit.log("engine_stopped")
+        alerts.send("🔴 KADIMA engine stopped.")
+
+    # ------------------------------------------------------------------ ticks
+    def _on_tick(self, tick: dict) -> None:
+        name = self.token_to_index.get(tick["token"])
+        if not name:
+            return
+        st = self.states[name]
+        st.spot = tick["ltp"]
+        st.builder.add_tick(tick["ts"], tick["ltp"], tick["volume"])
+
+    def _on_candle_close(self, candle: Candle) -> None:
+        name = self.token_to_index.get(candle.token)
+        if not name or candle.interval != 5:
+            return                                  # score on 5-min closes
+        st = self.states[name]
+        rows = storage.recent_candles(candle.token, 5, limit=120)
+        st.snap = indicators.compute(
+            rows, session_vwap=st.builder.session_vwap(),
+            ema_fast_p=EMA_FAST, ema_slow_p=EMA_SLOW,
+            ma_long_p=MA_LONG, rsi_p=RSI_PERIOD)
+        self._score(st)
+        self._evaluate()
+
+    # ------------------------------------------------------------------ OI
+    def _oi_loop(self) -> None:
+        while not self._stop.is_set():
+            if in_market_hours() and not killswitch.engaged():
+                for st in self.states.values():
+                    if st.spot:
+                        try:
+                            st.chain.rebuild_ladder(st.spot)
+                            st.chain.poll()
+                        except Exception as exc:        # noqa: BLE001
+                            audit.log("oi_loop_error", index=st.name,
+                                      error=str(exc))
+                    time.sleep(1)                       # spread REST load
+            time.sleep(OI_POLL_SEC)
+
+    # --------------------------------------------------------------- scoring
+    def _score(self, st: IndexState) -> None:
+        s = st.snap
+        bull = bear = 0.0
+        comp = {}
+
+        if s.above_vwap is not None:
+            if s.above_vwap:
+                bull += WEIGHTS["vwap"]
+            else:
+                bear += WEIGHTS["vwap"]
+            comp["vwap"] = "above" if s.above_vwap else "below"
+
+        if s.ema_bull is not None:
+            if s.ema_bull:
+                bull += WEIGHTS["ema_cross"]
+            else:
+                bear += WEIGHTS["ema_cross"]
+            comp["ema"] = "20>50" if s.ema_bull else "20<50"
+
+        if s.rsi is not None:
+            if s.rsi > 50:
+                bull += WEIGHTS["rsi_50"]
+            else:
+                bear += WEIGHTS["rsi_50"]
+            comp["rsi"] = round(s.rsi, 1)
+
+        if s.avg_vol and s.vol > s.avg_vol * 1.5:
+            if s.above_vwap:
+                bull += WEIGHTS["volume_spike"]
+            else:
+                bear += WEIGHTS["volume_spike"]
+            comp["volume_spike"] = True
+
+        # OI direction shift from velocity tracker
+        vel = st.chain.velocity.alerts() if st.chain else []
+        if vel:
+            comp["oi_velocity"] = vel
+            ce_tokens = {q.token for q in st.chain.quotes.values()
+                         if q.opt_type == "CE"}
+            ce_hits = sum(1 for v in vel if v["token"] in ce_tokens)
+            pe_hits = len(vel) - ce_hits
+            # CE walls dissolving = resistance lifting = bullish
+            if ce_hits > pe_hits:
+                bull += WEIGHTS["oi_shift"]
+            elif pe_hits > ce_hits:
+                bear += WEIGHTS["oi_shift"]
+
+        st.direction = "CE" if bull >= bear else "PE"
+        st.score = max(bull, bear)
+        st.components = comp
+
+        prev_tier = st.tier
+        if st.score >= TIER_CONFIRMED:
+            tier = "CONFIRMED"
+        elif st.score >= TIER_ACTIVE:
+            tier = "ACTIVE"
+        elif st.score >= TIER_WATCH:
+            tier = "WATCH"
+        else:
+            tier = "NONE"
+
+        if tier != prev_tier:
+            st.tier, st.tier_since = tier, now_ist()
+            audit.log("tier_change", index=st.name, tier=tier,
+                      score=round(st.score, 1), direction=st.direction,
+                      components=comp)
+
+    # ---------------------------------------------------- four-index confirm
+    def _evaluate(self) -> None:
+        if killswitch.engaged():
+            return
+        if not in_market_hours() or past_signal_cutoff():
+            return
+        if now_ist().hour >= NO_NEW_SIGNALS_AFTER_HOUR:
+            return                                  # your own hard rule
+
+        votes_ce = sum(INDICES[n].weight for n, s in self.states.items()
+                       if s.direction == "CE" and s.tier in ("ACTIVE", "CONFIRMED"))
+        votes_pe = sum(INDICES[n].weight for n, s in self.states.items()
+                       if s.direction == "PE" and s.tier in ("ACTIVE", "CONFIRMED"))
+        total = sum(i.weight for i in INDICES.values())
+
+        lead = max(self.states.values(), key=lambda s: s.score)
+        if lead.tier != "CONFIRMED":
+            return
+
+        agreement = (votes_ce if lead.direction == "CE" else votes_pe) / total
+        if agreement < 0.5:
+            audit.log("confirmation_failed", lead=lead.name,
+                      direction=lead.direction, agreement=round(agreement, 2))
+            return
+
+        # hold one extra candle before firing, per v2.1
+        if lead.tier_since and (now_ist() - lead.tier_since).total_seconds() < 300:
+            return
+
+        pick = strike_selector.best(lead.chain, lead.direction, lead.spot,
+                                    days_to_expiry=self._dte(lead))
+        if not pick:
+            audit.log("no_tradeable_strike", index=lead.name)
+            return
+
+        payload = {"index": lead.name, "tier": lead.tier,
+                   "score": round(lead.score, 1), "direction": lead.direction,
+                   "agreement": round(agreement, 2), "spot": lead.spot,
+                   "components": lead.components, "strike": pick.as_dict(),
+                   "pcr": lead.chain.pcr(), "max_pain": lead.chain.max_pain()}
+        sid = storage.insert_signal(lead.name, lead.tier, lead.score,
+                                    lead.direction, json.dumps(payload, default=str))
+        audit.log("signal_emitted", signal_id=sid, **payload)
+        alerts.send_signal(sid, payload)
+
+    def _dte(self, st: IndexState) -> float:
+        expiry = self.scrips.nearest_expiry(INDICES[st.name])
+        if not expiry:
+            return 1.0
+        try:
+            d = datetime.strptime(expiry, "%d%b%Y").date()
+            return max(0.5, (d - now_ist().date()).days + 0.5)
+        except ValueError:
+            return 1.0
+
+    # ------------------------------------------------------------- scheduler
+    def _shutdown_loop(self) -> None:
+        while not self._stop.is_set():
+            time.sleep(20)
+            n = now_ist()
+            if n.hour == 15 and n.minute >= 30:
+                audit.log("market_close_shutdown")
+                self.stop()
+                return

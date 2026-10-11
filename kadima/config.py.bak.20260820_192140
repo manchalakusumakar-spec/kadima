@@ -1,0 +1,98 @@
+"""
+KADIMA data engine configuration.
+
+Every tunable lives here. Nothing downstream hard-codes a threshold.
+"""
+from __future__ import annotations
+
+import os
+from dataclasses import dataclass, field
+from zoneinfo import ZoneInfo
+
+IST = ZoneInfo("Asia/Kolkata")
+
+# ---------------------------------------------------------------- credentials
+# Never commit these. Export them in the systemd/PM2 environment.
+ANGEL_API_KEY = os.environ.get("ANGEL_API_KEY", "")
+ANGEL_CLIENT_ID = os.environ.get("ANGEL_CLIENT_ID", "")
+ANGEL_PASSWORD = os.environ.get("ANGEL_PASSWORD", "")   # MPIN
+ANGEL_TOTP_SECRET = os.environ.get("ANGEL_TOTP_SECRET", "")
+
+TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+
+# ---------------------------------------------------------------- market hours
+MARKET_OPEN = (9, 15)
+MARKET_CLOSE = (15, 30)
+PREMARKET_START = (9, 0)      # engine boots, no signals emitted
+SIGNAL_CUTOFF = (15, 10)      # stop emitting new entry signals
+
+# ---------------------------------------------------------------- instruments
+# exchange tokens per Angel One scrip master. VERIFY THESE against the current
+# OpenAPIScripMaster.json before first live run - they change.
+@dataclass(frozen=True)
+class Index:
+    name: str
+    exchange: str          # NSE / BSE  (spot)
+    token: str             # spot token
+    opt_exchange: str      # NFO / BFO  (options)
+    opt_symbol_root: str   # prefix in scrip master, e.g. "NIFTY"
+    strike_step: int
+    lot_size: int
+    weight: float          # contribution to four-index confirmation vote
+
+
+INDICES: dict[str, Index] = {
+    "NIFTY": Index("NIFTY", "NSE", "99926000", "NFO", "NIFTY", 50, 75, 1.0),
+    "BANKNIFTY": Index("BANKNIFTY", "NSE", "99926009", "NFO", "BANKNIFTY", 100, 30, 1.0),
+    "SENSEX": Index("SENSEX", "BSE", "99919000", "BFO", "SENSEX", 100, 20, 0.7),
+    "MIDCPNIFTY": Index("MIDCPNIFTY", "NSE", "99926074", "NFO", "MIDCPNIFTY", 25, 120, 0.6),
+}
+# SENSEX/MIDCAP carry lower vote weight: Greeks coverage is thinner and depth is
+# lower, so treating their confirmation as equal to NIFTY's would be false
+# precision. Raise once you've validated their data quality yourself.
+
+# ---------------------------------------------------------------- cadences
+WS_HEARTBEAT_SEC = 10          # expect at least one tick per this, else reconnect
+WS_RECONNECT_BASE_SEC = 2      # exponential backoff base
+WS_RECONNECT_MAX_SEC = 60
+WS_MAX_RETRIES = 0             # 0 = unlimited
+
+OI_POLL_SEC = 30               # REST getMarketData cadence for option chain
+OI_VELOCITY_WINDOW_MIN = 10    # rolling window for wall-loss detection
+OI_VELOCITY_DROP_PCT = 15.0    # NIFTY default; BANKNIFTY tightened below
+OI_VELOCITY_DROP_PCT_BY_INDEX = {
+    "NIFTY": 15.0,
+    "BANKNIFTY": 12.0,
+    "SENSEX": 15.0,
+    "MIDCPNIFTY": 18.0,
+}
+
+CANDLE_INTERVALS_MIN = (1, 3, 5)
+
+# ---------------------------------------------------------------- option chain
+STRIKES_EACH_SIDE = 5          # ATM +/- N strikes tracked per index
+MIN_DELTA = 0.45
+MAX_DELTA = 0.60
+MAX_SPREAD_PCT = 1.5           # (ask-bid)/mid, reject wider
+MIN_OI = 100_000               # contract-level minimum open interest
+MIN_VOLUME = 5_000
+
+# ---------------------------------------------------------------- indicators
+EMA_FAST = 20
+EMA_SLOW = 50
+MA_LONG = 55
+RSI_PERIOD = 14
+
+# ---------------------------------------------------------------- storage
+DATA_DIR = os.environ.get("KADIMA_DATA_DIR", "/var/lib/kadima")
+DB_PATH = os.path.join(DATA_DIR, "kadima.db")
+AUDIT_PATH = os.path.join(DATA_DIR, "audit")
+KILL_SWITCH_FILE = os.path.join(DATA_DIR, "KILL")
+
+# ---------------------------------------------------------------- risk
+MAX_CONCURRENT_POSITIONS = 1
+MAX_LOTS_PER_SIGNAL = 2
+DAILY_LOSS_LIMIT_INR = 10_000      # set to your real number
+NO_NEW_SIGNALS_AFTER_HOUR = 13     # non-expiry days, per your own rule
+ORDER_PLACEMENT_ENABLED = False    # stays False. Engine is advisory only.

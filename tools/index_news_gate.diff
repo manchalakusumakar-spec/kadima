@@ -1,0 +1,225 @@
+--- /home/ubuntu/backup-codex-20261009-index-news/kadima/fast_momentum.py	2026-10-09 17:28:20.726702461 +0000
++++ kadima/fast_momentum.py	2026-10-09 17:28:59.394731489 +0000
+@@ -15,7 +15,8 @@
+ from . import celestial, storage, trade_policy
+ from .greeks import bs_price
+ from .utils import now_ist
+-from .config import IST
++from .config import IST, GAMMA_INDICES
++from .index_event_gate import index_event_block
+ 
+ 
+ def live_requested():
+@@ -32,7 +33,10 @@
+     if not celestial.finite(score,cfg['score_threshold'],100): reasons.append('below_threshold')
+     h = celestial.health('news') or {}
+     impact = celestial.news_impact(name, direction, now)
+-    if not h.get('ok') or not celestial.fresh(h.get('ts'), now, seconds=300) or not impact['news_available']:
++    if name in GAMMA_INDICES:
++        block = index_event_block(name, now)
++        if block and block != 'news_risk_block': reasons.append(block)
++    elif not h.get('ok') or not celestial.fresh(h.get('ts'), now, seconds=300) or not impact['news_available']:
+         reasons.append('fresh_news_coverage_required')
+     if impact['news_blocked']: reasons.append('news_risk_block')
+     return reasons
+--- /home/ubuntu/backup-codex-20261009-index-news/kadima/gap_and_go.py	2026-10-09 17:28:20.726749620 +0000
++++ kadima/gap_and_go.py	2026-10-09 17:28:59.395094997 +0000
+@@ -96,8 +96,13 @@
+         reasons.append("auto_paused")
+     if cfg.get("kill_latched"):
+         reasons.append("kill_latched")
++    from .config import GAMMA_INDICES
++    from .index_event_gate import index_event_block
+     news = celestial.news_impact(symbol, "CE", now)
+-    if not news.get("news_available"):
++    if symbol in GAMMA_INDICES:
++        block = index_event_block(symbol, now)
++        if block and block != 'news_risk_block': reasons.append(block)
++    elif not news.get("news_available"):
+         reasons.append("fresh_news_coverage_required")
+     if news.get("news_blocked"):
+         reasons.append("news_risk_block")
+--- /home/ubuntu/backup-codex-20261009-index-news/kadima/celestial.py	2026-10-09 17:28:20.726783468 +0000
++++ kadima/celestial.py	2026-10-09 17:28:59.395227650 +0000
+@@ -200,7 +200,12 @@
+         if row.get('spread_status') != 'CLEAN': reasons.append('spread_not_clean')
+         if row.get('tradeable') is not True: reasons.append('contract_not_tradeable')
+         if row.get('direction_clear') is not True: reasons.append('direction_unconfirmed')
+-        if not row['news_available']: reasons.append('news_coverage_unavailable')
++        from .config import GAMMA_INDICES
++        from .index_event_gate import index_event_block
++        if row['underlying'] in GAMMA_INDICES:
++            block = index_event_block(row['underlying'], now)
++            if block and block != 'news_risk_block': reasons.append(block)
++        elif not row['news_available']: reasons.append('news_coverage_unavailable')
+         if row['news_blocked']: reasons.append('news_risk_block')
+         if not fresh(row.get('spot_at'), now): reasons.append('underlying_stale')
+         row['eligible'] = not reasons
+--- /home/ubuntu/backup-codex-20261009-index-news/kadima/news_collector.py	2026-10-09 17:28:20.726815920 +0000
++++ kadima/news_collector.py	2026-10-09 17:28:59.395378215 +0000
+@@ -190,16 +190,20 @@
+         except Exception as exc:
+             covered = set()
+             errors['company_mapping'] = type(exc).__name__
+-        if errors:
++        if not sources:
+             celestial.health('news', dict(ok=False, source='NSE_RSS', covered_symbols=[],
+                 sources=sources, errors=errors, reason='news_sources_incomplete_or_stale'))
+             audit.log('news_collector_degraded', categories=sorted(errors))
+             return False
+-        # Ingestion is atomic; no empty-success batch is submitted on failures.
+-        news_catalysts.ingest(list(events.values()), source='NSE_RSS',
++        # Ingest successful categories; unresolved symbols remain uncovered.
++        if covered:
++            news_catalysts.ingest(list(events.values()), source='NSE_RSS',
+                              observed_at=now.isoformat(), covered_symbols=sorted(covered))
+         celestial.health('news', dict(ok=True, source='NSE_RSS', covered_symbols=sorted(covered),
+-            sources=sources, scope='NSE_stock_corporate_RSS_only', event_count=len(events)))
++            sources=sources, scope='NSE_stock_corporate_RSS_only', event_count=len(events),
++            errors=errors, degraded=bool(errors)))
++        if errors:
++            audit.log('news_collector_degraded', categories=sorted(errors))
+         return True
+ 
+     def run(self):
+--- /dev/null	2026-09-16 07:31:26.634000304 +0000
++++ kadima/index_event_gate.py	2026-10-09 17:28:49.610416101 +0000
+@@ -0,0 +1,48 @@
++"""Index calendar/news entry gate; no broker or configuration mutations."""
++from datetime import date, time, timedelta
++from threading import Lock
++
++from . import audit
++from .config import GAMMA_INDICES, IST
++
++_minutes = {}
++_lock = Lock()
++
++
++def index_event_block(name, now) -> str | None:
++    if name not in GAMMA_INDICES:
++        return None
++    from . import celestial, macro_watch, market_session_gate
++    local = now.astimezone(IST)
++    reason = None
++    if celestial.news_impact(name, 'CE', now)['news_blocked']:
++        reason = 'news_risk_block'
++    else:
++        for event in macro_watch.ECONOMIC_EVENTS:
++            day = date.fromisoformat(event['end_date'])
++            if 'RBI MPC' in event['name']:
++                start, end = time(9, 45), time(10, 30)
++            elif 'FOMC' in event['name']:
++                day += timedelta(days=1)
++                # Reuse the engine's public holiday policy when available.
++                try:
++                    policy = market_session_gate.validate_policy(
++                        market_session_gate.read_json(market_session_gate.POLICY))
++                    holidays = set(policy['holidays'])
++                except (OSError, ValueError):
++                    holidays = set()
++                while day.weekday() >= 5 or day.isoformat() in holidays:
++                    day += timedelta(days=1)
++                start, end = time(9, 15), time(9, 45)
++            else:
++                continue
++            if local.date() == day and start <= local.time().replace(tzinfo=None) < end:
++                reason = 'macro_event_window:' + event['name']
++                break
++    minute = local.strftime('%Y-%m-%dT%H:%M')
++    with _lock:
++        if _minutes.get(name) != minute:
++            audit.log('index_news_gate', index=name,
++                      decision='block' if reason else 'allow', reason=reason)
++            _minutes[name] = minute
++    return reason
+--- /dev/null	2026-09-16 07:31:26.634000304 +0000
++++ tools/test_index_news_gate.py	2026-10-09 17:32:07.848197248 +0000
+@@ -0,0 +1,87 @@
++#!/usr/bin/env python3
++"""Offline index gate regression checks; isolated database, mocked feeds."""
++import os
++import sys
++import tempfile
++from datetime import datetime, timedelta
++from unittest.mock import patch
++
++os.environ['KADIMA_DATA_DIR'] = tempfile.mkdtemp(prefix='kadima-index-gate-')
++sys.path.insert(0, '.')
++from kadima import celestial, fast_momentum, gap_and_go, index_event_gate, macro_watch
++from kadima.news_collector import NewsCollector, COMPANIES, FEEDS
++from kadima.config import IST
++
++now = datetime(2026, 10, 9, 9, 30, tzinfo=IST)
++cfg = celestial.DEFAULTS | {'auto_trade_enabled': True}
++
++
++def blocks(name, at=now):
++    celestial.health('news', {'ok': True, 'covered_symbols': ['INFY']}, timestamp=at.isoformat())
++    return fast_momentum.live_blocks(name, 'CE', at, 89.15)
++
++
++with patch.object(celestial, 'read_config', return_value=cfg), patch.dict(os.environ, {
++        'KADIMA_FAST_MOMENTUM_LIVE': '1', 'KADIMA_CELESTIAL_ENABLED': '1', 'KADIMA_GAP_LIVE': '1'}):
++    for name in ('BANKNIFTY', 'NIFTY', 'SENSEX'):
++        assert blocks(name) == [], name
++        assert gap_and_go.live_blocks(name, now) == []
++    assert 'fresh_news_coverage_required' in blocks('TCS')
++    candidate = dict(id='offline', underlying='BANKNIFTY', direction='CE',
++                     last_updated=now.isoformat(), spot_at=now.isoformat(),
++                     premium_move_pct=8, gamma_score=89.15, volume_spike=True,
++                     oi_support=True, spread_status='CLEAN', tradeable=True,
++                     direction_clear=True, priority=1)
++    ranked = celestial.ranked_candidates(now, candidates=[candidate])
++    assert ranked[0]['eligible']
++    with patch.object(celestial, 'ranked_candidates', return_value=ranked):
++        assert celestial.top20(now)[0]['eligible']
++    stock = candidate | {'underlying': 'TCS'}
++    assert 'news_coverage_unavailable' in celestial.ranked_candidates(now, candidates=[stock])[0]['blocked_reasons']
++    index_event_gate._minutes.clear()
++    with patch.object(index_event_gate.audit, 'log') as log:
++        index_event_gate.index_event_block('BANKNIFTY', now)
++        index_event_gate.index_event_block('BANKNIFTY', now)
++        assert log.call_count == 1
++        index_event_gate.index_event_block('BANKNIFTY', now + timedelta(minutes=1))
++        assert log.call_count == 2
++    for event, day, early, late in (
++            ('RBI MPC Meeting', '2026-10-09', (10, 0), (11, 0)),
++            ('US Fed FOMC Meeting', '2026-10-28', (9, 20), (10, 0))):
++        at = now if 'RBI' in event else datetime(2026, 10, 29, tzinfo=IST)
++        with patch.object(macro_watch, 'ECONOMIC_EVENTS', [{'name': event, 'end_date': day}]):
++            assert 'macro_event_window:' + event in blocks('BANKNIFTY', at.replace(hour=early[0], minute=early[1]))
++            assert blocks('BANKNIFTY', at.replace(hour=late[0], minute=late[1])) == []
++    event = {'id': 'market', 'symbols': ['*'], 'score': 0, 'block': True,
++             'url': 'https://www.nseindia.com/', 'published_at': now.isoformat(),
++             'expires_at': (now + timedelta(hours=1)).isoformat()}
++    import json
++    c = celestial.connection()
++    with c:
++        c.execute('INSERT INTO celestial_news VALUES (?,?,?,?)',
++                  ('market', event['published_at'], event['expires_at'], json.dumps(event)))
++    assert blocks('BANKNIFTY') == ['news_risk_block']
++    with c:
++        c.execute('DELETE FROM celestial_news')
++
++mapping = b'SYMBOL,NAME OF COMPANY\nTCS,Tata Consultancy Services\n'
++rss = b'<rss><channel><title>NSE</title><lastBuildDate>09-Oct-2026 09:00:00</lastBuildDate></channel></rss>'
++
++
++def fetch(url):
++    if url == COMPANIES:
++        return mapping
++    if url == FEEDS['announcements']:
++        raise OSError('offline feed failure')
++    return rss
++
++
++with patch('kadima.news_collector.now_ist', return_value=now), patch('kadima.news_catalysts.now_ist', return_value=now), patch.object(celestial, 'fresh', return_value=True):
++    assert NewsCollector(['TCS', 'UNMAPPED'], fetch=fetch).collect()
++    health = celestial.health('news')
++    assert health['ok'] and health['degraded'] and health['covered_symbols'] == ['TCS']
++    assert 'announcements' in health['errors']
++    assert not NewsCollector(['TCS'], fetch=lambda url: mapping if url == COMPANIES else b'invalid').collect()
++    assert celestial.health('news')['ok'] is False
++    assert not NewsCollector(['TCS'], fetch=lambda url: b'invalid').collect()
++print('ALL PASS: index coverage, macro windows, market news, stock coverage, partial/all-failed feeds')

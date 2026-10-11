@@ -1,0 +1,877 @@
+--- /home/ubuntu/backup-codex-optionchain-20261009T202514Z/kadima/rate_limiter.py	2026-09-18 09:43:09.369777218 +0000
++++ kadima/rate_limiter.py	2026-10-09 21:05:03.572612206 +0000
+@@ -84,6 +84,38 @@
+         self.path = path
+         self.interval = interval
+ 
++    def try_low_priority(self):
++        """Claim idle capacity only: no FIFO ticket, sleep, or DB-lock wait.
++
++        Leave two normal quote intervals idle before background collection.
++        A queued foreground caller always wins. A successful grant still
++        consumes the shared budget; never bypass broker spacing.
++        """
++        path = self.path
++        if path is None:
++            from .config import DATA_DIR
++            path = os.path.join(DATA_DIR, 'quote_budget.sqlite3')
++        if not os.path.isfile(path):
++            return False  # normal engine quote must initialize the budget
++        c = None
++        try:
++            c = sqlite3.connect(path, timeout=0)
++            c.execute('BEGIN IMMEDIATE')
++            now = time.time()
++            if c.execute('SELECT 1 FROM quote_waiters WHERE expires>? LIMIT 1', (now,)).fetchone():
++                return False
++            row = c.execute('SELECT next FROM budget WHERE id=1').fetchone()
++            if row is None or now < row[0] + self.interval:
++                return False
++            c.execute('INSERT OR REPLACE INTO budget VALUES (1,?)', (now + self.interval,))
++            c.commit()
++            return True
++        except sqlite3.Error:
++            return False
++        finally:
++            if c is not None:
++                c.close()
++
+     def wait_and_allow(self, timeout_sec=SHARED_QUOTE_WAIT_SEC):
+         if not math.isfinite(timeout_sec) or timeout_sec < 0:
+             raise ValueError('quote timeout must be finite and nonnegative')
+@@ -158,9 +190,27 @@
+     method = api.getMarketData
+     if getattr(method, '_kadima_budgeted', False):
+         return
++    activity_lock = threading.Lock()
++    foreground = 0
+     def quote(*args, **kwargs):
+-        if not SHARED_QUOTE.wait_and_allow(timeout_sec=SHARED_QUOTE_WAIT_SEC):
+-            raise TimeoutError('KADIMA shared quote budget unavailable after bounded FIFO wait')
+-        return method(*args, **kwargs)
++        nonlocal foreground
++        with activity_lock:
++            foreground += 1
++        try:
++            if not SHARED_QUOTE.wait_and_allow(timeout_sec=SHARED_QUOTE_WAIT_SEC):
++                raise TimeoutError('KADIMA shared quote budget unavailable after bounded FIFO wait')
++            return method(*args, **kwargs)
++        finally:
++            with activity_lock:
++                foreground -= 1
+     quote._kadima_budgeted = True
++    def low_priority(*args, **kwargs):
++        with activity_lock:
++            busy = foreground > 0
++        if busy:
++            raise TimeoutError('forecast_foreground_quote_active')
++        if not SHARED_QUOTE.try_low_priority():
++            raise TimeoutError('forecast_quote_budget_busy')
++        return method(*args, **kwargs)
++    quote._kadima_low_priority = low_priority
+     api.getMarketData = quote
+--- /home/ubuntu/backup-codex-optionchain-20261009T202514Z/kadima/hourly_forecast.py	2026-10-09 13:04:06.305342896 +0000
++++ kadima/hourly_forecast.py	2026-10-09 20:29:30.151392310 +0000
+@@ -6,8 +6,8 @@
+ and every slot is kept in forecast.db for review and recalibration.
+ 
+ Runs as a daemon thread inside the engine process rather than a separate
+-service: the inputs (live spot, option chain, Bull Shield) already live in
+-engine memory, it makes no broker calls and no network calls of its own,
++service: inputs live in engine memory; a sibling forecast-only collector uses
++idle capacity in the engine's existing shared quote budget,
+ and a second Python process costs far more RAM on this instance than a
+ thread does.
+ 
+@@ -29,6 +29,7 @@
+ from . import hourly_forecast_model as M
+ from .config import DATA_DIR, IST, INDICES
+ from .utils import now_ist
++from . import forecast_chain_data as FCD
+ 
+ FORECAST_INDICES = tuple(x for x in os.environ.get('KADIMA_FORECAST_INDICES', 'NIFTY').split(',') if x)
+ DB_PATH = os.path.join(DATA_DIR, 'forecast.db')
+@@ -87,6 +88,7 @@
+ );
+ """
+ EVAL_SLOTS = 20             # most recent resolved slots held out to judge new weights
++SCHEMA += FCD.SCHEMA
+ 
+ _local = threading.local()
+ 
+@@ -138,10 +140,13 @@
+ 
+ # ---------------------------------------------------------------- option chain
+ def chain_at(index_name, ts):
+-    """PCR and the largest CE/PE OI strikes from the last stored option-chain sample at or before ts."""
++    """Prefer a wide sample strictly before ts; retain the narrow-chain fallback."""
+     try:
++        wide = FCD.aggregate(FCD.wide_at(conn(), index_name, ts))
++        if wide:
++            return {k: wide[k] for k in ('pcr','ce_wall','pe_wall')}
+         c = storage.conn()
+-        r = c.execute('SELECT ts FROM oi_snapshots WHERE index_name=? AND ts<=? ORDER BY ts DESC LIMIT 1',
++        r = c.execute('SELECT ts FROM oi_snapshots WHERE index_name=? AND ts<? ORDER BY ts DESC LIMIT 1',
+                       (index_name, ts.isoformat())).fetchone()
+         if not r or (ts - _dt(r['ts'])).total_seconds() > 300:
+             return None
+@@ -162,11 +167,15 @@
+     """PCR change over the last 30 min and OI wall moves over the last 60 min, known at t0."""
+     now, p30, p60 = (chain_at(index_name, t0), chain_at(index_name, t0 - timedelta(minutes=30)),
+                      chain_at(index_name, t0 - timedelta(minutes=60)))
+-    if not now:
++    extras = FCD.extra_features(conn(), index_name, t0, step)
++    if not now and not extras:
+         return None
+-    return dict(pcr_now=now['pcr'], pcr_prev=(p30 or {}).get('pcr'),
+-                ce_wall_now=now['ce_wall'], ce_wall_prev=(p60 or {}).get('ce_wall'),
+-                pe_wall_now=now['pe_wall'], pe_wall_prev=(p60 or {}).get('pe_wall'), step=step)
++    now = now or {}
++    wide = FCD.wide_at(conn(), index_name, t0)
++    return dict(pcr_now=now.get('pcr'), pcr_prev=(p30 or {}).get('pcr'),
++                ce_wall_now=now.get('ce_wall'), ce_wall_prev=(p60 or {}).get('ce_wall'),
++                pe_wall_now=now.get('pe_wall'), pe_wall_prev=(p60 or {}).get('pe_wall'), step=step,
++                **extras, **({'spot':wide[0]['spot']} if wide else {}))
+ 
+ 
+ def candle_close(token, start, interval, closed_only=True):
+@@ -311,14 +320,17 @@
+         self.db = db
+         self._stop = threading.Event()
+         self._tod_cache = {}
++        self._chain_collector = FCD.Collector(engine, FORECAST_INDICES, db)
+ 
+     def start(self):
++        self._chain_collector.start()
+         threading.Thread(target=self.run, daemon=True, name='hourly-forecast').start()
+         audit.log('hourly_forecast_started', indices=list(FORECAST_INDICES))
+ 
+     def stop(self):
+         """Engine shutdown (15:40): score the 15:15 slot with what has been recorded."""
+         self._stop.set()
++        self._chain_collector.stop()
+         try:
+             now = now_ist()
+             for name in FORECAST_INDICES:
+@@ -648,6 +660,7 @@
+                 dir_hit=None if r['dir_hit'] is None else bool(r['dir_hit']), mae_pts=r['mae_pts'],
+                 coverage=r['coverage'], end_error_pts=r['end_error_pts'], actual_pct=r['actual_pct']),
+             live=live_price if (r['status'] == 'live' and t0 <= now < t1 + timedelta(seconds=60)) else None)
++        base['inputs'] = {'oi_features': json.loads(r['inputs'] or '{}').get('oi_features', {})}
+         a = c.execute('SELECT * FROM hourly_forecast_audit WHERE day=? AND index_name=? AND slot=?',
+                       (day.isoformat(), name, label)).fetchone()
+         if a:
+--- /home/ubuntu/backup-codex-optionchain-20261009T202514Z/kadima/hourly_forecast_model.py	2026-10-09 13:04:06.306342905 +0000
++++ kadima/hourly_forecast_model.py	2026-10-09 20:29:30.205392781 +0000
+@@ -411,6 +411,20 @@
+         if finite(a) and finite(b):
+             parts[k + '_wall'] = clip((a - b) / step, -1, 1)
+     w = dict(pcr=0.5, ce_wall=0.25, pe_wall=0.25)
++    if finite(oi.get('pcr_now')) and finite(oi.get('prev_day_pcr')):
++        parts['prev_day_pcr'] = clip((oi['pcr_now']-oi['prev_day_pcr'])/0.2,-1,1)
++        w['prev_day_pcr'] = 0.25
++    for k in ('ce','pe'):
++        a,b = oi.get(k+'_wall_now'),oi.get('prev_day_'+k+'_wall')
++        if finite(a) and finite(b):
++            parts['prev_day_'+k+'_wall'] = clip((a-b)/step,-1,1)
++            w['prev_day_'+k+'_wall'] = 0.125
++    if finite(oi.get('oi_build')):
++        parts['oi_build'] = clip(oi['oi_build']/0.2,-1,1)
++        w['oi_build'] = 0.35
++    if finite(oi.get('max_pain')) and finite(oi.get('spot')):
++        parts['max_pain'] = clip((oi['max_pain']-oi['spot'])/step,-1,1)
++        w['max_pain'] = 0.15
+     tw = sum(w[k] for k in parts)
+     return (clip(sum(parts[k] * w[k] for k in parts) / tw, -1, 1) if tw else 0.0), parts
+ 
+@@ -493,7 +507,7 @@
+         band_pts=round((points[-1][2] - points[-1][3]) / 2, 2), n_eff=round(an.n_eff, 1) if an else 0.0,
+         inputs=dict(x, p_raw=p_raw, sd=sd, mean=mean, sd_end=sd[-1], p_model=p_model,
+                     sigma=sigma, sigma_real=s_real, sigma_iv=s_iv, tech=m, tech_parts=parts,
+-                    trend=trend, oi=oit, oi_parts=oi_parts, band_only=bool(params.get('band_only')),
++                    trend=trend, oi=oit, oi_parts=oi_parts, oi_features=dict(oi or {}), band_only=bool(params.get('band_only')),
+                     analog_used=bool(use_an), analog_up=an.up_frac if an else None,
+                     features=feat, params=dict(params)))
+ 
+--- /home/ubuntu/backup-codex-optionchain-20261009T202514Z/tools/forecast_nightly.py	2026-10-09 13:04:06.307342915 +0000
++++ tools/forecast_nightly.py	2026-10-09 20:52:25.434199544 +0000
+@@ -17,6 +17,7 @@
+     python tools/forecast_nightly.py --force      # allow a replay during market hours (no fetch)
+ """
+ import json
++import argparse
+ import math
+ import os
+ import shutil
+@@ -172,15 +173,27 @@
+ 
+ 
+ def main():
++    parser = argparse.ArgumentParser(description=__doc__)
++    parser.add_argument('--only', choices=('bhavcopy',))
++    parser.add_argument('--date', type=lambda value: datetime.strptime(value, '%Y-%m-%d').date())
++    parser.add_argument('--no-fetch', action='store_true')
++    parser.add_argument('--force', action='store_true')
++    args = parser.parse_args()
++    if args.date and args.only != 'bhavcopy':
++        parser.error('--date applies only to --only bhavcopy')
+     now = datetime.now(IST)
+-    force = '--force' in sys.argv
++    force = args.force
+     if market_open(now) and not force:
+         log('market hours: not running (use --force to replay without fetching)')
+         return 1
++    from kadima import forecast_bhavcopy
++    forecast_bhavcopy.run_nightly(HF.conn(), now, args.date)
++    if args.only == 'bhavcopy':
++        return 0
+     for name in HF.FORECAST_INDICES:
+         if name not in INDICES:
+             continue
+-        if '--no-fetch' not in sys.argv and not market_open(now):
++        if not args.no_fetch and not market_open(now):
+             fetch(name, now)
+         samples = replay(name, now)
+         retune(name, samples)
+--- /home/ubuntu/backup-codex-optionchain-20261009T202514Z/web/hourly_forecast.html	2026-10-09 13:04:06.308342924 +0000
++++ web/hourly_forecast.html	2026-10-09 20:29:30.247393147 +0000
+@@ -264,7 +264,15 @@
+     }
+     return `<div class="card ${st}">
+       <div class="row"><span class="slot">${s.slot} – ${s.slot_end}</span>${chips}<span class="grow"></span>${head}</div>
+-      ${kv}${chart(s)}${auditBlock(s)}</div>`;
++      ${kv}${chainInputs(s)}${chart(s)}${auditBlock(s)}</div>`;
++  }
++
++  function chainInputs(s) {
++    const oi = (s.inputs || {}).oi_features || {};
++    if (oi.pcr_now == null) return '';
++    const previous = oi.prev_day_pcr == null ? '' : ` (prev day ${fmt(oi.prev_day_pcr)})`;
++    const pain = oi.max_pain == null ? '' : ` - max pain ${fmt(oi.max_pain, 0)}`;
++    return `<div style="color:var(--muted);font-size:12px">PCR ${fmt(oi.pcr_now)}${previous} - CE wall ${fmt(oi.ce_wall_now, 0)} / PE wall ${fmt(oi.pe_wall_now, 0)}${pain}</div>`;
+   }
+ 
+   function esc(t) { return String(t).replace(/[&<>]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;'})[c]); }
+--- /dev/null	2026-09-16 07:31:26.634000304 +0000
++++ kadima/forecast_chain_data.py	2026-10-09 21:03:07.823663711 +0000
+@@ -0,0 +1,243 @@
++"""Forecast-only wide/EOD chains, collected opportunistically in a sibling thread.
++
++Reuses the engine master, spot and authenticated SDK instance. Never logs in,
++never changes an OptionChain, and never queues ahead of normal quote work.
++"""
++from datetime import datetime, time as clock, timedelta
++import math
++import threading
++
++from . import audit
++from .config import IST
++from .utils import now_ist
++
++SCHEMA = '''
++CREATE TABLE IF NOT EXISTS chain_wide (
++ index_name TEXT NOT NULL, ts TEXT NOT NULL, expiry TEXT NOT NULL,
++ strike REAL NOT NULL, opt_type TEXT NOT NULL, ltp REAL NOT NULL,
++ oi INTEGER NOT NULL, volume INTEGER NOT NULL, iv REAL, spot REAL NOT NULL,
++ PRIMARY KEY(index_name,ts,strike,opt_type));
++CREATE INDEX IF NOT EXISTS chain_wide_time ON chain_wide(index_name,ts);
++CREATE TABLE IF NOT EXISTS chain_eod (
++ index_name TEXT NOT NULL, day TEXT NOT NULL, expiry TEXT NOT NULL,
++ strike REAL NOT NULL, opt_type TEXT NOT NULL, ltp REAL NOT NULL,
++ oi INTEGER NOT NULL, oi_change INTEGER, volume INTEGER NOT NULL, spot REAL NOT NULL,
++ PRIMARY KEY(index_name,day,expiry,strike,opt_type));
++CREATE TABLE IF NOT EXISTS bhav_options (
++ index_name TEXT NOT NULL, day TEXT NOT NULL, expiry TEXT NOT NULL,
++ strike REAL NOT NULL, opt_type TEXT NOT NULL, close REAL NOT NULL,
++ settle REAL, oi INTEGER NOT NULL, oi_change INTEGER, contracts INTEGER,
++ PRIMARY KEY(index_name,day,expiry,strike,opt_type));
++CREATE TABLE IF NOT EXISTS nightly_status (
++ step TEXT NOT NULL, day TEXT NOT NULL, status TEXT NOT NULL,
++ rows_saved INTEGER NOT NULL, checked_at TEXT NOT NULL, detail TEXT NOT NULL,
++ PRIMARY KEY(step,day));
++'''
++
++
++def aggregate(rows):
++    ce = [r for r in rows if r['opt_type']=='CE' and r['oi']>0]
++    pe = [r for r in rows if r['opt_type']=='PE' and r['oi']>0]
++    if not ce or not pe:
++        return None
++    sce,spe = sum(r['oi'] for r in ce),sum(r['oi'] for r in pe)
++    return dict(pcr=spe/sce,ce_wall=max(ce,key=lambda r:r['oi'])['strike'],
++                pe_wall=max(pe,key=lambda r:r['oi'])['strike'],ce_oi=sce,pe_oi=spe)
++
++
++def wide_at(c, name, point):
++    # Strictly before the decision: a sample labelled t0 is not input to t0.
++    row=c.execute('SELECT ts FROM chain_wide WHERE index_name=? AND ts<? ORDER BY ts DESC LIMIT 1',
++                  (name,point.isoformat())).fetchone()
++    if not row or not 0 < (point-datetime.fromisoformat(row['ts'])).total_seconds() <= 300:
++        return []
++    return [dict(r) for r in c.execute('SELECT * FROM chain_wide WHERE index_name=? AND ts=?', (name,row['ts']))]
++
++
++def max_pain(rows):
++    if not rows:
++        return None
++    strikes=sorted({r['strike'] for r in rows})
++    return min(strikes,key=lambda settlement:sum(r['oi'] *
++        (max(0,settlement-r['strike']) if r['opt_type']=='CE' else max(0,r['strike']-settlement)) for r in rows))
++
++
++def previous_chain(c,name,t0):
++    """Latest observed prior session, preferring official bhavcopy for that day.
++
++    Never jump back to an older official day when a newer broker EOD exists.
++    ISO expiry ordering selects the nearest nonexpired expiry for that session.
++    """
++    cutoff=t0.astimezone(IST).date().isoformat()
++    from . import market_session_gate
++    try:
++        policy=market_session_gate.validate_policy(market_session_gate.read_json(market_session_gate.POLICY))
++        holidays=set(policy['holidays'])
++    except (OSError,ValueError):
++        return None  # cannot label an older observed date the previous session
++    day=t0.astimezone(IST).date()-timedelta(days=1)
++    while day.weekday()>=5 or day.isoformat() in holidays:
++        day-=timedelta(days=1)
++    day=day.isoformat()
++    for table in ('bhav_options','chain_eod'):
++        row=c.execute(f'SELECT MIN(expiry) FROM {table} WHERE index_name=? AND day=? AND expiry>=?', (name,day,cutoff)).fetchone()
++        if row[0]:
++            rows=[dict(r) for r in c.execute(f'SELECT strike,opt_type,oi FROM {table} WHERE index_name=? AND day=? AND expiry=?', (name,day,row[0]))]
++            result=aggregate(rows)
++            if result:return dict(result,day=day,source=table)
++    return None
++
++
++def extra_features(c,name,t0,step):
++    out={}
++    previous=previous_chain(c,name,t0)
++    if previous:
++        out.update(prev_day_pcr=previous['pcr'],prev_day_ce_wall=previous['ce_wall'],
++                   prev_day_pe_wall=previous['pe_wall'],prev_day=previous['day'],prev_day_source=previous['source'])
++    latest=wide_at(c,name,t0)
++    if latest:
++        out['max_pain']=max_pain(latest)
++        old=wide_at(c,name,t0-timedelta(minutes=30))
++        # Compare exactly matching expiry/strike/side identities in the current
++        # ATM +/-15 window. A rolling ladder or expiry switch must not fake OI.
++        current={(r['expiry'],r['strike'],r['opt_type']):r for r in latest}
++        before={(r['expiry'],r['strike'],r['opt_type']):r for r in old}
++        if current and current.keys()==before.keys():
++            atm=round(latest[0]['spot']/step)*step
++            changes={side:sum(r['oi']-before[k]['oi'] for k,r in current.items()
++                            if r['opt_type']==side and abs(r['strike']-atm)<=15*step) for side in ('CE','PE')}
++            total=sum(r['oi'] for r in old)
++            if total>0:
++                out.update(oi_build=(changes['PE']-changes['CE'])/total,
++                           ce_oi_build=changes['CE'],pe_oi_build=changes['PE'])
++    return out
++
++
++def prune_wide(c):
++    with c:
++        for name, in c.execute('SELECT DISTINCT index_name FROM chain_wide').fetchall():
++            days=[r[0] for r in c.execute('SELECT DISTINCT substr(ts,1,10) FROM chain_wide WHERE index_name=? ORDER BY 1 DESC LIMIT 60', (name,))]
++            if len(days)==60:
++                c.execute('DELETE FROM chain_wide WHERE index_name=? AND substr(ts,1,10)<?', (name,days[-1]))
++
++
++def contracts(master,index,day,spot,eod=False):
++    rows=[]
++    for r in master._options_for(index):
++        try:
++            expiry=datetime.strptime(r['expiry'],'%d%b%Y').date()
++            strike=float(r['strike'])/100
++            side=r['symbol'][-2:]
++        except (KeyError,ValueError,TypeError):continue
++        if expiry>=day and side in ('CE','PE') and math.isfinite(strike) and strike>0:
++            rows.append(dict(token=str(r['token']),expiry=expiry.isoformat(),strike=strike,opt_type=side))
++    expiries=sorted({r['expiry'] for r in rows})[:2 if eod else 1]
++    atm=round(spot/index.strike_step)*index.strike_step
++    return [r for r in rows if r['expiry'] in expiries and
++            (eod or abs(r['strike']-atm)<=15*index.strike_step)]
++
++
++class Collector:
++    def __init__(self,engine,indices,db=None):
++        self.engine,self.indices,self.db=engine,indices,db
++        self.stop_event=threading.Event()
++        self.thread=None
++        self.attempted=set()
++        self.pruned=None
++
++    def start(self):
++        self.thread=threading.Thread(target=self.run,daemon=True,name='forecast-chain-data')
++        self.thread.start()
++
++    def stop(self):
++        self.stop_event.set()
++        # SDK HTTP may still finish; this is an isolated read-only data request.
++        if self.thread:self.thread.join(timeout=1)
++
++    def run(self):
++        while not self.stop_event.is_set():
++            try:self.tick(now_ist())
++            except Exception as exc:
++                audit.log('forecast_chain_cycle_skipped',error_type=type(exc).__name__)
++            self.stop_event.wait(5)
++
++    def tick(self,now):
++        from . import hourly_forecast as HF,market_session_gate
++        local=now.astimezone(IST)
++        if local.weekday()>=5:return
++        policy=market_session_gate.validate_policy(market_session_gate.read_json(market_session_gate.POLICY))
++        if local.date().isoformat() in policy['holidays']:return
++        day=local.date().isoformat()
++        self.attempted={x for x in self.attempted if x[0]==day}
++        if clock(15,35)<=local.time().replace(tzinfo=None) and self.pruned!=day:
++            prune_wide(HF.conn(self.db));self.pruned=day
++        minute=local.replace(second=0,microsecond=0)
++        wide=(clock(9,15)<=minute.time().replace(tzinfo=None)<=clock(15,30) and
++              minute.minute%5==0 and 20<=local.second<40)
++        eod=clock(15,30)<=local.time().replace(tzinfo=None)<clock(15,32)
++        for name in self.indices:
++            for kind,do in (('wide',wide),('eod',eod)):
++                key=(day,name,kind,minute.isoformat() if kind=='wide' else day)
++                if not do or key in self.attempted:continue
++                self.attempted.add(key)
++                deadline=minute+timedelta(seconds=59) if kind=='wide' else local.replace(hour=15,minute=32,second=0,microsecond=0)
++                try:self.collect(name,local,deadline,kind=='eod')
++                except Exception as exc:
++                    audit.log('forecast_chain_cycle_skipped',index=name,kind=kind,error_type=type(exc).__name__)
++
++    def collect(self,name,now,deadline,eod):
++        from . import hourly_forecast as HF
++        from .session import SESSION
++        from .rate_limiter import SHARED_QUOTE
++        st=self.engine.states.get(name)
++        if (st is None or not st.is_live_tick or st.last_updated is None or not st.spot or
++                not math.isfinite(st.spot) or not 0 <= (now-st.last_updated).total_seconds()<=30):
++            raise ValueError('fresh_engine_spot_unavailable')
++        api=SESSION.api
++        poll=getattr(getattr(api,'getMarketData',None),'_kadima_low_priority',None)
++        if poll is None or SESSION._lock.locked() or SESSION._stale():
++            raise ValueError('existing_authenticated_budgeted_session_unavailable')
++        requested=contracts(self.engine.scrips,st.chain.index,now.date(),st.spot,eod)
++        if not requested:raise ValueError('master_contracts_unavailable')
++        spot=st.spot
++        fetched={}
++        calls=0
++        for offset in range(0,len(requested),50):
++            if self.stop_event.is_set() or now_ist()>=deadline:
++                raise TimeoutError('snapshot_deadline')
++            batch=requested[offset:offset+50]
++            response=poll(mode='FULL',exchangeTokens={st.chain.index.opt_exchange:[r['token'] for r in batch]})
++            calls+=1
++            if not isinstance(response,dict) or response.get('status') is not True:
++                raise ValueError('quote_response_unavailable')
++            got=(response.get('data') or {}).get('fetched',[])
++            wanted={r['token'] for r in batch}
++            for r in got:
++                token=str(r.get('symbolToken'))
++                if token not in wanted or token in fetched or r.get('exchange',st.chain.index.opt_exchange)!=st.chain.index.opt_exchange:
++                    raise ValueError('quote_identity_mismatch')
++                values=(float(r['ltp']),float(r['opnInterest']),float(r['tradeVolume']))
++                if not all(math.isfinite(x) and x>=0 for x in values) or not values[1].is_integer() or not values[2].is_integer():
++                    raise ValueError('invalid_quote_values')
++                fetched[token]=values
++            if not wanted.issubset(fetched):raise ValueError('incomplete_quote_batch')
++            if offset+50<len(requested) and self.stop_event.wait(SHARED_QUOTE.interval*2.05):
++                raise TimeoutError('collector_stopped')
++        stamp=now_ist()
++        if stamp>=deadline:raise TimeoutError('snapshot_finished_late')
++        c=HF.conn(self.db)
++        with c:
++            if eod:
++                day=stamp.date().isoformat()
++                previous=c.execute('SELECT MAX(day) FROM chain_eod WHERE index_name=? AND day<?',(name,day)).fetchone()[0]
++                old={(r['expiry'],r['strike'],r['opt_type']):r['oi'] for r in c.execute('SELECT expiry,strike,opt_type,oi FROM chain_eod WHERE index_name=? AND day=?',(name,previous))}
++                rows=[]
++                for r in requested:
++                    ltp,oi,volume=fetched[r['token']]
++                    prior=old.get((r['expiry'],r['strike'],r['opt_type']))
++                    rows.append((name,day,r['expiry'],r['strike'],r['opt_type'],ltp,int(oi),None if prior is None else int(oi)-prior,int(volume),spot))
++                c.executemany('INSERT OR IGNORE INTO chain_eod VALUES (?,?,?,?,?,?,?,?,?,?)',rows)
++            else:
++                c.executemany('INSERT OR IGNORE INTO chain_wide VALUES (?,?,?,?,?,?,?,?,?,?)',
++                    [(name,stamp.isoformat(),r['expiry'],r['strike'],r['opt_type'],fetched[r['token']][0],int(fetched[r['token']][1]),int(fetched[r['token']][2]),None,spot) for r in requested])
++        audit.log('forecast_chain_saved',index=name,kind='eod' if eod else 'wide',rows=len(requested),quote_calls=calls)
+--- /dev/null	2026-09-16 07:31:26.634000304 +0000
++++ kadima/forecast_bhavcopy.py	2026-10-09 21:03:07.755663130 +0000
+@@ -0,0 +1,157 @@
++"""Official NSE F&O archive ingestion into forecast.db only; no broker calls.
++
++Sources: https://www.nseindia.com/all-reports-derivatives (ard-udiffcb)
++and https://www.nseindia.com/static/resources/forms-formats-members (UDiFF).
++Only the published UDiFF archive and its legacy archive fallback are requested.
++No option-chain endpoint, cookie warmup, mirror or scraping fallback is used.
++"""
++import csv
++from datetime import date, datetime, timedelta
++import io
++import math
++import socket
++import time
++import urllib.error
++import urllib.request
++import zipfile
++
++from .config import IST
++
++NAMES={'NIFTY','BANKNIFTY','FINNIFTY'}
++ARCHIVE='https://nsearchives.nseindia.com'
++UA='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36'
++MAX_ZIP=8*1024*1024
++MAX_CSV=80*1024*1024
++
++
++def urls(day):
++    # English month names must not depend on a host's LC_TIME.
++    month=('JAN','FEB','MAR','APR','MAY','JUN','JUL','AUG','SEP','OCT','NOV','DEC')[day.month-1]
++    return (f'{ARCHIVE}/content/fo/BhavCopy_NSE_FO_0_0_0_{day:%Y%m%d}_F_0000.csv.zip',
++            f'{ARCHIVE}/content/historical/DERIVATIVES/{day.year}/{month}/fo{day.day:02d}{month}{day.year}bhav.csv.zip')
++
++
++def parse_day(value):
++    for fmt in ('%Y-%m-%d','%d-%b-%Y','%d%b%Y','%d-%m-%Y','%m/%d/%Y'):
++        try:return datetime.strptime(value.strip(),fmt).date().isoformat()
++        except ValueError:pass
++    raise ValueError('invalid_bhavcopy_date')
++
++
++def number(value, optional=False, integer=False, signed=False):
++    if optional and (value is None or str(value).strip() in ('','-')):return None
++    n=float(value)
++    if not math.isfinite(n) or (not signed and n<0) or (integer and not n.is_integer()):
++        raise ValueError('invalid_bhavcopy_number')
++    return int(n) if integer else n
++
++
++def parse_csv(text,day):
++    reader=csv.DictReader(io.StringIO(text.lstrip('\ufeff')))
++    if not reader.fieldnames:raise ValueError('missing_bhavcopy_header')
++    reader.fieldnames=[x.strip() for x in reader.fieldnames]
++    udiff='TckrSymb' in reader.fieldnames
++    required={'TckrSymb','XpryDt','StrkPric','OptnTp','ClsPric','OpnIntrst','TtlTradgVol'} if udiff else {'INSTRUMENT','SYMBOL','EXPIRY_DT','STRIKE_PR','OPTION_TYP','CLOSE','OPEN_INT','CONTRACTS'}
++    if not required.issubset(reader.fieldnames):raise ValueError('unsupported_bhavcopy_layout')
++    out=[]
++    for r in reader:
++        name=((r.get('TckrSymb') if udiff else r.get('SYMBOL')) or '').strip()
++        side=((r.get('OptnTp') if udiff else r.get('OPTION_TYP')) or '').strip()
++        kind=((r.get('FinInstrmTp') if udiff else r.get('INSTRUMENT')) or '').strip()
++        if name not in NAMES or side not in ('CE','PE') or (kind and kind not in ('IDO','OPTIDX')):continue
++        recorded=(r.get('TradDt') or r.get('BizDt')) if udiff else r.get('TIMESTAMP')
++        if recorded and parse_day(recorded)!=day.isoformat():raise ValueError('wrong_bhavcopy_trading_day')
++        expiry=parse_day((r.get('FininstrmActlXpryDt') or r['XpryDt']) if udiff else r['EXPIRY_DT'])
++        if expiry<day.isoformat():continue
++        strike=number(r['StrkPric' if udiff else 'STRIKE_PR'])
++        close=number(r['ClsPric' if udiff else 'CLOSE'])
++        settle=number(r.get('SttlmPric' if udiff else 'SETTLE_PR'),optional=True)
++        oi=number(r['OpnIntrst' if udiff else 'OPEN_INT'],integer=True)
++        change=number(r.get('ChngInOpnIntrst' if udiff else 'CHG_IN_OI'),optional=True,integer=True,signed=True)
++        volume=number(r['TtlTradgVol' if udiff else 'CONTRACTS'],integer=True)
++        # Preserve NSE's published FO volume, without guessing a lot conversion.
++        # The official layout names this Total Traded Qty; legacy names it
++        # CONTRACTS. These source semantics are documented in the report.
++        if strike<=0:raise ValueError('invalid_option_strike')
++        out.append((name,day.isoformat(),expiry,strike,side,close,settle,oi,change,volume))
++    if not out:raise ValueError('no_matching_index_options')
++    if len({r[:5] for r in out})!=len(out):raise ValueError('duplicate_bhavcopy_contracts')
++    return out
++
++
++def download(day,opener=urllib.request.urlopen):
++    """At most two requests: legacy only on UDiFF 404. Never bypass a block."""
++    for attempt,url in enumerate(urls(day)):
++        req=urllib.request.Request(url,headers={'User-Agent':UA,'Accept':'application/zip'})
++        try:
++            with opener(req,timeout=20) as response:
++                content_type=response.headers.get('Content-Type','').lower()
++                if 'html' in content_type:return 'blocked',None,'html_instead_of_zip'
++                payload=response.read(MAX_ZIP+1)
++            if len(payload)>MAX_ZIP:return 'blocked',None,'archive_size_limit'
++            if not payload.startswith(b'PK'):return 'blocked',None,'non_zip_response'
++            with zipfile.ZipFile(io.BytesIO(payload)) as archive:
++                files=[f for f in archive.infolist() if f.filename.lower().endswith('.csv') and not f.is_dir()]
++                if len(files)!=1 or files[0].file_size>MAX_CSV:return 'blocked',None,'invalid_archive_members'
++                text=archive.read(files[0]).decode('utf-8-sig')
++            return 'ok',parse_csv(text,day),'udiff' if attempt==0 else 'legacy'
++        except urllib.error.HTTPError as exc:
++            if exc.code==404:
++                if attempt==0:continue
++                return 'missing',None,'both_archives_404'
++            return 'blocked',None,'http_'+str(exc.code)
++        except (urllib.error.URLError,TimeoutError,socket.timeout):
++            return 'blocked',None,'network_timeout_or_denied'
++        except (zipfile.BadZipFile,UnicodeError,ValueError,KeyError,TypeError):
++            return 'blocked',None,'invalid_archive_or_layout'
++    return 'missing',None,'archive_unavailable'
++
++
++def ingest(day,c,opener=urllib.request.urlopen):
++    cached=c.execute("SELECT status,rows_saved,detail,checked_at FROM nightly_status WHERE step='bhavcopy' AND day=?",(day.isoformat(),)).fetchone()
++    if cached and (cached['status']=='ok' or cached['checked_at'][:10]==datetime.now(IST).date().isoformat()):
++        return dict(day=day.isoformat(),status=cached['status'],rows_saved=cached['rows_saved'],detail='cached_'+cached['detail'])
++    status,rows,detail=download(day,opener)
++    saved=0
++    with c:
++        if rows:
++            c.executemany('INSERT OR REPLACE INTO bhav_options VALUES (?,?,?,?,?,?,?,?,?,?)',rows)
++            saved=len(rows)
++        if status!='ok':
++            fallback=c.execute('SELECT COUNT(*) FROM chain_eod WHERE day=?',(day.isoformat(),)).fetchone()[0]
++            detail+=f'; chain_eod_fallback_rows={fallback}'
++        c.execute('INSERT OR REPLACE INTO nightly_status VALUES (?,?,?,?,?,?)',
++            ('bhavcopy',day.isoformat(),status,saved,datetime.now(IST).isoformat(),detail))
++    return dict(day=day.isoformat(),status=status,rows_saved=saved,detail=detail)
++
++
++def trading_days(end,count):
++    from . import market_session_gate
++    policy=market_session_gate.validate_policy(market_session_gate.read_json(market_session_gate.POLICY))
++    holidays=set(policy['holidays'])
++    result=[]
++    while len(result)<count:
++        if end.weekday()<5 and end.isoformat() not in holidays:result.append(end)
++        end-=timedelta(days=1)
++    return list(reversed(result))
++
++
++def run_nightly(c,now,day=None,sleeper=time.sleep,opener=urllib.request.urlopen):
++    """One initial 30-session backfill; afterwards fetch the latest session."""
++    if day:
++        days=[day]
++    else:
++        first=c.execute("SELECT 1 FROM nightly_status WHERE step='bhavcopy_backfill' AND status='ok' LIMIT 1").fetchone() is None
++        end=now.date() if now.hour>=16 else now.date()-timedelta(days=1)
++        days=trading_days(end,30 if first else 1)
++    results=[]
++    for i,point in enumerate(days):
++        if i:sleeper(2)
++        result=ingest(point,c,opener)
++        results.append(result)
++        print('bhavcopy: '+result['day']+' '+result['status']+' rows='+str(result['rows_saved'])+' '+result['detail'],flush=True)
++    if not day and len(days)==30:
++        with c:
++            c.execute('INSERT OR REPLACE INTO nightly_status VALUES (?,?,?,?,?,?)',
++                ('bhavcopy_backfill',now.date().isoformat(),'ok',sum(r['rows_saved'] for r in results),now.isoformat(),'30 sessions attempted; blocked/missing days retained'))
++    return results
+--- /dev/null	2026-09-16 07:31:26.634000304 +0000
++++ tools/test_option_chain_data.py	2026-10-09 21:05:03.619612599 +0000
+@@ -0,0 +1,195 @@
++"""Offline option-chain regressions. No real broker or network calls."""
++import io
++import json
++from datetime import date,datetime,timedelta
++from pathlib import Path
++import sqlite3
++import sys
++import tempfile
++import threading
++import time
++from types import SimpleNamespace
++from unittest.mock import patch
++import urllib.error
++import zipfile
++
++sys.path.insert(0,'.')
++from kadima import hourly_forecast as HF, hourly_forecast_model as M
++from kadima import forecast_chain_data as F, forecast_bhavcopy as B, storage, market_session_gate as G
++from kadima.rate_limiter import SharedQuoteLimiter,protect_quote_api
++
++def database():
++    c=sqlite3.connect(':memory:');c.row_factory=sqlite3.Row;c.executescript(F.SCHEMA);return c
++
++def add(c,table,day,ce,pe):
++    expiry='2026-10-13'
++    for side,ois in (('CE',ce),('PE',pe)):
++        for strike,oi in zip((100,150),ois):
++            if table=='chain_wide':row=('NIFTY',day,expiry,strike,side,10,oi,100,None,125)
++            elif table=='chain_eod':row=('NIFTY',day,expiry,strike,side,10,oi,None,100,125)
++            else:row=('NIFTY',day,expiry,strike,side,10,10,oi,0,100)
++            c.execute('INSERT INTO '+table+' VALUES (?,?,?,?,?,?,?,?,?,?)',row)
++
++policy=dict(schema=1,valid_from='2026-01-01',valid_through='2026-12-31',holidays=['2026-10-02'],sources=['offline'],arm_at='09:00',entries_at='09:15',stop_entries_at='15:35')
++now=datetime(2026,10,9,10,tzinfo=HF.IST)
++c=database();trading=sqlite3.connect(':memory:');trading.row_factory=sqlite3.Row
++trading.execute('CREATE TABLE oi_snapshots(index_name,ts,opt_type,strike,oi)')
++for side,oi in (('CE',100),('PE',300)):
++    trading.execute('INSERT INTO oi_snapshots VALUES (?,?,?,?,?)',('NIFTY',(now-timedelta(seconds=10)).isoformat(),side,200,oi))
++with patch.object(HF,'conn',return_value=c),patch.object(storage,'conn',return_value=trading),patch.object(G,'read_json',return_value=policy):
++    assert HF.chain_at('NIFTY',now)==dict(pcr=3,ce_wall=200,pe_wall=200)
++    old=HF.oi_features('NIFTY',now,50)
++    assert 'max_pain' not in old and 'prev_day_pcr' not in old
++    before=M.oi_tilt(old)
++    add(c,'chain_wide',(now-timedelta(minutes=30,seconds=1)).isoformat(),(100,100),(100,100))
++    add(c,'chain_wide',(now-timedelta(seconds=1)).isoformat(),(100,100),(200,200))
++    add(c,'chain_eod','2026-10-08',(100,100),(50,50))
++    add(c,'bhav_options','2026-10-08',(50,100),(100,200))
++    # Same-day and future EOD cannot influence this morning's slot.
++    add(c,'bhav_options','2026-10-09',(100,100),(10000,10000))
++    add(c,'bhav_options','2026-10-12',(100,100),(20000,20000))
++    assert HF.chain_at('NIFTY',now)['pcr']==2
++    oi=HF.oi_features('NIFTY',now,50)
++    assert oi['prev_day_pcr']==2 and oi['prev_day_source']=='bhav_options'
++    assert oi['prev_day_ce_wall']==150 and oi['prev_day_pe_wall']==150
++    assert oi['oi_build']==0.5 and oi['ce_oi_build']==0 and oi['pe_oi_build']==200
++    assert oi['max_pain']==150 and -1<=M.oi_tilt(oi)[0]<=1
++    add(c,'chain_wide',now.isoformat(),(1,1),(9999,9999))
++    add(c,'chain_wide',(now+timedelta(seconds=1)).isoformat(),(1,1),(99999,99999))
++    assert HF.oi_features('NIFTY',now,50)==oi
++    c.execute("DELETE FROM bhav_options WHERE day='2026-10-08'")
++    assert HF.oi_features('NIFTY',now,50)['prev_day_pcr']==0.5
++    c.execute("DELETE FROM chain_eod WHERE day='2026-10-08'")
++    assert 'prev_day_pcr' not in HF.oi_features('NIFTY',now,50)
++    c.execute('DELETE FROM chain_wide');c.execute('DELETE FROM bhav_options')
++    assert HF.oi_features('NIFTY',now,50)==old and M.oi_tilt(old)==before
++    # Source exactly t0 is excluded even on the old narrow fallback.
++    trading.execute('DELETE FROM oi_snapshots')
++    trading.execute('INSERT INTO oi_snapshots VALUES (?,?,?,?,?)',('NIFTY',now.isoformat(),'CE',200,100))
++    assert HF.chain_at('NIFTY',now) is None
++print('PASS wide preference, legacy fallback, previous-session sources, OI builds, max pain and no look-ahead')
++
++udiff='TradDt,FinInstrmTp,TckrSymb,XpryDt,StrkPric,OptnTp,ClsPric,SttlmPric,OpnIntrst,ChngInOpnIntrst,TtlTradgVol,NewBrdLotQty\n2026-10-09,IDO,NIFTY,2026-10-13,22250,PE,23.8,23.8,65000,-650,6500,65\n2026-10-09,IDO,TCS,2026-10-27,3000,CE,10,10,100,1,10,10\n'
++legacy='INSTRUMENT,SYMBOL,EXPIRY_DT,STRIKE_PR,OPTION_TYP,CLOSE,SETTLE_PR,OPEN_INT,CHG_IN_OI,CONTRACTS,TIMESTAMP\nOPTIDX,BANKNIFTY,27-OCT-2026,55000,CE,100,101,30000,-30,100,09-OCT-2026\n'
++assert len(B.parse_csv(udiff,now.date()))==1
++assert B.parse_csv(udiff,now.date())[0][9]==6500  # retain published volume
++assert B.parse_csv(udiff.replace('6500,65','5,65'),now.date())[0][9]==5
++actual=udiff.replace('NewBrdLotQty\n','NewBrdLotQty,FininstrmActlXpryDt\n').replace('6500,65\n','6500,65,2026-10-12\n').replace('10,10\n','10,10,2026-10-27\n')
++assert B.parse_csv(actual,now.date())[0][2]=='2026-10-12'
++assert B.parse_csv(legacy,now.date())[0][0]=='BANKNIFTY'
++assert B.parse_csv(legacy,now.date())[0][8]==-30
++try:B.parse_csv(udiff,date(2026,10,8))
++except ValueError:pass
++else:raise AssertionError('wrong-day CSV accepted')
++payload=io.BytesIO()
++with zipfile.ZipFile(payload,'w') as z:z.writestr('bhav.csv',udiff)
++class Response(io.BytesIO):
++    headers={'Content-Type':'application/zip'}
++def success(req,timeout):
++    assert timeout==20 and req.full_url.startswith(B.ARCHIVE+'/content/')
++    return Response(payload.getvalue())
++result=B.ingest(now.date(),c,success)
++assert result['status']=='ok' and result['rows_saved']==1
++called=[]
++def fallback(req,timeout):
++    called.append(req.full_url)
++    if len(called)==1:raise urllib.error.HTTPError(req.full_url,404,'missing',{},None)
++    return success(req,timeout)
++assert B.download(now.date(),fallback)[0]=='ok' and len(called)==2
++def denied(req,timeout):raise urllib.error.HTTPError(req.full_url,403,'denied',{},None)
++other=now.date()-timedelta(days=1)
++add(c,'chain_eod',other.isoformat(),(100,100),(100,100))
++result=B.ingest(other,c,denied)
++assert result['status']=='blocked' and 'chain_eod_fallback_rows=4' in result['detail']
++assert c.execute("SELECT status FROM nightly_status WHERE day=?",(other.isoformat(),)).fetchone()[0]=='blocked'
++def must_not_repeat(req,timeout):raise AssertionError('blocked download repeated in the same day')
++assert B.ingest(other,c,must_not_repeat)['status']=='blocked'
++assert B.download(now.date(),lambda req,timeout:Response(b'<html>blocked</html>'))[0]=='blocked'
++with patch.object(G,'read_json',return_value=policy):
++    days=B.trading_days(date(2026,10,5),2)
++    assert days==[date(2026,10,1),date(2026,10,5)]
++print('PASS UDiFF/legacy parsers, 404-only fallback, blocked status/EOD fallback and holiday calendar')
++
++with tempfile.TemporaryDirectory() as directory:
++    path=Path(directory)/'budget.db'
++    limiter=SharedQuoteLimiter(str(path),interval=0.01)
++    assert not limiter.try_low_priority()
++    assert limiter.wait_and_allow(timeout_sec=0.2)
++    db=sqlite3.connect(path)
++    db.execute('UPDATE budget SET next=?',(time.time()-1,));db.execute('INSERT INTO quote_waiters(ticket,expires) VALUES (?,?)',('foreground',time.time()+30));db.commit()
++    assert not limiter.try_low_priority()
++    db.execute('DELETE FROM quote_waiters');db.commit()
++    assert limiter.try_low_priority() and not limiter.try_low_priority()
++    db.execute('BEGIN IMMEDIATE')
++    start=time.monotonic();assert not limiter.try_low_priority();assert time.monotonic()-start<0.1
++    db.rollback();db.close()
++    class API:
++        calls=0
++        def getMarketData(self,**kwargs):self.calls+=1;return {'status':True}
++    api=API();protect_quote_api(api)
++    with patch('kadima.rate_limiter.SHARED_QUOTE.try_low_priority',return_value=False):
++        try:api.getMarketData._kadima_low_priority(mode='FULL',exchangeTokens={})
++        except TimeoutError:pass
++        else:raise AssertionError('busy quote was sent')
++        assert api.calls==0
++    with patch('kadima.rate_limiter.SHARED_QUOTE.try_low_priority',return_value=True):
++        api.getMarketData._kadima_low_priority(mode='FULL',exchangeTokens={});assert api.calls==1
++    entered,release=threading.Event(),threading.Event()
++    class ForegroundAPI:
++        def getMarketData(self,**kwargs):
++            entered.set();release.wait(1);return {'status':True}
++    active=ForegroundAPI();protect_quote_api(active)
++    with patch('kadima.rate_limiter.SHARED_QUOTE.wait_and_allow',return_value=True), \
++            patch('kadima.rate_limiter.SHARED_QUOTE.try_low_priority',return_value=True) as grant:
++        worker=threading.Thread(target=lambda:active.getMarketData(mode='FULL',exchangeTokens={}))
++        worker.start();assert entered.wait(1)
++        try:active.getMarketData._kadima_low_priority(mode='FULL',exchangeTokens={})
++        except TimeoutError:pass
++        else:raise AssertionError('forecast competed with an in-flight foreground request')
++        assert not grant.called
++        release.set();worker.join(1);assert not worker.is_alive()
++print('PASS low-priority poll yields to waiters/locks/shared spacing and never sends when busy')
++
++from kadima.scrip_master import ScripMaster
++from kadima.config import Index
++from kadima.session import SESSION
++index=Index('NIFTY','NSE','spot','NFO','NIFTY',50,1)
++master=[]
++for expiry in ('13OCT2026','20OCT2026'):
++    for strike in range(50,1600,50):
++        for side in ('CE','PE'):
++            master.append(dict(name='NIFTY',exch_seg='NFO',instrumenttype='OPTIDX',expiry=expiry,
++                strike=str(strike*100),symbol='NIFTY'+expiry+str(strike)+side,token=str(len(master)+1)))
++st=SimpleNamespace(is_live_tick=True,last_updated=now,spot=800,chain=SimpleNamespace(index=index))
++engine=SimpleNamespace(states={'NIFTY':st},scrips=ScripMaster(master))
++collector=F.Collector(engine,('NIFTY',))
++batches=[]
++def quote(**kwargs):
++    tokens=kwargs['exchangeTokens']['NFO'];batches.append(tokens);assert len(tokens)<=50
++    return dict(status=True,data=dict(fetched=[dict(symbolToken=t,exchange='NFO',ltp=100,opnInterest=1000,tradeVolume=3000) for t in tokens]))
++quote._kadima_low_priority=quote
++with patch.object(HF,'conn',return_value=c),patch.object(SESSION,'api',SimpleNamespace(getMarketData=quote)),patch.object(SESSION,'_stale',return_value=False),patch.object(F,'now_ist',return_value=now+timedelta(seconds=1)),patch.object(collector.stop_event,'wait',return_value=False),patch.object(F.audit,'log'):
++    collector.collect('NIFTY',now,now+timedelta(minutes=2),False)
++    assert c.execute('SELECT COUNT(*) FROM chain_wide').fetchone()[0]==62 and len(batches)==2
++    collector.collect('NIFTY',now,now+timedelta(minutes=2),True)
++    assert c.execute("SELECT COUNT(*) FROM chain_eod WHERE day='2026-10-09'").fetchone()[0]==124
++    assert len(batches)==5
++    c.execute('DELETE FROM chain_wide')
++    def incomplete(**kwargs):return dict(status=True,data=dict(fetched=[]))
++    incomplete._kadima_low_priority=incomplete
++    SESSION.api=SimpleNamespace(getMarketData=incomplete)
++    try:collector.collect('NIFTY',now,now+timedelta(minutes=2),False)
++    except ValueError:pass
++    else:raise AssertionError('partial snapshot accepted')
++    assert c.execute('SELECT COUNT(*) FROM chain_wide').fetchone()[0]==0
++print('PASS existing-session/master collector: <=50-token batching, nearest/two-expiry snapshots and atomic incomplete-cycle skip')
++
++for i in range(61):
++    point=(now-timedelta(days=i)).isoformat()
++    c.execute('INSERT INTO chain_wide VALUES (?,?,?,?,?,?,?,?,?,?)',('NIFTY',point,'2026-10-13',100,'CE',10,100,1,None,100))
++before=c.execute('SELECT COUNT(*) FROM chain_eod').fetchone()[0]
++F.prune_wide(c)
++assert c.execute('SELECT COUNT(DISTINCT substr(ts,1,10)) FROM chain_wide').fetchone()[0]==60
++assert c.execute('SELECT COUNT(*) FROM chain_eod').fetchone()[0]==before
++print('PASS 60 observed-session retention; EOD retained forever')
++print('ALL OPTION CHAIN DATA TESTS PASS')
+--- /home/ubuntu/backup-codex-optionchain-20261009T202514Z/deploy/forecast.html	2026-10-09 13:04:06.308342924 +0000
++++ /var/www/html/forecast.html	2026-10-09 21:07:02.039105118 +0000
+@@ -264,7 +264,15 @@
+     }
+     return `<div class="card ${st}">
+       <div class="row"><span class="slot">${s.slot} – ${s.slot_end}</span>${chips}<span class="grow"></span>${head}</div>
+-      ${kv}${chart(s)}${auditBlock(s)}</div>`;
++      ${kv}${chainInputs(s)}${chart(s)}${auditBlock(s)}</div>`;
++  }
++
++  function chainInputs(s) {
++    const oi = (s.inputs || {}).oi_features || {};
++    if (oi.pcr_now == null) return '';
++    const previous = oi.prev_day_pcr == null ? '' : ` (prev day ${fmt(oi.prev_day_pcr)})`;
++    const pain = oi.max_pain == null ? '' : ` - max pain ${fmt(oi.max_pain, 0)}`;
++    return `<div style="color:var(--muted);font-size:12px">PCR ${fmt(oi.pcr_now)}${previous} - CE wall ${fmt(oi.ce_wall_now, 0)} / PE wall ${fmt(oi.pe_wall_now, 0)}${pain}</div>`;
+   }
+ 
+   function esc(t) { return String(t).replace(/[&<>]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;'})[c]); }

@@ -1,0 +1,439 @@
+$ git rev-parse --abbrev-ref HEAD
+kadima-live-backup-20260915
+
+$ git rev-parse HEAD
+433ee0095b925a33e6f5fef04a4aecee0a4e2535
+
+$ git status --porcelain
+A  docs/hourly_forecast.md
+ M kadima/angel_orders.py
+ M kadima/api.py
+ M kadima/auto_executor.py
+ M kadima/capital_guard.py
+ M kadima/cas_blast_scanner.py
+ M kadima/checklist_forecast.py
+ M kadima/config.py
+ M kadima/control_api.py
+ M kadima/engine.py
+ M kadima/entry_quality.py
+ M kadima/eod_watchdog.py
+ M kadima/execution_ledger.py
+ M kadima/exit_manager.py
+ M kadima/feed.py
+ M kadima/forecast_observer.py
+AM kadima/hourly_forecast.py
+AM kadima/hourly_forecast_model.py
+ M kadima/instrument_master.py
+ M kadima/macro_watch.py
+ M kadima/option_chain.py
+ M kadima/rate_limiter.py
+ M kadima/scrip_master.py
+ M kadima/stock_execution.py
+ M kadima/stock_handoff.py
+ M kadima/stock_universe_scanner.py
+ M kadima/storage.py
+ M kadima/strike_selector.py
+ M kadima/test_order_pathway.py
+ M kadima/trade_policy.py
+ M run.py
+A  tools/forecast_backtest.py
+A  tools/forecast_day_report.py
+AM tools/forecast_nightly.py
+A  tools/install_celestial_embed.py
+A  tools/install_forecast_nightly.py
+A  tools/install_hourly_forecast.py
+A  tools/strikes_today.py
+A  tools/test_forecast_manual_buy.py
+A  tools/test_hourly_forecast.py
+A  web/celestial_forecast_embed.js
+AM web/hourly_forecast.html
+?? connection_update/
+?? deploy/
+?? docs/manualstop-20261009T191938Z.md
+?? docs/manualstop-refinement-20261009T193405Z.md
+?? docs/option_chain_data_report.md
+?? docs/preflight-20261009.md
+?? executor_fix/
+?? forecaster_update/
+?? kadima/auto_arm.py
+?? kadima/cas_config.py
+?? kadima/cas_engine.py
+?? kadima/cas_eod_guard.py
+?? kadima/cas_executor.py
+?? kadima/cas_orders.py
+?? kadima/celestial.py
+?? kadima/celestial_adoption.py
+?? kadima/celestial_exit.py
+?? kadima/celestial_scanner.py
+?? kadima/celestial_universe.py
+?? kadima/commodity_watch.py
+?? kadima/execution_owner.py
+?? kadima/external_reconciliation.py
+?? kadima/fast_momentum.py
+?? kadima/feed.py.tick-backup-20260918T102223.015792Z
+?? kadima/forecast_bhavcopy.py
+?? kadima/forecast_chain_data.py
+?? kadima/full_universe_scanner.py
+?? kadima/gap_and_go.py
+?? kadima/gap_baseline.py
+?? kadima/gap_live.py
+?? kadima/index_event_gate.py
+?? kadima/manual_protection.py
+?? kadima/market_session_gate.py
+?? kadima/mcx_live.py
+?? kadima/momentum_quote_watch.py
+?? kadima/move_capture.py
+?? kadima/move_capture_execution.py
+?? kadima/move_capture_handoff.py
+?? kadima/move_capture_service.py
+?? kadima/news_catalysts.py
+?? kadima/news_collector.py
+?? kadima/news_context.py
+?? kadima/oi_confirmation.py
+?? kadima/owned_watchdog.py
+?? kadima/portfolio_capacity.py
+?? kadima/preparation_diagnostics.py
+?? kadima/price_history.py
+?? kadima/priority_sessions.py
+?? kadima/rate_limiter.py.quote-backup-20260918T094309.367072Z
+?? kadima/shield_confirmation.py
+?? kadima/stock_fast.py
+?? kadima/stock_fast_api.py
+?? kadima/timing_outcome.py
+?? kadima/timing_recorder.py
+?? kadima/trade_audit.py
+?? kadima/trade_learning.py
+?? kadima/universe_api.py
+?? kadima/universe_display.py
+?? policy_update/
+?? tools/index_news_gate.diff
+?? tools/manual_protection.diff
+?? tools/manual_protection_refinement.diff
+?? tools/market_data_retention.diff
+?? tools/market_data_retention.py
+?? tools/option_chain_data.diff
+?? tools/preflight.diff
+?? tools/preflight_autotrade.py
+?? tools/preflight_output.txt
+?? tools/replay_day.py
+?? tools/replay_scalp_gates.py
+?? tools/test_audit_fixes.py
+?? tools/test_cas_executor.py
+?? tools/test_index_news_gate.py
+?? tools/test_manual_protection.py
+?? tools/test_oi_confirmation.py
+?? tools/test_option_chain_data.py
+?? tools/test_preflight_fixes.py
+?? tools/test_timing.py
+
+$ git log --oneline -15
+433ee00 Backup live KADIMA state before Gamma Blast integration
+6c3321b Baseline KADIMA source from AWS
+
+$ git remote -v
+origin	https://github.com/manchalakusumakar-spec/kadima.git (fetch)
+origin	https://github.com/manchalakusumakar-spec/kadima.git (push)
+
+$ git branch -a
+  host/live-cas-source-20260930
+* kadima-live-backup-20260915
+  main
+  remotes/origin/HEAD -> origin/main
+  remotes/origin/cas-auto-execution
+  remotes/origin/cas-blast-live-fixes
+  remotes/origin/codex/audit-rag-v1
+  remotes/origin/codex/auto-readiness-ci-20261008
+  remotes/origin/codex/cas-premium-awakening
+  remotes/origin/codex/cas-safety-refinement
+  remotes/origin/codex/celestial-autonomous-gamma
+  remotes/origin/codex/celestial-drag-layout
+  remotes/origin/codex/continuous-trade-learning
+  remotes/origin/codex/dynamic-stops-structure-guard
+  remotes/origin/codex/execution-readiness-repair
+  remotes/origin/codex/expired-position-maintenance
+  remotes/origin/codex/fast-momentum-observation
+  remotes/origin/codex/fetch-universe-mcx-check
+  remotes/origin/codex/gap-and-go-live
+  remotes/origin/codex/gap-and-go-paper
+  remotes/origin/codex/index-scalper-2lots-10points
+  remotes/origin/codex/live-dashboard
+  remotes/origin/codex/live-inputs-score-probability
+  remotes/origin/codex/manual-deploy-after-flat
+  remotes/origin/codex/mcx-live
+  remotes/origin/codex/memory-protection-swap-review
+  remotes/origin/codex/momentum-recovery
+  remotes/origin/codex/move-capture-live
+  remotes/origin/codex/move-capture-shadow
+  remotes/origin/codex/priority-mcx-cas-watchdog
+  remotes/origin/codex/review-readiness-fixes
+  remotes/origin/codex/shield-confirmation-65
+  remotes/origin/codex/stock-fast-live
+  remotes/origin/codex/trade-audit-dashboard
+  remotes/origin/codex/updates-anytime
+  remotes/origin/deploy/2026-09-29
+  remotes/origin/deploy/2026-09-29-v2
+  remotes/origin/fix/audit-critical
+  remotes/origin/host/live-cas-source-20260930
+  remotes/origin/hourly-forecast
+  remotes/origin/main
+  remotes/origin/timing-phase1-recorder
+
+$ git diff --stat HEAD
+ docs/hourly_forecast.md           | 122 +++++++
+ kadima/angel_orders.py            |  80 +++-
+ kadima/api.py                     |  22 +-
+ kadima/auto_executor.py           | 751 +++++++++++++++++++++++++++++++++++---
+ kadima/capital_guard.py           |   9 +-
+ kadima/cas_blast_scanner.py       | 356 ++++++++----------
+ kadima/checklist_forecast.py      |   7 +-
+ kadima/config.py                  |  35 ++
+ kadima/control_api.py             | 425 ++++++++++++++++++++-
+ kadima/engine.py                  | 440 ++++++++++++++++------
+ kadima/entry_quality.py           |  11 +-
+ kadima/eod_watchdog.py            | 220 +++--------
+ kadima/execution_ledger.py        | 113 +++++-
+ kadima/exit_manager.py            |   5 +-
+ kadima/feed.py                    |  21 +-
+ kadima/forecast_observer.py       |   2 +
+ kadima/hourly_forecast.py         | 751 ++++++++++++++++++++++++++++++++++++++
+ kadima/hourly_forecast_model.py   | 746 +++++++++++++++++++++++++++++++++++++
+ kadima/instrument_master.py       |  38 +-
+ kadima/macro_watch.py             |  39 +-
+ kadima/option_chain.py            |  56 ++-
+ kadima/rate_limiter.py            | 158 ++++++--
+ kadima/scrip_master.py            |  15 +-
+ kadima/stock_execution.py         |  21 +-
+ kadima/stock_handoff.py           |   3 +
+ kadima/stock_universe_scanner.py  |  22 +-
+ kadima/storage.py                 |  26 +-
+ kadima/strike_selector.py         |   5 +-
+ kadima/test_order_pathway.py      |  11 +-
+ kadima/trade_policy.py            |  32 +-
+ run.py                            |  54 ++-
+ tools/forecast_backtest.py        | 133 +++++++
+ tools/forecast_day_report.py      | 100 +++++
+ tools/forecast_nightly.py         | 204 +++++++++++
+ tools/install_celestial_embed.py  |  60 +++
+ tools/install_forecast_nightly.py |  89 +++++
+ tools/install_hourly_forecast.py  | 147 ++++++++
+ tools/strikes_today.py            | 103 ++++++
+ tools/test_forecast_manual_buy.py | 101 +++++
+ tools/test_hourly_forecast.py     | 185 ++++++++++
+ web/celestial_forecast_embed.js   | 112 ++++++
+ web/hourly_forecast.html          | 408 +++++++++++++++++++++
+ 42 files changed, 5584 insertions(+), 654 deletions(-)
+
+$ systemctl is-active kadima kadima-universe-scanner kadima-eod-watchdog
+Failed to connect to system scope bus via local transport: Operation not permitted (consider using --machine=<user>@.host --user to connect to bus of other user)
+
+$ python3 --version
+Python 3.14.4
+
+$ ps -eo pid,lstart,cmd | grep -i kadima | grep -v grep
+
+$ venv/bin/pip freeze (fallback pip freeze)
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.14.2
+certifi==2026.7.22
+charset-normalizer==3.4.9
+click==8.4.2
+fastapi==0.141.1
+h11==0.16.0
+idna==3.18
+logzero==1.7.0
+pydantic==2.13.4
+pydantic_core==2.46.4
+PyOTP==2.10.0
+python-dateutil==2.9.0.post0
+requests==2.34.2
+six==1.17.0
+smartapi-python==1.5.5
+starlette==1.4.1
+typing-inspection==0.4.2
+typing_extensions==4.16.0
+urllib3==2.7.0
+uvicorn==0.52.1
+websocket-client==1.9.0
+WARNING: The directory '/home/ubuntu/.cache/pip' or its parent directory is not owned or is not writable by the current user. The cache has been disabled. Check the permissions and owner of that directory. If executing pip with sudo, you should use sudo's -H flag.
+$ grep -n max_concurrent_positions|min\(1, *MAX_CONCURRENT kadima/auto_executor.py
+$ grep -n MAX_OPEN_POSITIONS|UNKNOWN_ORDER_TIMEOUT_SEC kadima/config.py
+$ ls kadima/
+__init__.py
+__pycache__
+alerts.py
+alerts.py.bak.20260904_181803
+angel_orders.py
+angel_orders.py.backup
+angel_orders.py.bak.20260823_145016
+angel_orders.py.bak.20260823_153529
+api.py
+api.py.bak.20260820_192140
+api.py.bak.20260903_031746
+audit.py
+auto_arm.py
+auto_executor.py
+auto_executor.py.backup
+auto_executor.py.bak.20260823_153529
+auto_executor.py.bak.20260827_031931
+auto_executor.py.bak.20260903_031746
+auto_executor.py.bak.20260906_165709
+auto_executor.py.bak_20260827_1941
+auto_executor.py.bak_final_capital_fix
+auto_executor.py.bak_risk_capital_patch
+candles.py
+capital_guard.py
+capital_guard.py.bak
+capital_guard.py.bak.20260820_192140
+capital_guard.py.bak.20260906_165709
+capital_guard.py.bak_20260827_1925
+capital_guard.py.bak_final_capital_fix
+cas_blast_scanner.py
+cas_config.py
+cas_engine.py
+cas_eod_guard.py
+cas_executor.py
+cas_orders.py
+celestial.py
+celestial_adoption.py
+celestial_exit.py
+celestial_scanner.py
+celestial_universe.py
+checklist_forecast.py
+commodity_watch.py
+config.py
+config.py.bak
+config.py.bak.20260820_192140
+config.py.bak.20260820_200631
+config.py.bak.20260823_153529
+config.py.bak.20260827_031931
+config.py.bak.20260904_180832
+config.py.bak.20260906_165709
+control_api.py
+control_api.py.bak
+control_api.py.bak.20260903_031746
+control_api.py.bak.20260904_062721
+dynamic_stop.py
+engine.py
+engine.py.bak.20260820_192140
+engine.py.bak.20260820_195441
+engine.py.bak.20260827_031931
+engine.py.bak.20260903_031746
+engine.py.bak.20260904_181540
+engine.py.bak.20260906_175947
+engine.py.bak_risk_capital_patch
+entry_quality.py
+eod_watchdog.py
+eod_watchdog.py.bak.20260823_153529
+execution_ledger.py
+execution_owner.py
+execution_pricing.py
+exit_manager.py
+exit_manager.py.bak.20260820_192140
+exit_manager.py.bak.20260823_153529
+exit_manager.py.bak.20260827_031931
+exit_manager.py.save
+external_reconciliation.py
+fast_momentum.py
+feed.py
+feed.py.tick-backup-20260918T102223.015792Z
+forecast_bhavcopy.py
+forecast_chain_data.py
+forecast_connection.py
+forecast_observer.py
+forecast_trail.py
+full_universe_scanner.py
+gamma_blast_scanner.py
+gamma_blast_scanner.py.bak.20260820_195441
+gamma_blast_scanner.py.bak.20260906_175947
+gap_and_go.py
+gap_baseline.py
+gap_live.py
+greeks.py
+hourly_forecast.py
+hourly_forecast_model.py
+index_event_gate.py
+indicators.py
+indicators.py.bak.20260820_192140
+instrument_master.py
+instrument_master.py.bak
+instrument_master.py.bak.20260820_192140
+killswitch.py
+last_known.py
+macro_watch.py
+manual_protection.py
+market_session_gate.py
+mcx_live.py
+momentum_quote_watch.py
+move_capture.py
+move_capture_execution.py
+move_capture_handoff.py
+move_capture_service.py
+news_catalysts.py
+news_collector.py
+news_context.py
+oi_confirmation.py
+option_chain.py
+option_chain.py.bak.20260823_161252
+owned_watchdog.py
+portfolio_capacity.py
+preparation_diagnostics.py
+price_history.py
+priority_sessions.py
+rate_limiter.py
+rate_limiter.py.quote-backup-20260918T094309.367072Z
+risk_budget.py
+run.py.save
+scrip_master.py
+scrip_master.py.bak.20260821_052339
+scrip_master.py.bak.20260823_161252
+session.py
+session.py.bak.20260823_143942
+session.py.bak.20260827_032607
+shield_confirmation.py
+stock_execution.py
+stock_fast.py
+stock_fast_api.py
+stock_handoff.py
+stock_universe_scanner.py
+stock_universe_scanner.py.bak.20260904_062721
+stock_universe_scanner.py.bak.20260904_080425
+stock_universe_scanner.py.bak.20260904_182246
+stops.py
+storage.py
+storage.py.bak.20260820_192140
+strike_selector.py
+test_order_pathway.py
+test_order_pathway.py.bak.20260823_145016
+test_order_pathway.py.bak.20260823_145540
+timing_outcome.py
+timing_recorder.py
+trade_audit.py
+trade_learning.py
+trade_policy.py
+universe_api.py
+universe_display.py
+utils.py
+utils.py.bak.20260820_192140
+$ ls ~/backup-* -d
+/home/ubuntu/backup-hf-20261009-071951
+/home/ubuntu/backup-codex-20261009-index-news
+/home/ubuntu/backup-codex-20261009T190024Z-retention
+/home/ubuntu/backup-codex-manualstop-20261009T193405Z-refinement
+/home/ubuntu/backup-codex-preflight-20261009T195730Z
+/home/ubuntu/backup-20260929
+/home/ubuntu/backup-codex-optionchain-20261009T202514Z
+/home/ubuntu/backup-codex-20261009-oi-confirmation
+/home/ubuntu/backup-codex-manualstop-20261009T191938Z
+/home/ubuntu/backup-codex-20261009T185433Z-flat-reset-237
+/home/ubuntu/backup-hf
+
+Kadima candidate main PIDs: []
+KADIMA_CELESTIAL_ENABLED=unavailable (live /proc inaccessible)
+KADIMA_SESSION_AUTOTRADE=unavailable (live /proc inaccessible)
+KADIMA_FAST_MOMENTUM_LIVE=unavailable (live /proc inaccessible)
+KADIMA_GAP_AND_GO_LIVE=unavailable (live /proc inaccessible)
+KADIMA_CAS_EXECUTION=unavailable (live /proc inaccessible)
+KADIMA_CAS_LIVE=unavailable (live /proc inaccessible)
+KADIMA_MOVE_CAPTURE_LIVE=unavailable (live /proc inaccessible)
+KADIMA_INTRADAY_TREND_LIVE=unavailable (live /proc inaccessible)

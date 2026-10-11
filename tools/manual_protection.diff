@@ -1,0 +1,605 @@
+--- /home/ubuntu/backup-codex-manualstop-20261009T191938Z/kadima/config.py	2026-10-09 17:42:24.476730638 +0000
++++ kadima/config.py	2026-10-09 19:20:51.937515165 +0000
+@@ -185,6 +185,12 @@
+ MAX_CONCURRENT_POSITIONS = 1
+ MAX_LOTS_PER_SIGNAL = 2
+ DAILY_LOSS_LIMIT_INR = 10_000      # set to your real number
++# Manual long options are protected independently of new automatic entries.
++# Set MANUAL_PROTECT_ENABLED=False to opt out of manual adoption/protection.
++# Stops are engine-monitored SELL limits, not broker-hosted stop orders.
++MANUAL_PROTECT_ENABLED = True
++MANUAL_HARD_STOP_PCT = 0.30
++MANUAL_TRAIL_ACTIVATE_PCT = 0.10  # thereafter retain 50% via trade_policy.ratchet
+ NO_NEW_SIGNALS_AFTER_HOUR = 13     # non-expiry days, per your own rule
+ ORDER_PLACEMENT_ENABLED = True     # LIVE since 2026-08-21, trader's explicit decision
+ 
+--- /home/ubuntu/backup-codex-manualstop-20261009T191938Z/kadima/storage.py	2026-09-17 09:12:36.000000000 +0000
++++ kadima/storage.py	2026-10-09 19:20:52.027515966 +0000
+@@ -127,6 +127,8 @@
+     for name in ('swing_level', 'structural_stop', 'effective_stop', 'allocated_capital'):
+         if name not in position_cols:
+             c.execute(f'ALTER TABLE positions ADD COLUMN {name} REAL')
++    if 'product' not in position_cols:
++        c.execute('ALTER TABLE positions ADD COLUMN product TEXT')
+     cols = {row["name"] for row in c.execute("PRAGMA table_info(signals)")}
+     if "kind" not in cols:
+         c.execute("ALTER TABLE signals ADD COLUMN kind TEXT DEFAULT 'bull_shield'")
+@@ -201,8 +203,8 @@
+             "symbol, token, exchange, entry_price, entry_ts, lots, lot_size, "
+             "remaining_qty, order_id, status, peak_price, trail_active, "
+             "exit_price, exit_ts, exit_reason, exit_order_id, "
+-            "swing_level, structural_stop, effective_stop, allocated_capital) "
+-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
++            "swing_level, structural_stop, effective_stop, allocated_capital, product) "
++            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+             "ON CONFLICT(signal_id) DO UPDATE SET "
+             "entry_price=excluded.entry_price, entry_ts=excluded.entry_ts, "
+             "remaining_qty=excluded.remaining_qty, lots=excluded.lots, "
+@@ -211,7 +213,8 @@
+             "exit_ts=excluded.exit_ts, exit_reason=excluded.exit_reason, "
+             "exit_order_id=excluded.exit_order_id, order_id=excluded.order_id, "
+             "swing_level=excluded.swing_level, structural_stop=excluded.structural_stop, "
+-            "effective_stop=excluded.effective_stop, allocated_capital=excluded.allocated_capital",
++            "effective_stop=excluded.effective_stop, allocated_capital=excluded.allocated_capital, "
++            "product=excluded.product",
+             (pos.signal_id, pos.kind, pos.index, pos.direction, pos.symbol,
+              pos.token, pos.exchange, pos.entry_price,
+              pos.entry_ts.isoformat() if pos.entry_ts else None,
+@@ -221,7 +224,8 @@
+              pos.exit_ts.isoformat() if pos.exit_ts else None,
+              pos.exit_reason, pos.exit_order_id,
+              getattr(pos, 'swing_level', None), getattr(pos, 'structural_stop', None),
+-             getattr(pos, 'effective_stop', None), getattr(pos, 'allocated_capital', None)))
++             getattr(pos, 'effective_stop', None), getattr(pos, 'allocated_capital', None),
++             getattr(pos, 'product', None)))
+ 
+ 
+ def close_position(signal_id: int, exit_price: float | None, exit_ts: str,
+@@ -246,7 +250,7 @@
+         "token, exchange, entry_price, entry_ts, lots, lot_size, "
+         "remaining_qty, order_id, status, peak_price, trail_active, "
+         "exit_price, exit_ts, exit_reason, exit_order_id, "
+-        "swing_level, structural_stop, effective_stop, allocated_capital "
++        "swing_level, structural_stop, effective_stop, allocated_capital, product "
+         "FROM positions WHERE status IN ('open','entry_pending','exit_pending','order_unknown')"
+     ).fetchall()
+     return [dict(r) for r in rows]
+--- /home/ubuntu/backup-codex-manualstop-20261009T191938Z/kadima/angel_orders.py	2026-09-30 09:22:30.442067188 +0000
++++ kadima/angel_orders.py	2026-10-09 19:20:51.984515583 +0000
+@@ -26,6 +26,11 @@
+     check and reconciliation for a position goes through this, so a
+     CARRYFORWARD CAS entry is never exited with an INTRADAY SELL (which
+     Angel would treat as a separate, new short position)."""
++    product = getattr(pos, 'product', None)
++    if product is not None:
++        if product not in ('INTRADAY', 'CARRYFORWARD', 'NRML'):
++            raise ValueError('Unsupported persisted position product')
++        return product
+     return CAS_PRODUCT_TYPE if getattr(pos, "kind", None) == CAS_KIND else "INTRADAY"
+ 
+ 
+--- /home/ubuntu/backup-codex-manualstop-20261009T191938Z/kadima/auto_executor.py	2026-10-09 07:19:51.786647181 +0000
++++ kadima/auto_executor.py	2026-10-09 19:22:34.367419192 +0000
+@@ -139,6 +139,7 @@
+     effective_stop: Optional[float] = None
+     allocated_capital: Optional[float] = None
+     swing_level: Optional[float] = None  # confirmed underlying pivot
++    product: Optional[str] = None       # explicit broker product for adopted positions
+ 
+ 
+ class ExecutorState:
+@@ -269,6 +270,8 @@
+         # never adopted into executor state. Their underlyings are entry-blocked
+         # until a later successful reconciliation no longer sees them.
+         self._manual_carryforward_underlyings = set()
++        self._manual_unprotected_alerted = set()
++        self._manual_quote_warned = set()
+         # Non-Celestial reconciliation (2026-09-29): exits are verified per
+         # position, not globally, so a manual trade in some other contract
+         # can no longer switch off KADIMA's stop-loss monitoring.
+@@ -360,7 +363,10 @@
+                 row['trail_active'] = bool(row['trail_active'])
+                 self.state.positions[str(row['signal_id'])] = Position(**row)
+             self._restored = True
+-        if not execution_ledger.refresh(self.state.positions, _fresh_ltp):
++        ledger_healthy = execution_ledger.refresh(self.state.positions, _fresh_ltp)
++        # An unrelated unresolved intent still blocks entries, but must not
++        # prevent reading broker holdings and protecting a new manual option.
++        if not ledger_healthy and not celestial.enabled():
+             return
+         broker_positions = fetch_broker_positions()
+         if broker_positions is None:
+@@ -399,7 +405,7 @@
+                 key = p.exchange,p.token,angel_orders.product_for(p)
+                 if p.remaining_qty>0 and live.get(key)==p.remaining_qty and str(p.signal_id) not in unresolved_external:
+                     self._celestial_verified.add(str(p.signal_id))
+-            healthy = all(r.get('managed') is True for r in observations)
++            healthy = ledger_healthy and all(r.get('managed') is True for r in observations)
+             if any(r.get('reason')=='external_pending_orders' for r in observations):
+                 # 2026-09-29: a manual pending order used to clear verification
+                 # for EVERY position, switching off all KADIMA stops until it
+@@ -417,7 +423,8 @@
+                               contracts=len(clash), still_monitored=len(self._celestial_verified))
+             self._positions_verified = bool(self._celestial_verified) or healthy
+             self._reconcile_blocked = not healthy
+-            celestial.health('reconciliation',dict(ok=healthy,positions=observations))
++            celestial.health('reconciliation',dict(ok=healthy,positions=observations,
++                reason='execution_order_unresolved' if not ledger_healthy else 'broker_books_checked'))
+             return
+         # Only contracts KADIMA owns are reconciled (2026-09-29). Previously any
+         # manual position or manual pending order anywhere in the account set
+@@ -543,7 +550,7 @@
+         if not 0 <= time.monotonic() - getattr(chain, '_last_poll', 0) <= 30:
+             return
+         for pos in list(self.state.positions.values()):
+-            if pos.index != index_name or pos.status != 'open' or pos.kind == 'cas':
++            if pos.index != index_name or pos.status != 'open' or pos.kind in ('cas','MANUAL_PROTECTED'):
+                 continue
+             result = self._structure(chain, pos.direction, spot)
+             quote = chain.quotes.get(pos.token)
+@@ -938,6 +945,10 @@
+             is_mcx = getattr(pos,'kind',None) == 'mcx_momentum'
+             from .priority_sessions import exit_due
+             force_close = exit_due('MCX', now) if is_mcx else equity_force_close
++            manual = pos.kind == 'MANUAL_PROTECTED'
++            carryforward_manual = manual and angel_orders.product_for(pos) in ('CARRYFORWARD','NRML')
++            if carryforward_manual:
++                force_close = False
+             ltp = ltp_by_contract.get((pos.exchange,pos.token))
+             cas_row = None
+             if getattr(pos, 'kind', None) == 'cas':
+@@ -970,6 +981,13 @@
+             if ltp is None:
+                 audit.log("position_ltp_unavailable", signal_id=pos.signal_id,
+                           token=pos.token)
++                if manual:
++                    if pos.signal_id not in self._manual_quote_warned:
++                        alerts.enqueue(f'Manual position {pos.symbol} is NOT protected: '
++                                       'fresh_quote_unavailable. Place an SL in Angel One.',
++                                       key=f'manual-quote-unavailable:{pos.signal_id}')
++                        self._manual_quote_warned.add(pos.signal_id)
++                    continue
+                 if force_close or daily_loss_breached:
+                     # EOD close must not silently skip just because this
+                     # cycle's LTP poll came back empty. Fall back to a recent
+@@ -983,6 +1001,29 @@
+             pos.peak_price = ltp if pos.peak_price is None else max(pos.peak_price, ltp)
+             if pos.peak_price != previous_peak:
+                 storage.upsert_position(pos)
++            if manual:
++                if not config.MANUAL_PROTECT_ENABLED:
++                    continue
++                hard = pos.entry_price*(1-config.MANUAL_HARD_STOP_PCT)
++                active = pos.peak_price >= pos.entry_price*(1+config.MANUAL_TRAIL_ACTIVATE_PCT)-1e-12
++                if active or pos.trail_active:
++                    pos.effective_stop, active = trade_policy.ratchet(
++                        pos.entry_price,pos.peak_price,pos.effective_stop,hard)
++                else:
++                    pos.effective_stop = max(pos.effective_stop or 0,hard)
++                pos.trail_active = pos.trail_active or active
++                storage.upsert_position(pos)
++                # Manual stops/trails apply throughout the no-auto-exit window.
++                reason = pos.exit_reason
++                if ltp <= hard:
++                    reason = 'manual_hard_stop_breached'
++                elif pos.trail_active and ltp <= pos.effective_stop:
++                    reason = 'manual_profit_trail_breached'
++                elif not carryforward_manual and (daily_loss_breached or force_close):
++                    reason = 'daily_loss_limit_breached' if daily_loss_breached else 'eod_force_close'
++                if reason:
++                    self._close_position(pos,ltp,reason)
++                continue
+             if getattr(pos, 'kind', None) == angel_orders.CAS_KIND:
+                 # CAS positions follow only their own rules (trader, 2026-09-29):
+                 # no stop-loss at entry, peak-trailing exit, loss limit, EOD.
+--- /home/ubuntu/backup-codex-manualstop-20261009T191938Z/kadima/celestial_adoption.py	2026-09-30 02:23:23.106112155 +0000
++++ kadima/celestial_adoption.py	2026-10-09 19:25:05.360758491 +0000
+@@ -1,10 +1,10 @@
+-"""Verified long-INTRADAY option adoption; unsupported exposure stays visible.
++"""Verified manual long-option protection; unsupported exposure stays visible.
+ 
+ External pending orders and changes to managed quantities are never assumed fills.
+ """
+ import json
+ import math
+-from . import celestial, storage
++from . import alerts, audit, celestial, config, storage
+ from .angel_orders import product_for
+ from .celestial_universe import active_contracts
+ from .utils import now_ist
+@@ -20,7 +20,9 @@
+     from .execution_ledger import TERMINAL
+     external_pending = [o for o in book if o.status not in TERMINAL and
+                         o.order_id not in owned_ids and o.raw.get('ordertag') not in owned_tags]
+-    allow = celestial.read_config()['adopt_external_positions'] and not external_pending
++    pending_contracts = {(str(o.raw.get('exchange')),str(o.raw.get('symboltoken')))
++                         for o in external_pending}
++    allow = celestial.read_config()['adopt_external_positions'] and config.MANUAL_PROTECT_ENABLED
+     live, observations, new = {}, [], []
+     for row in broker_rows:
+         try:
+@@ -34,35 +36,29 @@
+                         symbol=str(row.get('tradingsymbol','')),source='BROKER_EXTERNAL',managed=False)
+             contract = contracts.get(key[:2])
+             if expected.get(key)==qty:
+-                adopted = any(p.kind=='MANUAL_ADOPTED' and (p.exchange,p.token)==key[:2]
+-                              for p in executor.state.positions.values())
+-                view.update(source='MANUAL_ADOPTED' if adopted else 'KADIMA_AUTO',managed=True,reason='reconciled')
++                adopted = next((p.kind for p in executor.state.positions.values()
++                               if p.kind in ('MANUAL_ADOPTED','MANUAL_PROTECTED')
++                               and (p.exchange,p.token,product_for(p))==key), None)
++                view.update(source=adopted or 'KADIMA_AUTO',managed=True,reason='reconciled')
+             elif key in expected:
+                 view['reason']='managed_quantity_changed_externally'
+-            elif not allow:
++            elif not allow or key[:2] in pending_contracts:
+                 view['reason']='adoption_disabled_or_external_order_pending'
+-            elif qty>0 and key[2]=='CARRYFORWARD' and contract is not None:
+-                if qty % contract['lot_size'] or view['symbol']!=contract['symbol']:
+-                    view['reason']='contract_or_lot_mismatch'
+-                else:
+-                    # Verified manual carry-forward exposure is reconciled as
+-                    # known-but-unmanaged. KADIMA never creates a Position for
+-                    # it, never exits/trails it, and only blocks new entries in
+-                    # the same underlying while it remains at the broker.
+-                    view.update(source='MANUAL_CARRYFORWARD',managed=True,
+-                        auto_managed=False,reason='carryforward_observed_not_managed',
+-                        underlying=str(contract.get('name') or ''))
+-            elif qty<=0 or key[2]!='INTRADAY' or contract is None:
++            elif (qty<=0 or key[2] not in ('INTRADAY','CARRYFORWARD','NRML')
++                  or contract is None or contract['instrumenttype'] not in ('OPTIDX','OPTSTK')):
+                 view['reason']='unsupported_position_type_or_contract'
+             elif qty % contract['lot_size'] or view['symbol']!=contract['symbol']:
+                 view['reason']='contract_or_lot_mismatch'
+             else:
+-                price = float(row.get('buyavgprice') or 0)
++                try:
++                    price = float(row.get('buyavgprice') or 0)
++                except (TypeError,ValueError):
++                    price = 0
+                 if not math.isfinite(price) or price<=0:
+                     view['reason']='entry_basis_unavailable'
+                 else:
+                     new.append(dict(key=key,quantity=int(qty),entry_price=price,contract=contract))
+-                    view.update(source='MANUAL_ADOPTED',managed=True,reason='adoption_verified')
++                    view.update(source='MANUAL_PROTECTED',managed=True,reason='adoption_verified')
+             observations.append(view)
+         except (KeyError,ValueError,TypeError,OverflowError):
+             observations.append(dict(source='UNKNOWN',managed=False,reason='invalid_broker_position'))
+@@ -73,6 +69,20 @@
+     if external_pending:
+         observations.append(dict(source='BROKER_EXTERNAL',managed=False,reason='external_pending_orders',
+                                  count=len(external_pending)))
++    warned = getattr(executor, '_manual_unprotected_alerted', set())
++    present = set(live)
++    warned.intersection_update(present)
++    for view in observations:
++        key = view.get('exchange'),view.get('token'),view.get('product')
++        if (allow and view.get('quantity',0)>0 and not view.get('managed')
++                and key in present and key not in warned):
++            alerts.enqueue(f"Manual position {view.get('symbol') or key[1]} is NOT protected: "
++                           f"{view['reason']}. Place an SL in Angel One.",
++                           key='manual-unprotected:'+':'.join(key))
++            warned.add(key)
++        elif view.get('managed'):
++            warned.discard(key)
++    executor._manual_unprotected_alerted = warned
+     return live, expected, observations, new
+ 
+ 
+@@ -80,12 +90,16 @@
+     from .auto_executor import Position
+     for item in proposals:
+         r,qty,price = item['contract'],item['quantity'],item['entry_price']
+-        exchange,token,_ = item['key']
++        exchange,token,product = item['key']
+         sid = storage.insert_signal(r['name'],'ADOPTED',0,r['symbol'][-2:],
+-            json.dumps(dict(source='MANUAL_ADOPTED',exchange=exchange,token=token,quantity=qty)),
+-            kind='MANUAL_ADOPTED')
+-        p = Position(sid,'MANUAL_ADOPTED',r['name'],r['symbol'][-2:],r['symbol'],token,exchange,
++            json.dumps(dict(source='MANUAL_PROTECTED',exchange=exchange,token=token,
++                            quantity=qty,product=product)),kind='MANUAL_PROTECTED')
++        stop = price*(1-config.MANUAL_HARD_STOP_PCT)
++        p = Position(sid,'MANUAL_PROTECTED',r['name'],r['symbol'][-2:],r['symbol'],token,exchange,
+             price,now_ist(),qty//r['lot_size'],r['lot_size'],qty,peak_price=price,
+-            structural_stop=price*.95,effective_stop=price*.95,allocated_capital=qty*price)
++            structural_stop=stop,effective_stop=stop,allocated_capital=qty*price,product=product)
+         storage.upsert_position(p)
+         executor.state.positions[str(sid)] = p
++        audit.log('manual_position_adopted',signal_id=sid,symbol=p.symbol,
++                  product=product,quantity=qty,entry_price=price,
++                  effective_stop=stop,reason='adoption_verified')
+--- /home/ubuntu/backup-codex-manualstop-20261009T191938Z/kadima/owned_watchdog.py	2026-09-30 09:22:30.442314243 +0000
++++ kadima/owned_watchdog.py	2026-10-09 19:20:52.153517089 +0000
+@@ -35,6 +35,8 @@
+     if len(keys) != len(set(keys)):
+         raise ValueError('duplicate_local_contract')
+     for p in positions.values():
++        if getattr(p,'kind',None) in ('MANUAL_ADOPTED','MANUAL_PROTECTED'):
++            continue
+         if p.status != 'open' or type(p.remaining_qty) is not int or p.remaining_qty <= 0:
+             continue
+         if not exit_due(p.exchange, at):
+--- /home/ubuntu/backup-codex-manualstop-20261009T191938Z/kadima/control_api.py	2026-10-09 07:19:51.786367968 +0000
++++ kadima/control_api.py	2026-10-09 19:21:31.051863849 +0000
+@@ -38,7 +38,7 @@
+ from fastapi import FastAPI, Header, HTTPException
+ from pydantic import BaseModel
+ 
+-from kadima import audit, trade_audit, price_history
++from kadima import angel_orders, audit, trade_audit, price_history
+ 
+ app = FastAPI(title="KADIMA Control API", version="1.0")
+ 
+@@ -467,7 +467,8 @@
+                 positions.append(dict(signal_id=p.signal_id,symbol=p.symbol,exchange=p.exchange,token=p.token,
+                     ltp=ltp,quote_at=quote.get('ts'),unrealized_pnl_inr=(ltp-p.entry_price)*p.remaining_qty if ltp is not None else None,
+                     direction=p.direction,status=p.status,remaining_qty=p.remaining_qty,entry_price=p.entry_price,
+-                    source='MANUAL_ADOPTED' if p.kind=='MANUAL_ADOPTED' else 'KADIMA_AUTO',
++                    source=p.kind if p.kind in ('MANUAL_ADOPTED','MANUAL_PROTECTED') else 'KADIMA_AUTO',
++                    product=angel_orders.product_for(p),
+                     strategy=strategy, strategy_label=trade_audit.STRATEGIES[strategy],
+                     effective_stop=p.effective_stop,trail_active=p.trail_active,
+                     entry_order_id=p.order_id,exit_order_id=p.exit_order_id,exit_reason=p.exit_reason,
+--- /home/ubuntu/backup-codex-manualstop-20261009T191938Z/kadima/trade_audit.py	2026-09-27 19:04:51.407631361 +0000
++++ kadima/trade_audit.py	2026-10-09 19:20:52.235517819 +0000
+@@ -30,7 +30,8 @@
+            'cas_premium': 'CAS', 'cas_premium_awakening': 'CAS',
+            'fast_momentum': 'SCALP', 'index_scalp': 'SCALP', 'index_scalper': 'SCALP',
+            'move_capture': 'MOVE_CAPTURE', 'gap_and_go': 'GAP_AND_GO',
+-           'mcx': 'MCX', 'mcx_live': 'MCX', 'mcx_momentum': 'MCX', 'MANUAL_ADOPTED': 'MANUAL'}
++           'mcx': 'MCX', 'mcx_live': 'MCX', 'mcx_momentum': 'MCX',
++           'MANUAL_ADOPTED': 'MANUAL', 'MANUAL_PROTECTED': 'MANUAL'}
+ STATUSES = ('SUGGESTED', 'PENDING', 'OPEN', 'CLOSED', 'UNFILLED', 'UNKNOWN', 'PAPER')
+ _health_lock = threading.Lock()
+ _health = {'failures': 0, 'last_failure_at': None, 'last_success_at': None}
+--- /dev/null	2026-09-16 07:31:26.634000304 +0000
++++ tools/test_manual_protection.py	2026-10-09 19:26:37.969564339 +0000
+@@ -0,0 +1,163 @@
++"""Offline manual-option adoption, persistence and exit tests; no broker calls."""
++import os
++import sys
++import tempfile
++import ast
++from datetime import datetime
++from pathlib import Path
++from types import SimpleNamespace
++from unittest.mock import patch
++
++os.environ['KADIMA_DATA_DIR'] = tempfile.mkdtemp(prefix='kadima-manual-protection-')
++os.environ['KADIMA_CELESTIAL_ENABLED'] = '1'
++sys.path.insert(0, '.')
++
++from kadima import (alerts, angel_orders, auto_executor as ae, celestial,
++                    celestial_adoption as adoption, config, execution_ledger,
++                    owned_watchdog, storage)
++
++AT = datetime(2026,10,9,15,20,tzinfo=config.IST)
++MASTER = SimpleNamespace(rows=[dict(exch_seg='NFO',instrumenttype='OPTIDX',
++    expiry='13OCT2026',lotsize='65',token='44597',symbol='NIFTY13OCT2622250PE',name='NIFTY')])
++
++
++def broker(product='CARRYFORWARD', **changes):
++    row = dict(exchange='NFO',symboltoken='44597',producttype=product,netqty='65',
++               tradingsymbol='NIFTY13OCT2622250PE',buyavgprice='100')
++    row.update(changes)
++    return row
++
++
++def pending(token):
++    return SimpleNamespace(order_id='external',status='open',raw=dict(
++        exchange='NFO',symboltoken=token,producttype='INTRADAY'))
++
++
++def inspect(ex, rows, book=()):
++    return adoption.inspect(ex,rows,book,set(),set(),MASTER)
++
++
++def new_position(product='CARRYFORWARD'):
++    ex = ae.AutoExecutor()
++    result = inspect(ex,[broker(product)])
++    assert result[2][0]['reason']=='adoption_verified'
++    adoption.adopt(ex,result[3])
++    pos = next(iter(ex.state.positions.values()))
++    ex._positions_verified = True
++    ex._celestial_verified.add(str(pos.signal_id))
++    return ex,pos
++
++
++def check_exits(ex, pos, price, time=AT):
++    submitted = []
++    def submit(**kwargs):
++        submitted.append(kwargs)
++        return angel_orders.OrderResult(True,'mock-order','mock',dry_run=False)
++    with patch.object(ae,'now_ist',return_value=time), \
++         patch.object(ae,'_poll_ltp',return_value={pos.token:price}), \
++         patch.object(ae.exit_manager,'realized_pnl_today',return_value=0), \
++         patch.object(angel_orders,'place_limit_order',side_effect=submit):
++        ex.check_exits()
++    return submitted
++
++
++def main():
++    with patch.object(adoption,'now_ist',return_value=AT), \
++         patch.object(celestial,'read_config',return_value=dict(adopt_external_positions=True)), \
++         patch.object(ae.audit,'log'), patch.object(alerts,'enqueue') as warning:
++        ex,p = new_position()
++        assert p.kind=='MANUAL_PROTECTED' and p.effective_stop==70 and p.product=='CARRYFORWARD'
++        restored = next(r for r in storage.load_open_positions() if r['signal_id']==p.signal_id)
++        assert restored['product']=='CARRYFORWARD' and restored['effective_stop']==70
++        print('PASS carryforward adoption, stop and persistence')
++        with patch.object(config,'in_no_auto_exit_window',return_value=True):
++            sent = check_exits(ex,p,69)
++        assert len(sent)==1 and sent[0]['transactiontype']=='SELL' and sent[0]['producttype']=='CARRYFORWARD'
++        assert p.exit_reason=='manual_hard_stop_breached'
++        print('PASS carryforward hard-stop SELL at 15:20')
++        ex,p = new_position('INTRADAY')
++        assert p.effective_stop==70
++        sent = check_exits(ex,p,69)
++        assert len(sent)==1 and sent[0]['producttype']=='INTRADAY'
++        print('PASS intraday manual stop uses original product')
++        ex = ae.AutoExecutor()
++        assert len(inspect(ex,[broker()],[pending('different')])[3])==1
++        assert not inspect(ex,[broker()],[pending('44597')])[3]
++        print('PASS pending-order adoption blocks only matching contract')
++        ex = ae.AutoExecutor()
++        warning.reset_mock()
++        for _ in range(2): inspect(ex,[broker(netqty='64')])
++        assert warning.call_count==1 and 'contract_or_lot_mismatch' in warning.call_args.args[0]
++        assert 'Place an SL in Angel One.' in warning.call_args.args[0]
++        print('PASS one unprotected-position alert')
++        ex,p = new_position()
++        eod = AT.replace(minute=38)
++        assert not check_exits(ex,p,100,eod)
++        ledger=[dict(signal_id=p.signal_id,state='terminal',dry_run=0,order_id='x',side='BUY',filled=65)]
++        assert owned_watchdog.owned_positions(ex.state.positions,ledger,[broker()],[],eod)==[]
++        print('PASS carryforward survives EOD and watchdog even with a BUY ledger')
++        ex,p = new_position('INTRADAY')
++        p.kind='gamma_blast';p.structural_stop=p.effective_stop=70
++        with patch.object(config,'in_no_auto_exit_window',return_value=True), \
++             patch('kadima.celestial_exit.evaluate',return_value=None):
++            assert not check_exits(ex,p,100)
++        print('PASS existing KADIMA position untouched at 15:20 above stop')
++        ex,p = new_position()
++        assert not check_exits(ex,p,109) and p.effective_stop==70 and not p.trail_active
++        assert not check_exits(ex,p,120) and p.effective_stop==110 and p.trail_active
++        assert check_exits(ex,p,109)[0]['producttype']=='CARRYFORWARD'
++        assert p.exit_reason=='manual_profit_trail_breached'
++        print('PASS activation at 10%, retain 50% of peak gain')
++        ex,p = new_position('NRML')
++        assert check_exits(ex,p,69)[0]['producttype']=='NRML'
++        print('PASS NRML product preserved')
++        ex = ae.AutoExecutor();ex.celestial_master=MASTER
++        with patch.object(storage,'load_open_positions',return_value=[]), \
++             patch.object(execution_ledger,'refresh',return_value=False), \
++             patch.object(execution_ledger,'pending',return_value=[]), \
++             patch.object(ae,'fetch_broker_positions',return_value=[broker()]), \
++             patch.object(angel_orders,'fetch_order_book',return_value=[]), \
++             patch('kadima.external_reconciliation.reconcile',return_value=set()), \
++             patch.object(celestial,'health'):
++            ex.reconcile_on_startup()
++        assert ex._reconcile_blocked and ex._positions_verified
++        assert next(iter(ex.state.positions.values())).kind=='MANUAL_PROTECTED'
++        print('PASS unrelated unresolved ledger blocks entries but permits manual protection')
++        # Execute the actual route body without requiring the web framework
++        # in the standalone offline Python environment.
++        from kadima import trade_audit
++        tree = ast.parse(Path('kadima/control_api.py').read_text())
++        route = next(n for n in tree.body if isinstance(n,ast.FunctionDef)
++                     and n.name=='celestial_top20')
++        route.decorator_list=[]
++        for arg in route.args.args:
++            arg.annotation=None
++        route.args.defaults=[ast.Constant(None)]
++        namespace = dict(EXECUTOR=ex,_check_auth=lambda _:None,celestial=celestial,
++                         angel_orders=angel_orders,trade_audit=trade_audit,
++                         now_ist=lambda:AT,celestial_config=lambda _:dict())
++        exec(compile(ast.fix_missing_locations(ast.Module(body=[route],type_ignores=[])),
++                     'kadima/control_api.py','exec'),namespace)
++        with patch.object(celestial,'top20',return_value=[]):
++            view = namespace['celestial_top20'](None)['positions'][0]
++        assert view['source']=='MANUAL_PROTECTED' and view['effective_stop']==70
++        assert view['product']=='CARRYFORWARD' and view['strategy']=='MANUAL'
++        print('PASS top20 manual source, product, strategy and effective stop')
++        stock = dict(exch_seg='NFO',instrumenttype='OPTSTK',expiry='27OCT2026',
++                     lotsize='175',token='stock-option',symbol='TCS27OCT264000PE',name='TCS')
++        MASTER.rows.append(stock)
++        try:
++            ex = ae.AutoExecutor()
++            result = inspect(ex,[broker(symboltoken='stock-option',netqty='175',
++                                        tradingsymbol=stock['symbol'])])
++            adoption.adopt(ex,result[3])
++            p = next(iter(ex.state.positions.values()))
++            assert p.kind=='MANUAL_PROTECTED' and p.index=='TCS' and p.effective_stop==70
++            print('PASS F&O stock long-option adoption')
++        finally:
++            MASTER.rows.pop()
++    print('ALL PASS')
++
++
++if __name__=='__main__':
++    main()
+--- /dev/null	2026-09-16 07:31:26.634000304 +0000
++++ docs/manualstop-20261009T191938Z.md	2026-10-09 19:27:54.145221872 +0000
+@@ -0,0 +1,81 @@
++# Manual NIFTY option protection: diagnosis and change
++
++Your NIFTY 13-Oct-2026 22250 PE was not registered as a managed KADIMA position, so the exit monitor had no position to protect. The 9 October log repeatedly records an unresolved SELL for a different, older SENSEX position; the original reconciliation code returned before fetching broker positions or performing manual adoption whenever that ledger refresh failed. Even if reconciliation had succeeded, the original adoption code deliberately observed valid CARRYFORWARD longs without creating a Position. The records do not contain your manual buy's product type, quantity, price or classification, so the carryforward explanation is conditional. The 15:15–15:40 window is not the demonstrated cause, and no relationship to the kill latch can be established.
++
++## Evidence (all times IST)
++
++The on-disk instrument cache identifies `NIFTY13OCT2622250PE` as token `44597`, lot size 65. Instrument identifiers here are public contract identifiers, not authentication tokens.
++
++| Source | Result |
++|---|---|
++| `/var/lib/kadima/audit/2026-10-09.jsonl` | Zero exact contract/token events. There is no recorded manual BUY, product type, quantity, buy average, adoption reason or stop evaluation for this contract. A broad numeric `22250` match was an unrelated SHIELD_SCORE value and was excluded. |
++| `positions` | No row for the symbol or contract token, including closed history. Consequently `check_exits` could not select a Position for this holding. |
++| `trade_audit_plans` | One **8 October**, not 9 October, SCALP suggestion: 14:46:34.708768, score 84.43, proposed entry 146.10, stage SETUP_READY, blocker fresh_news_coverage_required. This is a suggestion, not proof of your manual execution. |
++| `oi_snapshots`, 9 October | 510 stored samples; first 09:15:39.723260 at ₹86.30; last 15:39:36.556972 at ₹23.80; daily range ₹22.85–₹95.00. First-to-last sampled fall about 72.4%, **not** a measured return from your unknown buy price. |
++| `ticks`, 9 October | No stored tick rows for token 44597. |
++| Historical execution ledger blocker | 3,043 execution_order_unresolved audit events for signal 237, from 09:00:19.104556 through 15:39:55.692207. This concerned the earlier SENSEX26O0871700PE SELL, not the NIFTY contract. The stale local record was subsequently reset with your authorization in the earlier task. |
++| Last persisted reconciliation health | 15:39:35.697023, ok=False, reason=checking_broker_books. Broker-position observations for your trade were not retained in that health payload. |
++
++Original code is preserved in `/home/ubuntu/backup-codex-manualstop-20261009T191938Z/`:
++
++- `kadima/auto_executor.py:363`: failed `execution_ledger.refresh(...)` immediately returned before broker-position fetch and adoption. `check_exits` also returned when `_positions_verified` was false, and used `_celestial_verified` / `_exit_paused` to select positions. There are no per-cycle exit-evaluation records proving runtime flags for the unregistered NIFTY trade.
++- `kadima/celestial_adoption.py:23`: any external pending order disabled all new manual adoption.
++- `kadima/celestial_adoption.py:44`: the CARRYFORWARD branch validated lot size and symbol; lines 52–54 classified a valid holding as `MANUAL_CARRYFORWARD`, reason `carryforward_observed_not_managed`, without adding an adoption proposal. Other original branches emitted `adoption_disabled_or_external_order_pending`, `unsupported_position_type_or_contract`, `contract_or_lot_mismatch` or `entry_basis_unavailable`. **The actual branch reached for your trade is not recorded.**
++- `config.in_no_auto_exit_window()` defines 15:15–15:40, but the original `check_exits` does not call it. No position existed for this contract anyway. The helper and existing KADIMA-owned exit branches are unchanged.
++- Kill evidence: `auto_arm_enabled` at 09:05:01.959223 reports revision 33. Persistent controls remain revision 35, auto_trade_enabled=False, kill_latched=True. There is no kill/squareoff audit event proving when or why the latch changed. `celestial.latch_kill()` (line 111) does not audit the transition; the kill route calls it and squareoff. Revision increments are consistent with that path but do not prove it occurred. No recorded connection to the NIFTY manual trade, and no confirmed squareoff of that trade.
++
++## Implemented behavior
++
++Eligible positive OPTIDX/OPTSTK holdings with INTRADAY, CARRYFORWARD or NRML product, exact contract and lot-multiple quantity, and finite positive `buyavgprice` are adopted as MANUAL_PROTECTED. Product is persisted, restored and passed through `angel_orders.product_for` to the existing execution ledger's SELL submission. Existing positions without a product retain their previous product inference.
++
++New risk settings next to the existing settings: MANUAL_PROTECT_ENABLED=True, MANUAL_HARD_STOP_PCT=0.30, MANUAL_TRAIL_ACTIVATE_PCT=0.10. At entry 100, the stop is 70. Once the observed peak reaches +10%, the existing `trade_policy.ratchet` retains 50% of peak gain. Manual stops/trails bypass the own-trade exit branch throughout 15:15–15:40. Carryforward/NRML manual positions are not closed by EOD, daily portfolio loss flattening or the owned-position watchdog; only their stop/trail or an explicit already-queued exit applies. Intraday manual positions retain EOD and daily-loss handling. Structure updates cannot overwrite manual protection with an automatic strategy stop.
++
++External pending orders block adoption only on the same (exchange, token). An unrelated unresolved KADIMA intent continues blocking new entries, but broker-readable manual contracts can now be adopted and verified individually. Matching pending orders and unresolved quantities still prevent conflicting exits. No reconciliation guard is bypassed.
++
++Unprotectable positive holdings queue the requested warning once per observed holding in the running engine; deduplication resets on engine restart. Missing live exit quotes queue a warning once per signal in that engine process. Opting out with MANUAL_PROTECT_ENABLED=False or the existing adopt_external_positions=False disables new manual adoption. The current Celestial rollout/master and readable broker books are still required for adoption.
++
++`/api/kadima/top20` reports source MANUAL_PROTECTED, product, MANUAL strategy, and effective stop. A `manual_position_adopted` audit event records the accepted basis and stop for future diagnosis.
++
++These are **engine-monitored SELL limits, not stop orders hosted at Angel One**. They require a running engine, broker-verified quantity and a fresh quote; a submission acknowledgement is not a fill or a guaranteed maximum loss.
++
++## Validation and deployment
++
++Nine changed Python files compiled. All nine `tools/test_*.py` scripts passed, including test_offline.py and the new test_manual_protection.py. The suite ran in isolated temporary data directories with broker/network calls disabled and transport submissions mocked. Tests cover all seven requested cases, product persistence, NRML, trailing activation/retention, F&O stock adoption, the actual top20 route body, and manual adoption while an unrelated execution intent remains unresolved. Standalone Python lacks FastAPI, so the route body was executed from its AST without importing the web framework.
++
++Full test output: `tools/manual_protection_tests.log`. Full per-file `diff -u`: `tools/manual_protection.diff`.
++
++Existing files changed: kadima/config.py, storage.py, angel_orders.py, auto_executor.py, celestial_adoption.py, owned_watchdog.py, control_api.py, trade_audit.py. New files: tools/test_manual_protection.py and this report, plus test-log/diff artifacts. tools/test_audit_fixes.py was backed up as a precaution but was not changed.
++
++Backup folder: `/home/ubuntu/backup-codex-manualstop-20261009T191938Z/`.
++
++No broker APIs, live orders, celestial configuration changes, kill reset or service restart were performed during this task. Live DB schema still has no product column: the additive migration runs when the revised storage code is first loaded after your restart. No live database migration was invoked here.
++
++Restart **only after 15:45 or before 09:00 IST**:
++
++```bash
++sudo systemctl restart kadima
++```
++
++Rollback refuses if any MANUAL_PROTECTED position is still locally open: older code would lose its persisted product handling. Reconcile/close those holdings yourself before rolling back. Run only outside the same market-time window:
++
++```bash
++(
++set -e
++cd /home/ubuntu/kadima-py
++python3 - <<'PY'
++import pathlib, shutil, sqlite3
++c = sqlite3.connect('file:/var/lib/kadima/kadima.db?mode=ro', uri=True)
++n = c.execute("SELECT count(*) FROM positions WHERE kind='MANUAL_PROTECTED' AND status!='closed' AND remaining_qty>0").fetchone()[0]
++c.close()
++if n:
++    raise SystemExit('Rollback refused: reconcile/close MANUAL_PROTECTED holdings first')
++backup = pathlib.Path('/home/ubuntu/backup-codex-manualstop-20261009T191938Z')
++for name in ('config','storage','angel_orders','auto_executor','celestial_adoption','owned_watchdog','control_api','trade_audit'):
++    shutil.copy2(backup/'kadima'/f'{name}.py', pathlib.Path('kadima')/f'{name}.py')
++pathlib.Path('tools/test_manual_protection.py').unlink(missing_ok=True)
++PY
++sudo systemctl restart kadima
++)
++```
++
++The additive product column can remain in SQLite on rollback; do not restore an old database over newer execution history.

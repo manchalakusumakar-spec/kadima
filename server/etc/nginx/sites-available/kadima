@@ -1,0 +1,55 @@
+server {
+    server_name 18-61-12-184.sslip.io;
+
+    # KADIMA-DASHBOARD-GATEWAY-BEGIN
+    location ^~ /dashboard-api/ {
+        proxy_pass http://127.0.0.1:8082/;
+        proxy_set_header Host $host;
+        proxy_set_header Origin $http_origin;
+        proxy_set_header Cookie $http_cookie;
+        proxy_read_timeout 12s;
+        client_max_body_size 8k;
+        add_header Cache-Control "no-store" always;
+    }
+    # KADIMA-DASHBOARD-GATEWAY-END
+    location = /forecast.html { root /var/www/html; }
+    location = /celestial_forecast_embed.js { root /var/www/html; }
+    location = /dashboard.html {
+        root /var/www/html;
+    }
+
+    location / {
+        proxy_pass http://127.0.0.1:8080;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    location /control/ {
+        proxy_pass http://127.0.0.1:8081/;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+
+    listen 443 ssl; # managed by Certbot
+    ssl_certificate /etc/letsencrypt/live/18-61-12-184.sslip.io/fullchain.pem; # managed by Certbot
+    ssl_certificate_key /etc/letsencrypt/live/18-61-12-184.sslip.io/privkey.pem; # managed by Certbot
+    include /etc/letsencrypt/options-ssl-nginx.conf; # managed by Certbot
+    ssl_dhparam /etc/letsencrypt/ssl-dhparams.pem; # managed by Certbot
+
+
+
+
+
+}
+server {
+    if ($host = 18-61-12-184.sslip.io) {
+        return 301 https://$host$request_uri;
+    } # managed by Certbot
+
+
+    listen 80;
+    server_name 18-61-12-184.sslip.io;
+    return 404; # managed by Certbot
+
+
+}

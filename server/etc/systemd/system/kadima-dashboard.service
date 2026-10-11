@@ -1,0 +1,17 @@
+[Unit]
+Description=KADIMA dashboard session gateway
+After=network.target
+[Service]
+User=ubuntu
+Group=ubuntu
+WorkingDirectory=/opt/kadima-dashboard
+Environment="KADIMA_DASHBOARD_CONFIG=REDACTED"
+ExecStart=/home/ubuntu/kadima-py/venv/bin/python3 -m uvicorn gateway:app --host 127.0.0.1 --port 8082 --no-access-log
+Restart=on-failure
+RestartSec=3
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,9 @@
+[Unit]
+Description=Run KADIMA forecast nightly maintenance at 16:05 IST on weekdays
+
+[Timer]
+OnCalendar=Mon..Fri *-*-* 10:35:00 UTC
+Persistent=false
+
+[Install]
+WantedBy=timers.target

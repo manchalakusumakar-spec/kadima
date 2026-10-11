@@ -1,0 +1,9 @@
+[Unit]
+Description=Check KADIMA market-day activation every minute
+[Timer]
+OnBootSec=30s
+OnUnitInactiveSec=60s
+AccuracySec=1s
+Unit=kadima-session-auto.service
+[Install]
+WantedBy=timers.target

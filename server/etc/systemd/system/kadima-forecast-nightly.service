@@ -1,0 +1,20 @@
+[Unit]
+Description=KADIMA hourly forecast nightly maintenance (history, replay, retune)
+After=network-online.target
+
+[Service]
+Type=oneshot
+Nice=10
+TimeoutStartSec=1800
+WorkingDirectory=/home/ubuntu/kadima-py
+User=ubuntu
+Environment="ANGEL_API_KEY=REDACTED"
+Environment="ANGEL_CLIENT_ID=REDACTED"
+Environment="ANGEL_PASSWORD=REDACTED"
+Environment="ANGEL_TOTP_SECRET=REDACTED"
+Environment="KADIMA_API_TOKEN=REDACTED"
+EnvironmentFile=/etc/kadima/auto-execution.env
+EnvironmentFile=/etc/kadima/session-auto.env
+EnvironmentFile=/var/lib/kadima-autotrading-20260928/trading.env
+Environment="KADIMA_CAS_EXECUTION=REDACTED"
+ExecStart=/home/ubuntu/kadima-py/venv/bin/python3 /home/ubuntu/kadima-py/tools/forecast_nightly.py

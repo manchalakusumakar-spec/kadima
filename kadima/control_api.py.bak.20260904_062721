@@ -1,0 +1,145 @@
+"""
+control_api.py — KADIMA order-control bridge (manual dashboard actions).
+
+Deliberately kept SEPARATE from kadima/api.py, whose docstring states it is
+built as a read-only bridge for LLM access ("an LLM reads this, and an LLM
+should not be able to reach anything consequential"). This file is the
+opposite: it exposes routes that DO have real, immediate consequences
+(closing a live position, cancelling/modifying a live order), and it is
+meant to be called by the dashboard's Live Trade panel — not by an LLM.
+
+No new order logic or risk logic lives here. Every route is a thin wrapper
+around functions that already exist and are already tested:
+    - EXECUTOR.manual_exit()      -> auto_executor.py (reuses _close_position())
+    - angel_orders.cancel_order() -> angel_orders.py
+    - angel_orders.modify_order() -> angel_orders.py
+    - get_order_book()            -> auto_executor.py (already deployed)
+
+Runs as its own uvicorn instance on port 8081, in its own thread, started
+from run.py alongside the existing port-8080 state_api thread. Reuses the
+existing KADIMA_API_TOKEN env var for auth, per Kusumakar's explicit
+decision (2026-08-29) despite api.py's docstring warning that a prior
+token value was flagged as exposed in an audit — rotate the token before
+relying on this in production if that hasn't been done yet.
+
+Confirmed against the live EC2 source on 2026-09-02:
+    - angel_orders.cancel_order(order_id: str, variety: str = "NORMAL") -> OrderResult
+    - angel_orders.modify_order(order_id: str, *, price: float | None = None, ...)
+    - auto_executor.EXECUTOR = AutoExecutor()   (module-level singleton, line 695)
+"""
+
+from __future__ import annotations
+
+import os
+from typing import Optional
+
+from fastapi import FastAPI, Header, HTTPException
+from pydantic import BaseModel
+
+from kadima import audit
+
+app = FastAPI(title="KADIMA Control API", version="1.0")
+
+# Set via register() at startup from run.py, same pattern as kadima/api.py's
+# register(engine) for ENGINE.
+EXECUTOR = None
+ANGEL_ORDERS = None
+
+
+def register(executor, angel_orders_module) -> None:
+    """Wire in the live EXECUTOR singleton and angel_orders module.
+
+    Called once from run.py at startup, after auto_executor.EXECUTOR and
+    angel_orders are constructed — mirrors kadima/api.py's register(engine).
+    """
+    global EXECUTOR, ANGEL_ORDERS
+    EXECUTOR = executor
+    ANGEL_ORDERS = angel_orders_module
+
+
+def _check_auth(authorization: Optional[str]) -> None:
+    expected = os.environ.get("KADIMA_API_TOKEN")
+    if not expected:
+        # Fail closed: if the token isn't configured, refuse everything
+        # rather than silently allowing unauthenticated control actions.
+        raise HTTPException(status_code=503, detail="control_api_token_not_configured")
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="missing_bearer_token")
+    token = authorization.removeprefix("Bearer ").strip()
+    if token != expected:
+        raise HTTPException(status_code=401, detail="invalid_token")
+
+
+class ManualExitBody(BaseModel):
+    reason: str = "manual_exit_dashboard"
+
+
+class ModifyOrderBody(BaseModel):
+    price: Optional[float] = None
+    quantity: Optional[int] = None
+
+
+class CancelOrderBody(BaseModel):
+    variety: str = "NORMAL"
+
+
+@app.get("/health")
+def health():
+    # Unauthenticated, matches api.py's convention for /health.
+    return {"ok": True, "service": "kadima-control-api"}
+
+
+@app.post("/manual_exit/{signal_id}")
+def manual_exit(signal_id: int, body: ManualExitBody, authorization: Optional[str] = Header(None)):
+    _check_auth(authorization)
+    if EXECUTOR is None:
+        raise HTTPException(status_code=503, detail="executor_not_registered")
+    audit.log("control_api_manual_exit_requested", signal_id=signal_id, reason=body.reason)
+    result = EXECUTOR.manual_exit(signal_id, reason=body.reason)
+    if not result.get("ok"):
+        raise HTTPException(status_code=409, detail=result)
+    return result
+
+
+@app.get("/order_book")
+def order_book(authorization: Optional[str] = Header(None)):
+    _check_auth(authorization)
+    if EXECUTOR is None:
+        raise HTTPException(status_code=503, detail="executor_not_registered")
+    # get_order_book() confirmed as a module-level function in
+    # auto_executor.py (def get_order_book() -> list[OrderStatus]:).
+    from kadima.auto_executor import get_order_book
+    return get_order_book()
+
+
+@app.post("/cancel_order/{order_id}")
+def cancel_order(order_id: str, body: CancelOrderBody, authorization: Optional[str] = Header(None)):
+    _check_auth(authorization)
+    if ANGEL_ORDERS is None:
+        raise HTTPException(status_code=503, detail="angel_orders_not_registered")
+    audit.log("control_api_cancel_order_requested", order_id=order_id, variety=body.variety)
+    # cancel_order(order_id, variety="NORMAL") -> OrderResult, confirmed
+    # live in angel_orders.py.
+    result = ANGEL_ORDERS.cancel_order(order_id, variety=body.variety)
+    if not getattr(result, "ok", False):
+        raise HTTPException(status_code=409, detail=str(result))
+    return result
+
+
+@app.post("/modify_order/{order_id}")
+def modify_order(order_id: str, body: ModifyOrderBody, authorization: Optional[str] = Header(None)):
+    _check_auth(authorization)
+    if ANGEL_ORDERS is None:
+        raise HTTPException(status_code=503, detail="angel_orders_not_registered")
+    audit.log(
+        "control_api_modify_order_requested",
+        order_id=order_id,
+        price=body.price,
+        quantity=body.quantity,
+    )
+    # modifyOrder() is confirmed live in angel_orders.py from the
+    # deployed screenshots.
+    result = ANGEL_ORDERS.modify_order(order_id, price=body.price, quantity=body.quantity)
+    if not getattr(result, "ok", False):
+        raise HTTPException(status_code=409, detail=str(result))
+    return result

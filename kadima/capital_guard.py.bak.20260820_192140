@@ -1,0 +1,193 @@
+"""
+capital_guard.py — hard capital ceiling for KADIMA auto_executor.
+
+Enforces a total-deployed-capital limit (default Rs 15,000) that the
+executor cannot exceed, and sizes down or rejects entries accordingly.
+
+DESIGN NOTES — read before deploying:
+
+1. CUMULATIVE, NOT PER-TRADE.
+   A per-trade cap is not a capital cap. With MAX_CONCURRENT_POSITIONS
+   > 1, two trades each "under 15k" can total 30k. This checks the sum
+   of all open positions plus the proposed new one.
+
+2. LOT SIZE MUST COME FROM THE INSTRUMENT, NOT A CONSTANT.
+   Index lot sizes change (NIFTY has been revised more than once), and
+   they differ per underlying — NIFTY, BANKNIFTY, SENSEX, MIDCPNIFTY and
+   every F&O stock have different lot sizes. Hardcoding one number is
+   how a "1 lot" order silently becomes 3x the intended rupee exposure.
+   >>> Wire get_lot_size() to your instrument master before using this.
+
+3. BROKER MARGIN IS THE SECOND GATE, NOT THE FIRST.
+   Available funds from the broker is a separate check from your own
+   self-imposed ceiling. You want BOTH: your ceiling stops you deploying
+   more than you decided to risk; the margin check stops rejected orders.
+   If the broker call fails, this FAILS CLOSED (rejects the entry) rather
+   than assuming funds are available.
+
+4. THIS CAPS DEPLOYMENT, NOT LOSS.
+   Rs 15,000 deployed in long options can go to near-zero. This limits
+   how much is exposed, not how much can be lost. Options bought can
+   lose effectively their full premium. Treat the whole 15k as at risk.
+"""
+
+from __future__ import annotations
+
+from . import audit
+from .session import SESSION
+from .instrument_master import get_lot_size
+
+
+# ---------------------------------------------------------------- config
+# Move these into config.py to keep thresholds centralised.
+MAX_DEPLOYED_CAPITAL_INR = 15_000.0   # total across all open positions
+CAPITAL_SAFETY_BUFFER_PCT = 5.0       # leave headroom for slippage on MARKET orders
+REQUIRE_BROKER_MARGIN_CHECK = True    # fail closed if broker margin unreadable
+
+
+def _buffered_ceiling() -> float:
+    """Effective ceiling after slippage headroom. MARKET orders can fill
+    worse than the quoted LTP, so sizing to the exact ceiling can breach it."""
+    return MAX_DEPLOYED_CAPITAL_INR * (1 - CAPITAL_SAFETY_BUFFER_PCT / 100.0)
+
+
+# ---------------------------------------------------------------- lot size
+
+
+# ---------------------------------------------------------------- exposure
+def deployed_capital(positions: dict) -> float:
+    """
+    Rupee value currently deployed across open positions, valued at
+    entry cost (what was actually paid), not marked-to-market.
+    """
+    total = 0.0
+    for pos in positions.values():
+        lot_size = get_lot_size(pos.symbol, pos.token)
+        if lot_size is None:
+            # Cannot value this position -> cannot safely compute headroom.
+            # Signal this by returning infinity so any new entry is blocked.
+            audit.log(
+                "capital_guard_unvaluable_position",
+                symbol=pos.symbol,
+                token=pos.token,
+                note="lot size unavailable; blocking new entries until resolved",
+            )
+            return float("inf")
+        total += pos.entry_price * lot_size * pos.remaining_qty
+    return total
+
+
+# ---------------------------------------------------------------- broker
+def broker_available_funds() -> float | None:
+    """
+    Available cash/margin from Angel One RMS. Returns None if it cannot
+    be read — caller must treat None as "do not trade", not "unlimited".
+
+    >>> Field names in the RMS response vary by broker/API version.
+    >>> Verify against an actual rmsLimit() response before relying on it.
+    """
+    try:
+        SESSION.ensure()
+        resp = SESSION.api.rmsLimit()
+        data = (resp or {}).get("data") or {}
+        for key in ("availablecash", "availableCash", "net", "availablemargin"):
+            if key in data:
+                try:
+                    return float(data[key])
+                except (TypeError, ValueError):
+                    continue
+        audit.log("capital_guard_rms_unparsed", response_keys=list(data.keys()))
+        return None
+    except Exception as exc:  # noqa: BLE001
+        audit.log("capital_guard_rms_exception", error=str(exc))
+        return None
+
+
+# ---------------------------------------------------------------- sizing
+def max_affordable_lots(
+    entry_price: float,
+    symbol: str,
+    token: str,
+    positions: dict,
+    requested_lots: int,
+) -> tuple[int, str]:
+    """
+    Returns (allowed_lots, reason).
+
+    allowed_lots == 0 means the entry must be rejected outright.
+    allowed_lots < requested_lots means size down to that many.
+    """
+    if entry_price is None or entry_price <= 0:
+        return 0, "invalid_entry_price"
+
+    lot_size = get_lot_size(symbol, token)
+    if lot_size is None:
+        return 0, "lot_size_unavailable_cannot_enforce_capital_cap"
+
+    cost_per_lot = entry_price * lot_size
+
+    already = deployed_capital(positions)
+    if already == float("inf"):
+        return 0, "existing_position_unvaluable"
+
+    headroom = _buffered_ceiling() - already
+    if headroom <= 0:
+        return 0, f"capital_ceiling_reached_deployed_{int(already)}"
+
+    if cost_per_lot > headroom:
+        return 0, (
+            f"single_lot_cost_{int(cost_per_lot)}_exceeds_headroom_{int(headroom)}"
+        )
+
+    affordable = int(headroom // cost_per_lot)
+    allowed = min(requested_lots, affordable)
+
+    # Second gate: actual broker funds.
+    if REQUIRE_BROKER_MARGIN_CHECK:
+        funds = broker_available_funds()
+        if funds is None:
+            return 0, "broker_margin_unreadable_failing_closed"
+        while allowed > 0 and (allowed * cost_per_lot) > funds:
+            allowed -= 1
+        if allowed == 0:
+            return 0, f"insufficient_broker_funds_{int(funds)}_need_{int(cost_per_lot)}"
+
+    if allowed < requested_lots:
+        return allowed, f"sized_down_from_{requested_lots}_to_{allowed}"
+
+    return allowed, "ok"
+
+
+# ---------------------------------------------------------------- hook
+def enforce(executor, ranked, direction: str, requested_lots: int):
+    """
+    Call this inside evaluate_and_enter(), AFTER the existing _gates_ok()
+    check and AFTER entry_price is resolved, BEFORE building the order.
+
+        allowed, why = capital_guard.enforce(self, ranked, direction, lots)
+        if allowed == 0:
+            return self._reject("capital_guard_" + why, ranked, direction)
+        lots = allowed
+
+    Returns (allowed_lots, reason).
+    """
+    q = ranked.quote
+    allowed, why = max_affordable_lots(
+        entry_price=q.ltp,
+        symbol=q.symbol,
+        token=q.token,
+        positions=executor.state.positions,
+        requested_lots=requested_lots,
+    )
+    audit.log(
+        "capital_guard_decision",
+        symbol=q.symbol,
+        direction=direction,
+        requested_lots=requested_lots,
+        allowed_lots=allowed,
+        reason=why,
+        ceiling=MAX_DEPLOYED_CAPITAL_INR,
+        buffered_ceiling=round(_buffered_ceiling(), 2),
+        already_deployed=deployed_capital(executor.state.positions),
+    )
+    return allowed, why

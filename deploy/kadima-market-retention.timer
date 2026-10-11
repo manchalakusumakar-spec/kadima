@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily NIFTY and BANKNIFTY data cleanup at 02:30 IST
+
+[Timer]
+OnCalendar=*-*-* 02:30:00 Asia/Kolkata
+Persistent=false
+Unit=kadima-market-retention.service
+
+[Install]
+WantedBy=timers.target

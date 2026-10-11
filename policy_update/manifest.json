@@ -1,0 +1,38 @@
+{
+  "kadima/auto_executor.py": [
+    "0b52b7ce39cfd142a25ea8892b44f0c09db4712c"
+  ],
+  "kadima/capital_guard.py": [
+    "6478e119ed829f5afec02f8290b9359d53e16472"
+  ],
+  "kadima/control_api.py": [
+    "d39f084150d30e91234f82a9d8b5115ae1233b84"
+  ],
+  "kadima/engine.py": [
+    "9cad5a27ad8d48b097434892f9b79b43dbd16528"
+  ],
+  "kadima/entry_quality.py": [
+    "397c88ecee825f878c1a53678087e49e2359f15a"
+  ],
+  "kadima/exit_manager.py": [
+    "0f61e822a80c8c9b6f8cc147ccf1f0bf1c485d18"
+  ],
+  "kadima/forecast_trail.py": [
+    "8444562b03b57aed1ae1d331af34a6ebf5668bf4"
+  ],
+  "kadima/gamma_blast_scanner.py": [
+    "2d9a389a849ca2e53cc2fddfbc907c465130adcc"
+  ],
+  "kadima/option_chain.py": [
+    "944786a89e1994757b090bed1951795895d87e28"
+  ],
+  "kadima/risk_budget.py": [
+    "6b9f44ae42a3ff04e197440cd81605f14d6f84c6"
+  ],
+  "kadima/storage.py": [
+    "b947067fa5ffa30ea2779d7fce787c4631a526e2"
+  ],
+  "kadima/trade_policy.py": [
+    null
+  ]
+}

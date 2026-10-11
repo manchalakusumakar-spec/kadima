@@ -1,0 +1,10 @@
+SELECT signal_id,side,quantity,order_id,state,created_at FROM execution_orders WHERE state!='terminal';
+signal_id|side|quantity|order_id|state|created_at
+
+Count: 0
+
+SELECT signal_id,kind,symbol,status,remaining_qty,entry_ts FROM positions WHERE status!='closed';
+signal_id|kind|symbol|status|remaining_qty|entry_ts
+
+Count: 0
+

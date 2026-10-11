@@ -1,0 +1,20 @@
+[Unit]
+Description=KADIMA market-day auto activation and entry permit
+After=network-online.target kadima.service kadima-universe-scanner.service
+Wants=network-online.target
+[Service]
+Type=oneshot
+User=root
+ExecStart=/usr/bin/python3 -I -B -S /opt/kadima-session-auto/runner.py
+TimeoutStartSec=150
+UMask=0077
+RuntimeDirectory=kadima-session-auto
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+StateDirectory=kadima-session-auto
+StateDirectoryMode=0700
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/run/kadima-session-auto /var/lib/kadima-session-auto /run/lock
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6

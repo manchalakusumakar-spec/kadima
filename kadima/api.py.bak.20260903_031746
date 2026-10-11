@@ -1,0 +1,257 @@
+
+"""
+KADIMA state API — the bridge to ChatGPT / Claude.
+
+Two read-only endpoints. Nothing here can write to config, place an order, or
+change engine behaviour. That is deliberate: an LLM reads this, and an LLM
+should not be able to reach anything consequential.
+
+    GET /state    current picture across four indices  (~40 lines of JSON)
+    GET /session  today's signals + 30-min outcomes
+    GET /health   liveness, for the watchdog
+
+Auth: bearer token in the Authorization header. Use a NEW token, not the one
+your audit flagged as exposed.
+
+Run behind the Nginx/HTTPS you already have:
+
+    uvicorn kadima.api:app --host 127.0.0.1 --port 8080
+"""
+from __future__ import annotations
+
+import json
+import os
+from datetime import datetime, timedelta
+from typing import Any
+
+from fastapi import Depends, FastAPI, HTTPException
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+
+from . import storage
+from .config import INDICES, IST
+from .utils import in_market_hours, now_ist
+
+API_TOKEN = os.environ.get("KADIMA_API_TOKEN", "")
+OUTCOME_HORIZON_MIN = int(os.environ.get("KADIMA_OUTCOME_MIN", "30"))
+
+app = FastAPI(title="KADIMA state API", version="0.1.0")
+_bearer = HTTPBearer(auto_error=True)
+
+# The engine sets this at startup so the API can read live in-memory state.
+ENGINE = None
+
+
+def register(engine) -> None:
+    global ENGINE
+    ENGINE = engine
+
+
+def _auth(cred: HTTPAuthorizationCredentials = Depends(_bearer)) -> None:
+    if not API_TOKEN:
+        raise HTTPException(503, "KADIMA_API_TOKEN not configured on server")
+    if cred.credentials != API_TOKEN:
+        raise HTTPException(401, "bad token")
+
+
+# --------------------------------------------------------------------- health
+@app.get("/health")
+def health() -> dict:
+    return {"ok": True, "ts": now_ist().isoformat(),
+            "market_open": in_market_hours(),
+            "engine_attached": ENGINE is not None}
+
+
+# ---------------------------------------------------------------------- state
+@app.get("/state", dependencies=[Depends(_auth)])
+def state() -> dict:
+    """Current picture. Small enough for an LLM to reason over in one read."""
+    if ENGINE is None:
+        raise HTTPException(503, "engine not running")
+
+    out: dict[str, Any] = {
+        "ts": now_ist().isoformat(),
+        "market_open": in_market_hours(),
+        "indices": {},
+        "unavailable": UNAVAILABLE,
+        "notes": NOTES,
+    }
+
+    for name, st in ENGINE.states.items():
+        s = st.snap
+        chain = st.chain
+        walls = chain.walls(3) if chain else {"CE": [], "PE": []}
+        gr = getattr(st, "gamma_result", None)
+        out["indices"][name] = {
+            "spot": st.spot,
+            "shield": {"tier": st.tier, "score": round(st.score, 1),
+                       "direction": st.direction,
+                       "since": st.tier_since.isoformat() if st.tier_since else None},
+            "gamma": {"tier": gr.tier, "score": gr.score, "direction": gr.direction,
+                      "components": gr.components.as_dict()} if gr else
+                     {"tier": "NONE", "score": 0.0, "direction": None, "components": {}},
+            "technicals": {
+                "close": s.close, "vwap": s.vwap,
+                "above_vwap": s.above_vwap,
+                "ema20": _r(s.ema_fast), "ema50": _r(s.ema_slow),
+                "ema_bull": s.ema_bull, "ma55": _r(s.ma_long),
+                "rsi": _r(s.rsi, 1),
+                "rsi_above_50": (s.rsi > 50) if s.rsi else None,
+                "rsi_above_55": (s.rsi > 55) if s.rsi else None,
+                "ichimoku": {"tenkan": _r(s.tenkan), "kijun": _r(s.kijun),
+                             "span_a": _r(s.span_a), "span_b": _r(s.span_b)},
+                "volume": s.vol, "avg_volume": _r(s.avg_vol, 0),
+                "volume_expansion": bool(s.avg_vol and s.vol > s.avg_vol * 1.5),
+            },
+            "option_chain": {
+                "atm": chain.atm if chain else None,
+                "pcr": _r(chain.pcr(), 2) if chain else None,
+                "max_pain": chain.max_pain() if chain else None,
+                "ce_walls": [_wall(w) for w in walls["CE"]],
+                "pe_walls": [_wall(w) for w in walls["PE"]],
+                "oi_velocity_alerts": chain.velocity.alerts() if chain else [],
+                "oi_window_degraded": bool(
+                    chain and chain.velocity.degraded_until
+                    and now_ist() < chain.velocity.degraded_until),
+            },
+            "components": st.components,
+        }
+
+    out["global_context"] = getattr(ENGINE, "global_context", None)
+    return out
+
+
+# -------------------------------------------------------------------- session
+@app.get("/session", dependencies=[Depends(_auth)])
+def session(day: str | None = None) -> dict:
+    """Today's signals with outcomes measured at a fixed horizon."""
+    day = day or now_ist().strftime("%Y-%m-%d")
+    c = storage.conn()
+    rows = c.execute(
+        "SELECT * FROM signals WHERE ts LIKE ? ORDER BY ts", (f"{day}%",)
+    ).fetchall()
+
+    signals = []
+    for r in rows:
+        payload = json.loads(r["payload"]) if r["payload"] else {}
+        outcome = _outcome(r, payload)
+        note = c.execute("SELECT * FROM outcomes WHERE signal_id=?",
+                         (r["id"],)).fetchone()
+        signals.append({
+            "id": r["id"], "ts": r["ts"], "index": r["index_name"],
+            "tier": r["tier"], "score": r["score"], "direction": r["direction"],
+            "strike": payload.get("strike", {}).get("symbol"),
+            "entry_ltp": payload.get("strike", {}).get("ltp"),
+            "triggers_fired": payload.get("components", {}),
+            "outcome": outcome,
+            "my_note": dict(note) if note else None,
+        })
+
+    return {
+        "day": day,
+        "horizon_min": OUTCOME_HORIZON_MIN,
+        "measured_on": "option premium",
+        "signal_count": len(signals),
+        "signals": signals,
+        "trigger_tally": _tally(signals),
+        "review_guardrail": REVIEW_GUARDRAIL,
+    }
+
+
+# ------------------------------------------------------------------- journal
+@app.post("/journal/{signal_id}", dependencies=[Depends(_auth)])
+def journal(signal_id: int, acted: bool, note: str = "",
+            entry: float | None = None, exit: float | None = None) -> dict:
+    """Your 16:00 two-line note. The only write, and it writes only your words."""
+    c = storage.conn()
+    pnl = (exit - entry) if (entry and exit) else None
+    with c:
+        c.execute(
+            "INSERT INTO outcomes (signal_id, reviewed_ts, acted, entry, exit, "
+            "pnl, note) VALUES (?,?,?,?,?,?,?) "
+            "ON CONFLICT(signal_id) DO UPDATE SET acted=excluded.acted, "
+            "entry=excluded.entry, exit=excluded.exit, pnl=excluded.pnl, "
+            "note=excluded.note, reviewed_ts=excluded.reviewed_ts",
+            (signal_id, now_ist().isoformat(), int(acted), entry, exit, pnl, note))
+    return {"ok": True, "signal_id": signal_id}
+
+
+# --------------------------------------------------------------------- detail
+def _outcome(row, payload: dict) -> dict | None:
+    """Premium at signal time vs premium OUTCOME_HORIZON_MIN later."""
+    strike = payload.get("strike") or {}
+    token = strike.get("token")
+    entry = strike.get("ltp")
+    if not entry:
+        return None
+    try:
+        t0 = datetime.fromisoformat(row["ts"])
+    except ValueError:
+        return None
+    t1 = t0 + timedelta(minutes=OUTCOME_HORIZON_MIN)
+    if now_ist() < t1:
+        return {"status": "pending", "resolves_at": t1.isoformat()}
+
+    c = storage.conn()
+    later = c.execute(
+        "SELECT ltp FROM oi_snapshots WHERE token=? AND ts>=? "
+        "ORDER BY ts LIMIT 1", (token, t1.isoformat())).fetchone()
+    if not later or later["ltp"] is None:
+        return {"status": "no_data"}
+
+    move = ((later["ltp"] - entry) / entry) * 100
+    return {"status": "resolved", "entry": entry, "exit": later["ltp"],
+            "pct_move": round(move, 1),
+            "favourable": move > 0}
+
+
+def _tally(signals: list[dict]) -> dict:
+    """Per-trigger counts. The reviewer needs these to know when to stay quiet."""
+    tally: dict[str, dict] = {}
+    for s in signals:
+        o = s.get("outcome") or {}
+        if o.get("status") != "resolved":
+            continue
+        for trig in (s.get("triggers_fired") or {}):
+            d = tally.setdefault(trig, {"fired": 0, "favourable": 0})
+            d["fired"] += 1
+            if o.get("favourable"):
+                d["favourable"] += 1
+    for d in tally.values():
+        d["sample_sufficient"] = d["fired"] >= 30
+    return tally
+
+
+def _wall(q) -> dict:
+    return {"strike": q.strike, "type": q.opt_type, "oi": q.oi,
+            "oi_change": q.oi_change, "ltp": q.ltp}
+
+
+def _r(v, n: int = 2):
+    return round(v, n) if isinstance(v, (int, float)) else None
+
+
+UNAVAILABLE = {
+    "iceberg_orders": "needs full order-book depth; SmartAPI gives top-5 only",
+    "dealer_gamma": "no NSE equivalent of OCC market-maker OI data",
+    "absorption_distribution": "needs bid/ask-split volume (footprint data)",
+    "retail_trap": "no testable definition; would be an arbitrary rule",
+    "stop_clusters": "resting stops are invisible to all participants",
+    "fii_dii_intraday": "published after 17:00; useful for tomorrow, not now",
+}
+
+NOTES = [
+    "OI is polled every 30s via REST, not streamed. Velocity rules see ~20 "
+    "samples per 10-min window.",
+    "Volume is cumulative daily total; candle volume is the successive delta.",
+    "Strike ranking is by tradeability (liquidity, spread, delta), not by "
+    "expected profit.",
+]
+
+REVIEW_GUARDRAIL = (
+    "Do not recommend changing any trigger weight unless that specific "
+    "trigger shows sample_sufficient=true (>=30 resolved occurrences). "
+    "Below that threshold the correct answer is 'insufficient sample'. "
+    "Patterns found in 20-40 outcomes are almost always noise."
+)
+
+

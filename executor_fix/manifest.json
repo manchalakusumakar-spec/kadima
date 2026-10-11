@@ -1,0 +1,155 @@
+{
+  "kadima/alerts.py": [
+    "b94fe1672a30eeb4ac183c8f42bf365271ee3609",
+    "472c361e3636805bcb48591398a3f2a5fa708b18"
+  ],
+  "kadima/angel_orders.py": [
+    "dd52523e5b5b4741592452015de3a206f685afd0",
+    "5b2f299651a440df971b683674c115cb934e2cb8"
+  ],
+  "kadima/auto_executor.py": [
+    "5f797fad4a96546ebfd130943b4de99290ff2efd",
+    "a4869661f607c3a3825f480f925c28d4e0ef28fd",
+    "90f012c995d90402e30892ddc6029da71f1f2893",
+    "456ab949ac0bfa5303d89d58de0b0dac9a053adc",
+    "ea865c37ab13222481f0a5ecc2628934f4b36b23"
+  ],
+  "kadima/capital_guard.py": [
+    "fa2037c39883c412ae426e37e07121cd0e8f2c91",
+    "ce1276a680c061e0642a3c245abf72209210363e"
+  ],
+  "kadima/checklist_forecast.py": [
+    null,
+    "a43021cea367e0a8f62875e0c86d11c8a482ec9d"
+  ],
+  "kadima/control_api.py": [
+    "dda766d3ed57fb7701fd4bdb367be82a0fb4106d",
+    "01d5b906aa9664dc788d0fc8f4501cae9a00308e",
+    "fa26ec2728108b2607a3cbdfd797d040fe758bb7"
+  ],
+  "kadima/engine.py": [
+    "a1be6464db4990815bec5abf4e20c168cb5319aa",
+    "0f5c0fd1c0725757c69d964116630c89ea9c89fe",
+    "64d76d3ebfcb6e198c3cc6d45daad676c8088d96",
+    "fafac592b7c5011068d0b4d2c25f7f2baf42c66a",
+    "b48943d7f3b3a827b8a9e3233509039e7b828b0a"
+  ],
+  "kadima/entry_quality.py": [
+    "397c88ecee825f878c1a53678087e49e2359f15a",
+    "0fba15edb46e78997f3734be1454b4ddd084bcb8"
+  ],
+  "kadima/execution_ledger.py": [
+    null,
+    "69d58c3c12f4d41c4e18861bd457a7f610eeca2b",
+    "acfa0f18690d995489a0d203e5ea569374911b22"
+  ],
+  "kadima/exit_manager.py": [
+    "d5b7d46ecde3a0c960555ce977cd87087482c17d",
+    "df8db210c6f0763dd6f452456f4928b81b92dc9d"
+  ],
+  "kadima/forecast_connection.py": [
+    null,
+    "8f08f4e77caca88c0666f96180220748040fcea2"
+  ],
+  "kadima/forecast_observer.py": [
+    null,
+    "24dcff3a12c417fbef25bf606d056e2ba241e152"
+  ],
+  "kadima/forecast_trail.py": [
+    null,
+    "034db8cd18ba2e14e529f2878b6684b3473c53d5"
+  ],
+  "kadima/gamma_blast_scanner.py": [
+    "2d9a389a849ca2e53cc2fddfbc907c465130adcc",
+    "ad50afee9da2cb1e83b1fe5d4646392df6c618c8"
+  ],
+  "kadima/option_chain.py": [
+    "bba28daca258437742531a3dec594292d880e79c",
+    "835d95feee514bfdd6f06d2c0203b734e4692b00"
+  ],
+  "kadima/rate_limiter.py": [
+    "83dc77d40cfc1d15c7929a4d17e23b407db53b16",
+    "34867007aeb2feba2b8fc15e0f90610302321aa8"
+  ],
+  "kadima/risk_budget.py": [
+    "6b9f44ae42a3ff04e197440cd81605f14d6f84c6",
+    "a8ccc00e3ef22edaec97e3f6f067ed915b2c212f"
+  ],
+  "kadima/session.py": [
+    "7fb14d476447ea5550b7b8f3724453f80d7accfd",
+    "55c8ed0c50d53bb86ba2f26c4d9b2c79897a7269"
+  ],
+  "kadima/stock_execution.py": [
+    null,
+    "aafd610df1b60e03d504213e60ccf7e4c58b011f",
+    "8c99139dcd8022d8f803c159abd498fa7fc3fa75"
+  ],
+  "kadima/stock_handoff.py": [
+    null,
+    "b0caefbf91a11c7fc00ad106f04aea0eea1eccf5",
+    "f5b238272bcc84c474afc26aa66030445334dab4"
+  ],
+  "kadima/stock_universe_scanner.py": [
+    "18d40bd9ead639e852a56475c51b820c147898f0",
+    "bfe2ff023c1f90117d5c11ae92deca7c7fe7a27b",
+    "5e3a17cbedf96c4848e8f543bf1da3e4cffe02ab",
+    "daa1fa075c0d226f805f69ae217e23febb386ccb"
+  ],
+  "kadima/storage.py": [
+    "35611465714705635a104ad3f312719a9bc843ea",
+    "1f11d0944de0e09d85ae00a6e7f43854293b2752"
+  ],
+  "kadima/trade_policy.py": [
+    null,
+    "8b6ac91eac28da0ca2f1a8b6822b078381bf132a",
+    "2ad2f68e4914e3d3f7ab58c300304af18dbeb44f",
+    "2f3007969f1085d8d505b6c93647055edca35bbb"
+  ],
+  "kadima/celestial.py": [
+    null,
+    "dfac18b9d76f11428357cc7d6b4d8f88d15278fa"
+  ],
+  "kadima/celestial_scanner.py": [
+    null,
+    "4f792a2f3b6cfb761ca5707d8eb1a1eb7c2bd8e8"
+  ],
+  "kadima/celestial_adoption.py": [
+    null,
+    "2273bb837257a09ba9d9e5a7bae52560f595e3bf"
+  ],
+  "kadima/celestial_universe.py": [
+    null,
+    "26f2433d9d3ca09389c5f9485105a4008f99b9de"
+  ],
+  "kadima/news_catalysts.py": [
+    null,
+    "2cdbcdd91616c75b8c57a9dc6192b6b6aa2c09e9"
+  ],
+  "kadima/scrip_master.py": [
+    "d616b49bdc66dd8b7120f62a9373b65aba4f2ad5",
+    "ec558e161067492b74a0417a248829327002335c"
+  ],
+  "kadima/full_universe_scanner.py": [
+    null,
+    "10179948a06bf56cd44e733dff80ca23ca8ab759"
+  ],
+  "kadima/news_collector.py": [
+    null
+  ],
+  "kadima/celestial_exit.py": [
+    null
+  ],
+  "kadima/external_reconciliation.py": [
+    null
+  ],
+  "kadima/universe_display.py": [
+    null,
+    "6c3907cac87bdafb985879f8e38b5720e1457797"
+  ],
+  "kadima/api.py": [
+    "2e9fc0e4e0ad940f289bb113ac19f30c3d475009"
+  ],
+  "kadima/shield_confirmation.py": [
+    null
+  ]
+}

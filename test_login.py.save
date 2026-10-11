@@ -1,0 +1,9 @@
+
+from SmartApi import SmartConnect
+import pyotp
+obj = SmartConnect(api_key='REDACTED')
+totp = pyotp.TOTP('REDACTED').now()
+print('Generated TOTP:', totp)
+data = obj.generateSession('REDACTED', 'REDACTED', totp)
+print(data)
+"

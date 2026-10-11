@@ -1,0 +1,14 @@
+Excluded paths:
+/home/ubuntu/kadima-py/incoming/files (3).zip [binary]
+/home/ubuntu/kadima-py/cache/lotsize_map.json [large data]
+Capture errors/limitations:
+/etc/systemd/system/kadima-owned-watchdog.service: [Errno 13] Permission denied: '/etc/systemd/system/kadima-owned-watchdog.service'
+/etc/systemd/system/kadima-owned-watchdog.timer: [Errno 13] Permission denied: '/etc/systemd/system/kadima-owned-watchdog.timer'
+running env unavailable: main PID not uniquely identified
+Redactions: 40
+Systemctl inaccessible: captured on-disk units/drop-ins instead.
+SQLite accessed via Python mode=ro (sqlite3 CLI unavailable).
+Live flags are unavailable, not proven unset. /proc exposes only sandbox processes.
+Tracked modified/deleted/etc: 42; untracked files: 86.
+Capture is a sequential read; live processes were not paused.
+Manifest covers all payload files except itself (a self-hash is not possible).

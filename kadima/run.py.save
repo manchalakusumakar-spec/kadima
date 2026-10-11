@@ -1,0 +1,5 @@
+from kadima import control_api
+threading.Thread(
+    target=lambda: uvicorn.run(control_api.app, host="0.0.0.0", port=8081, log_level="warning"),
+    daemon=True, name="control-api").start()
+audit.log("control_api_started", port=8081)

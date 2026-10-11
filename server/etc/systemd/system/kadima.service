@@ -1,0 +1,21 @@
+[Unit]
+Description=KADIMA Trading Engine
+After=network.target
+
+[Service]
+Type=simple
+User=ubuntu
+WorkingDirectory=/home/ubuntu/kadima-py
+Environment="ANGEL_API_KEY=REDACTED"
+Environment="ANGEL_CLIENT_ID=REDACTED"
+Environment="ANGEL_PASSWORD=REDACTED"
+Environment="ANGEL_TOTP_SECRET=REDACTED"
+Environment="KADIMA_API_TOKEN=REDACTED"
+ExecStart=/home/ubuntu/kadima-py/venv/bin/python3 /home/ubuntu/kadima-py/run.py
+Restart=always
+RestartSec=10
+StandardOutput=append:/home/ubuntu/kadima.log
+StandardError=append:/home/ubuntu/kadima.log
+
+[Install]
+WantedBy=multi-user.target

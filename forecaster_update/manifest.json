@@ -1,0 +1,23 @@
+{
+  "kadima/engine.py": [
+    "43adb99f00374356c2545d9949a225e264475a07"
+  ],
+  "kadima/option_chain.py": [
+    "5fb89112be4074793a86bb9c242be51715f4e264"
+  ],
+  "kadima/stock_execution.py": [
+    "9739fed458e39fceaa755d30215339010d6abbd0"
+  ],
+  "kadima/control_api.py": [
+    "90b283b7fddc27b8dc2d361da8a95104b23185bc"
+  ],
+  "kadima/forecast_connection.py": [
+    "5e54e0c9d43aee4988d105ee2492d7f417e44bb8"
+  ],
+  "kadima/checklist_forecast.py": [
+    null
+  ],
+  "kadima/forecast_observer.py": [
+    null
+  ]
+}

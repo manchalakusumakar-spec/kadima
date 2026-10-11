@@ -1,0 +1,286 @@
+
+test_audit_fixes.py
+fix 1: PE Shield capital band
+  [ok] bull_shield gets 30k
+  [ok] bear_shield gets 30k
+  [ok] unknown kind still 0
+fix 3: reconcile only KADIMA-owned contracts
+  [ok] manual position + order elsewhere: exits monitored
+  [ok] manual position elsewhere: entries allowed
+  [ok] manual contracts recorded
+  [ok] broker holds MORE of our contract: exits run
+  [ok] broker holds MORE of our contract: entries blocked
+  [ok] broker holds LESS: exits paused for that position (no oversell)
+  [ok] broker holds LESS: entries blocked
+  [ok] manual order on OUR contract blocks entries
+  [ok] manual order on our contract: exits still run
+  [ok] position filled after reconcile is monitored immediately
+  [ok] broker unreadable: fails closed
+fix 6: re-price unfilled exits
+  [ok] no re-price before 15s
+  [ok] attempt 1 at LTP-2.5%
+  [ok] modify keeps full order qty and LIMIT contract
+  [ok] waits 15s between attempts
+  [ok] attempt 2 at LTP-4%
+  [ok] attempt 3 at LTP-6%
+  [ok] urgent alert after 3rd attempt
+  [ok] never raises a SELL limit when LTP bounces
+  [ok] keeps walking down at 6% after attempt 3
+  [ok] no fresh quote: alerts, no blind modify
+fix 7: exit fallback price never uses the peak
+  [ok] no quote at all: min(stop, entry) = 80
+  [ok] recent chain sample used (72.5)
+  [ok] sample older than 60s ignored
+  [ok] never the peak
+fix 2: one missing candle no longer blocks the day
+  [ok] no gap: pivot 95
+  [ok] gap away from the pivot: still 95
+  [ok] gap inside the 95 pivot window: that pivot skipped (not invented)
+  [ok] stale last bar still rejected
+fix 12: gamma skips chase gates, Shield keeps them
+  [ok] Shield still rejects a chased premium
+  [ok] gamma allows the same blast
+  [ok] gamma still rejects an invalid stop
+fix 3b: Celestial - a manual pending order no longer stops all exits
+  [ok] manual order on another contract: our stops keep running
+  [ok] manual order pending: entries still blocked
+  [ok] manual order on OUR contract: that position paused
+  [ok] no manual order: verified and entries allowed
+----------------------------------------
+ALL PASS
+
+test_cas_executor.py
+product type
+  [ok] CAS -> CARRYFORWARD
+  [ok] others -> INTRADAY
+sizing and price ladder
+  [ok] 10k at cap 6.5, lot 75 -> 20 lots
+  [ok] freeze limit clamps quantity
+  [ok] budget below one lot -> 0
+  [ok] ladder starts at bid
+  [ok] ladder increasing and capped
+  [ok] ladder never above cap
+scanner trigger
+  [ok] no trigger before 15:15
+  [ok] CE blast triggers once
+  [ok] PE ignored while spot rises
+  [ok] same strike debounced
+  [ok] window closes at 15:35
+exit rule
+  [ok] no stop-loss at entry
+  [ok] not armed below +30%
+  [ok] armed after +30%: holds above giveback
+  [ok] exits on 25% fall from peak
+  [ok] armed trail never below entry
+  [ok] EOD overrides
+  [ok] daily loss overrides
+end-to-end entry (dry run) and exit order product
+  [ok] entry accepted
+  [ok] BUY sent as CARRYFORWARD
+  [ok] first price is best bid
+  [ok] size within 10k at cap
+  [ok] second CAS entry blocked
+  [ok] trail exit SELL sent as CARRYFORWARD
+  [ok] position closed with trail reason
+spread gate
+  [ok] wide spread rejected
+entry price stepping (live path, faked broker)
+  [ok] steps follow the live market up
+  [ok] never above the 1.3x cap
+  [ok] modifies keep CARRYFORWARD
+  [ok] unfilled remainder cancelled
+  [ok] filled at bid: no modify, no cancel
+EOD watchdog: engine-owned design (exits via executor._close_position) - covered above
+0.05 tick grid (CARRYFORWARD only)
+  [ok] BUY rounds up to tick
+  [ok] SELL rounds down to tick
+  [ok] exact tick kept
+  [ok] never below one tick
+  [ok] CF price keeps Rs 0.05
+  [ok] CF price on grid, 2dp
+  [ok] INTRADAY rounding unchanged
+  [ok] CAS entry ladder on 0.05 grid
+collapsed-premium exit price
+  [ok] Rs 0.05 premium exits at Rs 0.05, not 0.0 (CAS and intraday)
+session gate: 15:15 INTRADAY window vs CARRYFORWARD
+  [ok] INTRADAY entry blocked after 15:15
+  [ok] CARRYFORWARD (CAS) entry allowed after 15:15
+  [ok] CAS still needs the lane permit
+owned watchdog leaves CAS to the 15:38 engine close
+  [ok] 15:25: CAS position not due
+  [ok] 15:38: CAS position due
+product consistency across lanes
+  [ok] cas_orders.py never sets its own product (ledger decides)
+  [ok] cas_engine.py never sets its own product (ledger decides)
+  [ok] 'cas' lane is INTRADAY both ways
+  [info] other modules mentioning CARRYFORWARD (review, not a failure): none
+----------------------------------------
+ALL PASS
+
+test_forecast_manual_buy.py
+PASS valid click submits one BUY
+PASS quantity = lots x lot size
+PASS LIMIT priced from a fresh quote with the usual buffer
+PASS fallback stop 30% below when no swing exists
+PASS position tagged as forecast_manual and monitored
+PASS blocked: outside market hours
+PASS blocked: past signal cutoff
+PASS blocked: kill switch
+PASS blocked: daily loss limit
+PASS blocked: no fresh quote
+PASS blocked: more lots than affordable
+PASS blocked: lots above maximum
+PASS blocked: zero lots
+PASS strike/side not in ladder refused
+PASS refused until broker reconciliation completes
+PASS refused on a stale option chain
+PASS config switch turns the buttons off
+
+0 failure(s)
+
+test_hourly_forecast.py
+PASS 40 sessions built
+PASS bars complete
+PASS slot steps 12 for hour slots
+PASS last slot has 3 steps
+PASS slot_for 10:42 -> 10:15
+PASS slot_for 15:31 -> None
+PASS tod profile measures the open as more volatile
+PASS forecast 09:15 well-formed
+PASS band widens over 09:15
+PASS forecast 10:15 well-formed
+PASS band widens over 10:15
+PASS forecast 11:15 well-formed
+PASS band widens over 11:15
+PASS forecast 12:15 well-formed
+PASS band widens over 12:15
+PASS forecast 13:15 well-formed
+PASS band widens over 13:15
+PASS forecast 14:15 well-formed
+PASS band widens over 14:15
+PASS forecast 15:15 well-formed
+PASS band widens over 15:15
+PASS forecast fast enough for a t3.micro (19 ms worst)
+PASS no look-ahead into the slot being forecast
+PASS works without analog history
+PASS score: direction hit
+PASS score: coverage counts the breakout
+PASS score: no score before the slot completes
+PASS few samples stay near prior beta
+PASS many samples learn the true beta
+PASS band widens when errors are wider than modelled
+  synthetic walk-forward: 98/135 directional hits (73%)
+PASS model finds a real intraday trend when one exists
+  random walk: mean |p-0.5| = 0.059, band coverage = 67%
+PASS no false confidence on a random walk
+PASS band coverage near 68% on a random walk
+PASS helpful new part gains weight
+PASS weight change capped per recalibration
+PASS too few recent slots keeps current weights
+PASS no skill on recent slots hides direction (range only)
+PASS scorecard finds the predictive part
+PASS trend-day and option-chain reasons found
+PASS small moves are tagged as noise
+PASS day bias spotted
+
+0 failure(s)
+
+test_index_news_gate.py
+ALL PASS: index coverage, macro windows, market news, stock coverage, partial/all-failed feeds
+
+test_manual_protection.py
+PASS carryforward adoption, stop and persistence
+PASS carryforward hard-stop SELL at 15:20
+PASS intraday manual stop uses original product
+PASS pending-order adoption blocks only matching contract
+PASS one unprotected-position alert
+PASS carryforward survives EOD and watchdog even with a BUY ledger
+PASS existing KADIMA position untouched at 15:20 above stop
+PASS activation at 10%, retain 50% of peak gain
+PASS NRML product preserved
+PASS unrelated unresolved ledger blocks entries but permits manual protection
+PASS top20 manual source, product, strategy and effective stop
+PASS F&O stock long-option adoption
+PASS tightened manual stop works before trail activation
+PASS invalid quotes cannot poison peak/stop or submit an exit
+PASS persistent warning deduplication and full-queue retry
+PASS adoption failure rolls back signal and position together
+PASS manual protection independent of automatic rollout
+PASS manual scale-in keeps 30% policy instead of generic 5%
+PASS evidenced partial manual SELL updates quantity, lots and deployed basis without loosening stop
+PASS queued exit remains binding after premium rebound
+PASS cancelled unfilled SELL retries binding exit with original product after rebound
+PASS unverifiable position warns once across executor recovery and sends no SELL
+PASS stop never moves down and UI distinguishes monitoring from an exit due
+PASS telemetry failure cannot suppress manual stop submission
+ALL PASS
+Manual protection audit unavailable: OSError
+
+test_offline.py
+indicators
+  [ok] RSI all-up ~100
+  [ok] RSI all-down ~0
+  [ok] RSI short series None
+  [ok] EMA flat series stable
+candles (cumulative volume handling)
+  [ok] candle open
+  [ok] candle high
+  [ok] volume is delta not cumulative
+  [ok] session vwap sane
+oi velocity
+  [ok] single sample silent
+  [ok] 30% drop detected
+  [ok] degraded window suppresses
+greeks
+  [ok] ATM CE delta ~0.5
+  [ok] IV plausible
+  [ok] ATM PE delta ~-0.5
+  [ok] theta negative
+----------------------------------------
+ALL PASS
+
+test_oi_confirmation.py
+ALL PASS: OI signs/strength, matched baskets, no lookahead, shadow/live weights, morning veto
+
+test_timing.py
+recorder
+  [ok] atm reference picks nearest CE
+  [ok] non-gamma kinds ignored
+  [ok] broken input does not raise
+  [ok] one timing_signal line for signal 7
+  [ok] two timing_eval lines for signal 7
+  [ok] first eval uses ATM reference
+  [ok] second eval uses executor choice
+  [ok] choice carries stop
+  [ok] spread recorded
+  [ok] reject reason recorded
+path metrics
+  [ok] MFE 30%
+  [ok] time to MFE 8 min
+  [ok] MAE 12% (after peak)
+  [ok] MAE before MFE 8%
+  [ok] stop touched, but after the peak
+  [ok] empty path handled
+outcome job
+  [ok] signal 7 is traded
+  [ok] entry from fill
+  [ok] realised +14.29%
+  [ok] MFE uses ltp less half spread
+  [ok] capture ratio computed
+  [ok] MAE before MFE ~6.7%
+  [ok] post-exit peak recorded
+  [ok] stop not touched
+  [ok] reject reasons counted
+  [ok] outcome file written
+  [ok] re-run rewrites, not appends
+ signal index      dir status        MAE% MAEpre%   MFE%   tMFE  real%  capt stop
+      7 NIFTY      CE  traded         6.8     6.8   29.5    8.5   14.3  0.48 no
+      8 NIFTY      CE  no_contract      -       -      -      -      -     - -
+  [ok] not traded, entry at first-eval ask
+  [ok] missed MFE measured
+executor wrapper
+  [ok] wrapper returns the core result unchanged
+  [ok] positional callers still work
+  [ok] gamma call recorded, shield call not
+----------------------------------------
+ALL PASS
