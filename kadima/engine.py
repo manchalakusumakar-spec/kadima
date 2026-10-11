@@ -20,6 +20,7 @@ from types import SimpleNamespace
 
 from . import alerts, audit, indicators, killswitch, last_known, storage, strike_selector
 from . import auto_executor
+from . import shield_v9
 from .fast_momentum import Lane as FastLane
 from .cas_engine import Lane as CASLane
 from .shield_confirmation import (SHIELD_MIN_SCORE, BANK_NAMES, ShieldEvidence,
@@ -137,6 +138,29 @@ class Engine:
             self.bank_states[name] = bank
             self.bank_tokens[token] = name
 
+        # SHIELD v9 (Master Checklist v9.0, 11 Oct 2026): index futures give the
+        # VWAP and volume legs; option-chain OI history gives the OI leg. Shadow
+        # unless KADIMA_SHIELD_V9_LIVE=1. A failure here never stops the engine.
+        self.fut_bars, self.fut_tokens, self.fut_builders = {}, {}, {}
+        self.v9_oi, self.v9_hist = {}, {}
+        try:
+            today = now_ist().date()
+            for name, idx in self.scan_indices.items():
+                if name not in INDICES:
+                    continue
+                self.v9_oi[name], self.v9_hist[name] = shield_v9.OIHistory(), []
+                contract = shield_v9.pick_future(self.scrips.rows, name, idx.exchange, today)
+                if not contract:
+                    audit.log('shield_v9_future_unavailable', index=name)
+                    continue
+                self.fut_bars[name] = shield_v9.FuturesBars(contract)
+                self.fut_tokens[contract['token']] = name
+                self.fut_builders[name] = CandleBuilder(contract['token'], on_close=self._on_future_close)
+            audit.log('shield_v9_setup', live=shield_v9.live_enabled(),
+                      futures={n: b.contract for n, b in self.fut_bars.items()})
+        except Exception as exc:                        # noqa: BLE001
+            audit.log('shield_v9_setup_failed', error=type(exc).__name__)
+
         self.bank_history = StockExecutionWorker(auto_executor.EXECUTOR, self.scrips)
         self._bank_warmup_at = {}
         self.stock_worker = StockExecutionWorker(auto_executor.EXECUTOR, self.scrips)
@@ -210,6 +234,8 @@ class Engine:
             self.feed.subscribe(EXCHANGE_TYPE[idx.exchange], [idx.token])
         if self.bank_tokens:
             self.feed.subscribe(EXCHANGE_TYPE['NSE'], list(self.bank_tokens))
+        for token, fut_name in self.fut_tokens.items():   # SHIELD v9 futures
+            self.feed.subscribe(EXCHANGE_TYPE[self.fut_bars[fut_name].contract['exchange']], [token])
         self.feed.start()
         threading.Thread(target=self._oi_loop, daemon=True, name="oi-poll").start()
         threading.Thread(target=self._shutdown_loop, daemon=True,
@@ -256,6 +282,13 @@ class Engine:
             bank = self.bank_states[bank_name]
             bank.spot, bank.last_updated = tick['ltp'], now_ist()
             bank.builder.add_tick(tick['ts'], tick['ltp'], tick['volume'])
+            return
+        fut_name = self.fut_tokens.get(tick["token"])
+        if fut_name:                                     # SHIELD v9 futures: candles only
+            try:
+                self.fut_builders[fut_name].add_tick(tick['ts'], tick['ltp'], tick['volume'])
+            except Exception as exc:                    # noqa: BLE001
+                audit.log('shield_v9_future_tick_error', index=fut_name, error=type(exc).__name__)
             return
         name = self.token_to_index.get(tick["token"])
         if not name:
@@ -326,14 +359,16 @@ class Engine:
         now = now_ist()
         poll = getattr(st.chain, '_last_poll', 0)
         oi_at = now - timedelta(seconds=time.monotonic() - poll) if poll else None
-        return replace(st.shield_evidence, snap=st.snap, spot=st.spot,
+        snap = self._alignment_snap(st, st.snap, st.spot) if shield_v9.live_enabled() else st.snap
+        return replace(st.shield_evidence, snap=snap, spot=st.spot,
             technical_at=st.technical_at, spot_at=st.last_updated, oi_at=oi_at,
             oi_confirmed=self._oi_direction(st.chain) == st.direction,
             invalidated=st.shield_invalidated,
             banks=self._bank_votes(st.direction, now))
 
     def _invalidate_shield(self, st):
-        if st.shield_evidence and not all(alignment(st.direction, st.snap, st.spot).values()):
+        snap = self._alignment_snap(st, st.snap, st.spot) if shield_v9.live_enabled() else st.snap
+        if st.shield_evidence and not all(alignment(st.direction, snap, st.spot).values()):
             st.shield_invalidated = True
             st.shield_ready = False
             if st.tier == 'CONFIRMED':
@@ -355,8 +390,10 @@ class Engine:
             st.chain._alignment_at = time.monotonic()
             self._invalidate_shield(st)
         elif candle.interval == 5:
+            st.shield_v9_pending = self._shield_v9(st, candle.start + timedelta(minutes=5))
             self._score(st, candle.start + timedelta(minutes=5), candle.close)
             self._evaluate()
+            self._log_shield_v9(st)
 
     # ------------------------------------------------------------------ OI
     def _scan_cas(self, st):
@@ -506,6 +543,109 @@ class Engine:
             kind="gamma_blast", source_signal_id=sid,
             tier=result.tier, score=result.score)
 
+    # ------------------------------------------------------------ SHIELD v9
+    def _on_future_close(self, candle: Candle) -> None:
+        if candle.interval != 5:
+            return
+        name = self.fut_tokens.get(candle.token)
+        if name:
+            self.fut_bars[name].add(candle.start + timedelta(minutes=5), candle.close,
+                                    candle.volume, self.fut_builders[name].session_vwap())
+
+    def _v9_futures(self, name, closed_at):
+        bars = self.fut_bars.get(name)
+        if bars is None:
+            return None
+        got = bars.at(closed_at)
+        if got is None:
+            # The futures bar for these 5 minutes closes on its next tick; use the
+            # still-open bar whose period has ended (replaced when it closes).
+            live = self.fut_builders[name].live(5)
+            if live is not None and live.start + timedelta(minutes=5) == closed_at:
+                bars.add(closed_at, live.close, live.volume, self.fut_builders[name].session_vwap())
+                got = bars.at(closed_at)
+        return got
+
+    def _pre_expiry(self, st):
+        try:
+            expiry = datetime.strptime(self.scrips.nearest_expiry(st.chain.index), '%d%b%Y').date()
+            return (expiry - now_ist().date()).days == 1
+        except (TypeError, ValueError, AttributeError):
+            return False
+
+    @staticmethod
+    def _atm_iv(st):
+        try:
+            quotes = [q for q in st.chain.quotes.values() if q.iv and q.strike]
+            atm = min(quotes, key=lambda q: abs(q.strike - st.spot)).strike
+            ivs = [q.iv for q in quotes if q.strike == atm]
+            return sum(ivs) / len(ivs) if ivs else None
+        except (ValueError, TypeError, AttributeError):
+            return None
+
+    def _shield_v9(self, st, closed_at):
+        """Master Checklist v9.0 Shield for this closed bar. Reads only; never raises."""
+        try:
+            name = st.name
+            if name not in self.v9_hist:
+                return None
+            self.v9_oi[name].add(closed_at, list(st.chain.quotes.values()) if st.chain else [])
+            oi, oi_note = self.v9_oi[name].side(name, st.spot, closed_at)
+            fut = self._v9_futures(name, closed_at)
+            direction, raw, legs = shield_v9.score(st.snap, oi, fut)
+            pre_expiry = self._pre_expiry(st)
+            value = shield_v9.capped(raw, closed_at, pre_expiry)
+            hist = self.v9_hist[name]
+            hist.append(dict(closed_at=closed_at, direction=direction, score=value))
+            del hist[:-6]
+            banks = self._bank_votes(direction, closed_at) if name == 'BANKNIFTY' else None
+            from .gap_live import _macro_clear
+            macro = _macro_clear(closed_at)
+            level, why = shield_v9.tier(name, hist, banks, macro)
+            bars = storage.recent_candles(st.chain.index.token, 5, limit=400)
+            day_range, avg_range = shield_v9.day_ranges(bars, closed_at.date())
+            return dict(closed_at=closed_at.isoformat(), direction=direction, score=value, raw=raw,
+                        tier=level, tier_reason=why, legs=legs, oi_note=oi_note,
+                        futures=fut, pre_expiry=pre_expiry, macro_clear=macro, banks=banks,
+                        alert=shield_v9.alert_line(name, level, direction, st.spot,
+                                                   shield_v9.swing(bars, direction)),
+                        filters=shield_v9.candidate_filters(direction, legs, closed_at, day_range,
+                                                            avg_range, self._atm_iv(st)),
+                        live=shield_v9.live_enabled())
+        except Exception as exc:                        # noqa: BLE001
+            audit.log('shield_v9_error', index=st.name, error=type(exc).__name__)
+            return None
+
+    def _log_shield_v9(self, st):
+        result = getattr(st, 'shield_v9_pending', None)
+        st.shield_v9_pending = None
+        if result is None:
+            return
+        try:
+            result = dict(result, legacy=dict(score=st.score, direction=st.direction, tier=st.tier))
+            st.shield_v9 = result
+            audit.log('SHIELD_V9', index=st.name, **result)
+        except Exception as exc:                        # noqa: BLE001
+            audit.log('shield_v9_error', index=st.name, error=type(exc).__name__)
+
+    def _v9_live(self, st):
+        result = getattr(st, 'shield_v9_pending', None)
+        return result if result is not None and shield_v9.live_enabled() else None
+
+    def _alignment_snap(self, st, snap, spot):
+        """Live v9 only: the VWAP check uses the futures VWAP translated to the index
+        (spot x futures VWAP / futures close). No futures data -> no VWAP -> the
+        alignment check fails closed."""
+        if not shield_v9.live_enabled():
+            return snap
+        bars = self.fut_bars.get(st.name)
+        last = bars.bars[-1] if bars and bars.bars else None
+        try:
+            eq = spot * last['vwap'] / last['close'] if last and last['vwap'] and last['close'] else None
+        except (TypeError, ZeroDivisionError):
+            eq = None
+        return replace(snap, vwap=eq)
+
     # --------------------------------------------------------------- scoring
     def _score(self, st: IndexState, closed_at=None, closed_price=None) -> None:
         s = st.snap
@@ -576,6 +716,10 @@ class Engine:
         st.direction = "CE" if bull >= bear else "PE"
         st.score = max(bull, bear)
         st.components = comp
+        v9 = self._v9_live(st)
+        if v9 is not None:                               # KADIMA_SHIELD_V9_LIVE=1
+            st.direction, st.score = v9['direction'], v9['score']
+            comp['shield_v9'] = dict(live=True, tier=v9['tier'], legs=v9['legs'])
 
         prior = st.shield_evidence
         st.shield_evidence = ShieldEvidence(st.name, st.direction, st.score, s, st.spot,
@@ -583,14 +727,21 @@ class Engine:
             prior_direction=prior.direction if prior else None, prior_ready=st.shield_ready)
         context = self._shield_context(st)
         # Both the completed bar and the current quote must align.
-        if not all(alignment(st.direction, s, closed_price).values()):
+        if not all(alignment(st.direction, self._alignment_snap(st, s, closed_price) if v9 else s,
+                             closed_price).values()):
             st.shield_invalidated = True
             context = replace(context, invalidated=True)
         checks = confirmation_checks(context, now_ist())
         st.shield_ready = all(v for k, v in checks.items() if k != 'extra_5m_hold')
-        tier = ('CONFIRMED' if is_shield_confirmed(context, now_ist()) else
-                'ACTIVE' if st.score >= TIER_ACTIVE else
-                'WATCH' if st.score >= TIER_WATCH else 'NONE')
+        if v9 is not None:
+            tier = ('CONFIRMED' if v9['tier'] == 'CONFIRMED' and
+                    is_shield_confirmed(context, now_ist(), minimum=shield_v9.CONFIRMED) else
+                    'ACTIVE' if v9['tier'] in ('ACTIVE', 'CONFIRMED') else
+                    'WATCH' if v9['tier'] == 'WATCH' else 'NONE')
+        else:
+            tier = ('CONFIRMED' if is_shield_confirmed(context, now_ist()) else
+                    'ACTIVE' if st.score >= TIER_ACTIVE else
+                    'WATCH' if st.score >= TIER_WATCH else 'NONE')
         comp['confirmation'] = checks
         comp['bank_confirmations'] = context.banks
         audit.log('SHIELD_SCORE', index=st.name, score=st.score, direction=st.direction,

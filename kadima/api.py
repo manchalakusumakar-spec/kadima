@@ -98,6 +98,8 @@ def state() -> dict:
                        "since": st.tier_since.isoformat() if st.tier_since else None,
                        "confirmation": checks, "signal_id": st.shield_signal_id,
                        "components": st.components},
+            # SHIELD v9 (Master Checklist v9.0): shadow unless KADIMA_SHIELD_V9_LIVE=1. Read-only.
+            "shield_v9": getattr(st, "shield_v9", None),
             "gamma": {"tier": gr.tier, "score": gr.score, "direction": gr.direction,
                       "components": gr.components.as_dict()} if gr else
                      {"tier": "NONE", "score": 0.0, "direction": None, "components": {}},
