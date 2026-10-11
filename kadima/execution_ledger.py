@@ -10,10 +10,33 @@ import math
 import uuid
 from datetime import datetime
 
-from . import angel_orders, audit, storage, alerts
+from . import angel_orders, audit, config, storage, alerts
 from .utils import now_ist
 
 TERMINAL = {'complete', 'completed', 'filled', 'cancelled', 'canceled', 'rejected'}
+
+# 2026-10-11 stuck-order release (trader-approved; ported from de33ef3, release
+# part only). Before this, an order whose Angel One reply was lost stayed
+# "unresolved" for ever: refresh() returned unhealthy and every engine's new
+# entries stayed blocked all day, and into the next day.
+#   unknown_timeout      - submitted, no Angel One order id, and still absent
+#                          from Angel One's order book after
+#                          UNKNOWN_ORDER_TIMEOUT_SEC. Released, never re-sent.
+#                          If it appears later it is cancelled when still open,
+#                          and the trader is alerted either way.
+#   expired_previous_day - an unresolved row from an earlier session that is not
+#                          in today's order book.
+# Unchanged: before the timeout, and for an order Angel One accepted (has an id)
+# but that is missing from the book, refresh() still reports unhealthy.
+UNKNOWN_TIMEOUT = 'unknown_timeout'
+EXPIRED_PREVIOUS_DAY = 'expired_previous_day'
+UNKNOWN_ORDER_TIMEOUT_SEC = 60
+_LATE_HANDLED: set = set()
+
+
+def _timeout_sec():
+    value = getattr(config, 'UNKNOWN_ORDER_TIMEOUT_SEC', UNKNOWN_ORDER_TIMEOUT_SEC)
+    return value if type(value) in (int, float) and value >= 30 else UNKNOWN_ORDER_TIMEOUT_SEC
 
 
 def connection():
@@ -33,6 +56,8 @@ def connection():
         ts TEXT NOT NULL, dry_run INTEGER NOT NULL,
         PRIMARY KEY(intent, cumulative_qty));
     ''')
+    if 'note' not in {r['name'] for r in c.execute('PRAGMA table_info(execution_orders)')}:
+        c.execute('ALTER TABLE execution_orders ADD COLUMN note TEXT')
     return c
 
 
@@ -194,22 +219,104 @@ def apply_fill(pos, row, status):
                        key=f"fill:{row['intent']}:{qty}")
 
 
+def _created(row, now):
+    created = datetime.fromisoformat(row['created_at'])
+    return created if created.tzinfo is not None else created.replace(tzinfo=now.tzinfo)
+
+
+def _released_today(now):
+    return [dict(r) for r in connection().execute(
+        'SELECT intent, signal_id, side FROM execution_orders WHERE note=? AND created_at >= ?',
+        (UNKNOWN_TIMEOUT, now.date().isoformat()))]
+
+
+def _handle_late_orders(book, released):
+    """A released order may still reach the exchange. Cancel it if it is still
+    open, and alert the trader once; KADIMA does not manage its quantity."""
+    for row in released:
+        if row['intent'] in _LATE_HANDLED:
+            continue
+        late = [s for s in book if s.raw.get('ordertag') == row['intent']]
+        if not late:
+            continue
+        _LATE_HANDLED.add(row['intent'])
+        status = late[0]
+        state = str(status.status or '').lower()
+        cancel_sent = None
+        if state not in TERMINAL:
+            try:
+                cancel_sent = bool(getattr(angel_orders.cancel_order(status.order_id), 'ok', True))
+            except Exception:                           # noqa: BLE001
+                cancel_sent = False
+        audit.log('execution_late_order_after_release', signal_id=row['signal_id'],
+                  intent=row['intent'], side=row['side'], order_id=status.order_id,
+                  status=status.status, cancel_sent=cancel_sent)
+        if state in ('cancelled', 'canceled', 'rejected'):
+            continue
+        if cancel_sent:
+            action = "KADIMA sent a cancel - confirm it in Angel One"
+        elif cancel_sent is False:
+            action = "KADIMA could NOT cancel it - cancel it in Angel One NOW"
+        else:
+            action = "it has FILLED and KADIMA does not manage it - check positions NOW"
+        if cancel_sent is not None and status.filled_qty:
+            action += f"; {status.filled_qty} already filled and NOT managed by KADIMA - check positions"
+        alerts.enqueue(f"\U0001F6A8 Released {row['side']} order {status.order_id} (signal "
+                       f"#{row['signal_id']}) appeared in Angel One late ({status.status}): {action}.",
+                       key=f"late-order:{row['intent']}", bypass=True)
+
+
+def _expire(pos, row, note):
+    """Mark an unresolvable row terminal. The position keeps only quantity the
+    broker already confirmed; a latched exit reason stays latched, so an exit
+    whose SELL never reached Angel One is sent again by the monitor."""
+    with connection() as c:
+        c.execute("UPDATE execution_orders SET state='terminal', note=? WHERE intent=?",
+                  (note, row['intent']))
+        if pos is not None:
+            pos.status = 'open' if pos.remaining_qty > 0 else 'closed'
+            storage.upsert_position(pos, _connection=c)
+    audit.log('execution_order_released', signal_id=row['signal_id'], intent=row['intent'],
+              side=row['side'], note=note, order_id=row['order_id'],
+              remaining_qty=getattr(pos, 'remaining_qty', None))
+    if note == UNKNOWN_TIMEOUT:
+        alerts.enqueue(f"{row['side']} order for signal #{row['signal_id']} was not found in "
+                       f"Angel One after {int(_timeout_sec())}s; KADIMA released it so trading "
+                       f"can continue. It is not re-sent and is watched for a late arrival.",
+                       key=f"unknown-timeout:{row['intent']}")
+
+
 def refresh(positions, ltp_fn=None):
     """ltp_fn(exchange, token) -> fresh LTP or None; used to re-price exits."""
     rows = pending()
-    if not rows:
+    now = now_ist()
+    released = _released_today(now)
+    if not rows and not released:
         return True
     book = angel_orders.fetch_order_book()
     if book is None:
-        return False
+        return not rows     # only unresolved orders make an unreadable book unhealthy
+    _handle_late_orders(book, released)
+    timeout = _timeout_sec()
     healthy = True
     for row in rows:
+        try:
+            created = _created(row, now)
+        except (TypeError, ValueError):
+            healthy = False
+            continue
         pos = positions.get(str(row['signal_id']))
+        matches = [s for s in book if (row['order_id'] and s.order_id == row['order_id'])
+                   or (not row['order_id'] and s.raw.get('ordertag') == row['intent'])]
+        if not matches and created.date() < now.date():
+            _expire(pos, row, EXPIRED_PREVIOUS_DAY)
+            continue
         if pos is None:
             healthy = False
             continue
-        matches = [s for s in book if (row['order_id'] and s.order_id == row['order_id'])
-                   or (not row['order_id'] and s.raw.get('ordertag') == row['intent'])]
+        if not matches and not row['order_id'] and (now - created).total_seconds() >= timeout:
+            _expire(pos, row, UNKNOWN_TIMEOUT)
+            continue
         if len(matches) != 1:
             healthy = False
             audit.log('execution_order_unresolved', signal_id=pos.signal_id, intent=row['intent'])
