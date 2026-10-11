@@ -22,7 +22,7 @@ from . import (alerts, audit, capital_guard, entry_quality, exit_manager,
               killswitch, risk_budget, storage, strike_selector)
 from . import angel_orders, forecast_trail, execution_ledger, trade_policy
 from . import celestial
-from . import fast_momentum, gap_and_go
+from . import fast_momentum, gap_and_go, intraday_trend
 from .config import (DAILY_LOSS_LIMIT_INR, IST,
                      MAX_LOTS_PER_SIGNAL, ORDER_PLACEMENT_ENABLED)
 from .instrument_master import get_lot_size
@@ -565,7 +565,7 @@ class AutoExecutor:
                            snap, days_to_expiry: float, kind: str,
                            source_signal_id: int, tier: str, score: float,
                            candidate_id=None, manual_request=False, shield_context=None,
-                           fast_context=None, gap_context=None):
+                           fast_context=None, gap_context=None, trend_context=None):
         """snap: indicators.Snapshot from the calling IndexState, used for
         real VWAP (not a stub) in the entry-quality check."""
         # KADIMA SESSION AUTO ENTRY GUARD v1
@@ -579,6 +579,7 @@ class AutoExecutor:
         minimum = None
         fast = None
         gap = None
+        trend = None
         if kind == 'fast_momentum':
             if not ORDER_PLACEMENT_ENABLED:
                 return self._reject('broker_orders_disabled',index_name,direction)
@@ -597,7 +598,13 @@ class AutoExecutor:
                     or direction!='CE' or not celestial.fresh(gap.get('ts'))
                     or gap_and_go.live_blocks(index_name, now_ist())):
                 return self._reject('gap_context_or_live_gate_blocked',index_name,direction)
-        if celestial.enabled() and fast is None and gap is None:
+        if kind == intraday_trend.STRATEGY:   # INTRADAY TREND v1: separate lane, shared gates
+            if not ORDER_PLACEMENT_ENABLED:
+                return self._reject('broker_orders_disabled',index_name,direction)
+            trend = trend_context() if callable(trend_context) else None
+            if not intraday_trend.context_valid(trend, index_name, direction, now_ist()):
+                return self._reject('intraday_trend_context_or_live_gate_blocked',index_name,direction)
+        if celestial.enabled() and fast is None and gap is None and trend is None:
             if candidate_id is None:
                 return self._reject('legacy_entry_disabled_in_celestial_mode',index_name,direction)
             selected = celestial.entry_candidate(index_name,direction,manual=manual_request,candidate_id=candidate_id)
@@ -643,16 +650,16 @@ class AutoExecutor:
 
         if not 0 <= time.monotonic() - getattr(chain, '_spot_received_at', 0) <= 30:
             return self._reject('underlying_quote_stale', index_name, direction)
-        if fast is None and gap is None and not 0 <= time.monotonic() - getattr(chain, '_alignment_at', 0) <= 240:
+        if fast is None and gap is None and trend is None and not 0 <= time.monotonic() - getattr(chain, '_alignment_at', 0) <= 240:
             return self._reject('alignment_snapshot_stale', index_name, direction)
         evidence = shield_context() if callable(shield_context) else None
         if kind in ('bull_shield', 'bear_shield') and (
                 evidence is None or evidence.index != index_name):
             return self._reject('shield_confirmation_evidence_missing', index_name, direction)
-        if fast is None and gap is None and not trade_policy.eligible(kind, tier, score, direction, snap, spot,minimum=minimum,
+        if fast is None and gap is None and trend is None and not trade_policy.eligible(kind, tier, score, direction, snap, spot,minimum=minimum,
                                                      shield_evidence=evidence, now=now_ist()):
             return self._reject('eligibility_alignment_or_gamma_score', index_name, direction)
-        special = fast or gap
+        special = fast or gap or trend
         structure = (special['spot_stop'],special['days']) if special else self._structure(chain, direction, spot)
         if structure is None:
             return self._reject('fresh_structure_or_valid_expiry_unavailable', index_name, direction)
@@ -680,6 +687,9 @@ class AutoExecutor:
             ranked = [r for r in ranked if r.quote.token==gap['token']
                       and r.quote.symbol==gap['contract_symbol']
                       and chain.index.opt_exchange==gap['exchange']]
+        if trend:
+            ranked = [r for r in ranked if r.quote.token==trend['token'] and r.quote.symbol==trend['symbol']
+                      and chain.index.opt_exchange==trend['exchange']]
         if gap:
             latest_gap = gap_context()
             if (not latest_gap or not latest_gap.get('eligible')
@@ -710,7 +720,7 @@ class AutoExecutor:
 
         verdict = risk_budget.select_within_budget(
             candidates, spot, allocated_capital=allocation,
-            max_lots=min(1, MAX_LOTS_PER_SIGNAL) if gap else MAX_LOTS_PER_SIGNAL)
+            max_lots=min(1, MAX_LOTS_PER_SIGNAL) if gap or trend else MAX_LOTS_PER_SIGNAL)
         if verdict.candidate is None:
             return self._reject(f"risk_budget_{verdict.reason}", index_name, direction)
 
@@ -721,9 +731,9 @@ class AutoExecutor:
             return self._reject('contract_held_outside_kadima', index_name, direction)
 
         proj_return = projected_return_pct(chosen_quote, spot, days_to_expiry)
-        if fast is None and gap is None and proj_return is None:
+        if fast is None and gap is None and trend is None and proj_return is None:
             return self._reject("projected_return_uncomputable", index_name, direction)
-        if fast is None and gap is None and proj_return < MIN_PROJECTED_RETURN_PCT:
+        if fast is None and gap is None and trend is None and proj_return < MIN_PROJECTED_RETURN_PCT:
             return self._reject(
                 f"projected_return_{proj_return:.1f}pct_under_{MIN_PROJECTED_RETURN_PCT:.0f}pct_minimum",
                 index_name, direction)
@@ -744,12 +754,12 @@ class AutoExecutor:
             chase_gates=kind != 'gamma_blast',
         )
         eq_verdict = entry_quality.evaluate_entry(ctx)
-        if fast is None and gap is None and not eq_verdict.allowed:
+        if fast is None and gap is None and trend is None and not eq_verdict.allowed:
             return self._reject(f"entry_quality_{eq_verdict.reason}", index_name, direction)
 
         allowed_lots, cap_reason = capital_guard.enforce(
             self, SimpleNamespace(quote=chosen_quote), direction, verdict.lots)
-        if gap:
+        if gap or trend:
             allowed_lots = min(1, allowed_lots)
         if allowed_lots == 0:
             return self._reject(f"capital_guard_{cap_reason}", index_name, direction)
@@ -769,7 +779,8 @@ class AutoExecutor:
             # Bounded entry price, no indefinite chasing after detection.
             cap = math.floor(special['entry']*1.005*20)/20
             if pricing_ltp>cap:
-                reason = 'gap_entry_price_ran_away' if gap else 'fast_entry_price_ran_away'
+                reason = ('gap_entry_price_ran_away' if gap else 'intraday_trend_entry_price_ran_away'
+                          if trend else 'fast_entry_price_ran_away')
                 return self._reject(reason,index_name,direction)
             limit_price = min(limit_price,cap)
         stop = verdict.candidate.stop_price
@@ -800,7 +811,7 @@ class AutoExecutor:
         clock = time.monotonic()
         if (not 0 <= clock - chain._last_poll <= 30
                 or not 0 <= clock - chain._spot_received_at <= 30
-                or (fast is None and gap is None and not 0 <= clock - chain._alignment_at <= 240)):
+                or (fast is None and gap is None and trend is None and not 0 <= clock - chain._alignment_at <= 240)):
             return self._reject('entry_data_expired_before_submission', index_name, direction)
         quantity = allowed_lots * lot_size
 
@@ -822,6 +833,10 @@ class AutoExecutor:
                            for k in ('episode','token','contract_symbol','exchange','direction','spot_stop'))
                     or gap_and_go.live_blocks(index_name, now_ist())):
                 return self._reject('gap_invalidated_before_submission',index_name,direction)
+        if trend:   # INTRADAY TREND v1
+            latest_trend = trend_context()
+            if not intraday_trend.still_valid(latest_trend, trend, index_name, direction, now_ist()):
+                return self._reject('intraday_trend_invalidated_before_submission',index_name,direction)
         if selected is not None:
             latest = celestial.entry_candidate(index_name,direction,manual=manual_request,candidate_id=selected['id'])
             if latest is None or latest['last_updated'] != selected['last_updated']:
@@ -956,6 +971,8 @@ class AutoExecutor:
                 pass
             elif getattr(pos,'kind',None)=='fast_momentum' and fast_momentum.timeout_reason(pos,now):
                 reason = fast_momentum.timeout_reason(pos,now)
+            elif getattr(pos,'kind',None)==intraday_trend.STRATEGY and intraday_trend.exit_reason(pos,now):
+                reason = intraday_trend.exit_reason(pos,now)   # INTRADAY TREND v1 holding policy
             elif ltp <= structural:
                 reason = 'structural_stop_breached'
             elif (pos.trail_active or celestial.enabled()) and ltp <= pos.effective_stop:
@@ -974,8 +991,11 @@ class AutoExecutor:
                     reason = decision.reason if decision.should_exit else None
 
             if not reason and celestial.enabled() and not is_mcx:
-                from .celestial_exit import evaluate
-                reason = evaluate(pos, ltp, now)
+                if getattr(pos,'kind',None)==intraday_trend.STRATEGY:
+                    reason = intraday_trend.celestial_exit_guard(pos, now)   # spread guard only
+                else:
+                    from .celestial_exit import evaluate
+                    reason = evaluate(pos, ltp, now)
 
             if reason:
                 self._close_position(pos, ltp, reason)

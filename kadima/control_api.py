@@ -675,3 +675,24 @@ def forecast_buy(body: dict = Body(...), authorization: Optional[str] = Header(N
     audit.log('forecast_panel_buy_request', index=name, direction=direction, strike=strike,
               lots=lots, ok=result.get('ok'), reason=result.get('reason'))
     return _control_result(result)
+
+
+# ---------------------------------------------------------------- intraday trend (INTRADAY TREND v1)
+# Read-only: its own lane rows, decision records and open intraday_trend positions.
+# Gamma/CAS rows are not relabelled or included here.
+@app.get('/api/kadima/intraday-trend')
+def intraday_trend_view(limit: int = 50, authorization: Optional[str] = Header(None)):
+    _check_auth(authorization)
+    from . import intraday_trend
+    rows = list((getattr(EXECUTOR, 'trend_rows', None) or {}).values())
+    positions = []
+    if EXECUTOR is not None:
+        with EXECUTOR._execution_lock:
+            positions = [dict(signal_id=p.signal_id, index=p.index, symbol=p.symbol, status=p.status,
+                              entry_price=p.entry_price, effective_stop=p.effective_stop,
+                              remaining_qty=p.remaining_qty)
+                         for p in EXECUTOR.state.positions.values()
+                         if p.kind == intraday_trend.STRATEGY and p.status != 'closed']
+    return dict(strategy=intraday_trend.STRATEGY, policy_id=intraday_trend.POLICY_ID,
+                live_requested=intraday_trend.live_requested(), rows=rows, positions=positions,
+                decisions=intraday_trend.recent_decisions(max(1, min(int(limit), 200))))
