@@ -1,33 +1,30 @@
-"""INTRADAY TREND v1 - separate index intraday-trend lane. Observation by default.
+"""INTRADAY TREND v2 - separate index intraday-trend lane. Observation by default.
 
 Scope (trader's instruction, 10-11 Oct 2026): a strategy of its own, identity
 ``intraday_trend``. It does not read or change Gamma, CAS, Bull/Bear Shield or
 the 5/10/15-minute fast scalping lane, and it has no order writer: an eligible
 setup is handed to the shared ``AutoExecutor.evaluate_and_enter`` exactly like
-the other lanes, so every shared safeguard (session permit, kill, reconciliation,
-daily loss, capital/portfolio ceilings, duplicate protection, exact contract and
-fresh-quote checks, LIMIT pricing, the durable ledger) stays authoritative.
+the other lanes, so every shared safeguard stays authoritative.
 
-Inputs are the engine's existing streams only: closed five-minute index candles
-already stored by the candle builder, the 3-minute indicator snapshot, the spot
-tick, and the option chain the OI loop already polls. No polling, subscription,
-thread or broker call is added here.
-
-The three setup families are HYPOTHESES to validate, not profitable patterns:
-  opening_continuation  09:30-10:30  close beyond the 09:15-09:30 opening range
-  pullback_recovery     09:45-14:30  trend pullback to EMA9 (5-min), then a close
-                                     back above the prior bar's high (CE) / below its low (PE)
-  afternoon_breakout    13:00-14:30  close beyond a 12:00-onward consolidation
-Each uses only bars closed at the decision time. Thresholds are uncalibrated.
-
-Holding/exit policy (declared before entry, stored with every decision):
-  initial stop  the setup's underlying stop mapped to premium by the existing
-                trade_policy.premium_stop (structure stop; never widened later)
-  profit trail  the existing shared ratchet/trail (unchanged)
-  no progress   exit 45 min after entry if the peak never reached +5%
-  time exit     15:10 IST, before the broker's intraday square-off; no carry
-  size          1 lot; at most 3 episodes per underlying per day
-Live entry needs KADIMA_INTRADAY_TREND_LIVE=1 (default off = observation only).
+v2 (11 Oct 2026) rebuilds the entry and exit rules on the trader's Master
+Checklist v8.0 after the v1 replay lost on both calibration and validation days.
+The rules come from the checklist, not from fitting the replay:
+  setups        pullback_recovery (09:45-14:30) and afternoon_breakout (13:00-14:30);
+                opening_continuation removed (bought the first spike, 0 of 6 won)
+  confirmation  the setup bar must be confirmed by the NEXT closed 5-min bar (s.10)
+  Bull Shield   v2.1 score >= 70 in the trade direction on the setup bar and the
+                confirmation bar (Bank Nifty: one more bar, and >= 2 of HDFC, ICICI,
+                Kotak, SBI aligned); -20% after 13:00 on pre-expiry days
+  stop          beyond the structure level by max(5 pts, 0.25 x avg 5-min range)
+  target        full exit at 2R (minimum RR 1:2; one lot cannot be part-booked)
+  invalidation  exit if the EMA trend flips against the trade within 2 candles
+  unchanged     no-progress exit at 45 min below +5%, 15:10 time exit, 1 lot,
+                at most 3 episodes per underlying per day, strike claims
+Known limits: index volume is zero, so the volume leg never scores and the VWAP
+leg compares spot with the last close until index-futures VWAP is wired; the
+engine's per-bar Shield history and bank alignment are not wired into the live
+hook, so the live lane fails closed (shield_unavailable). v2 runs offline only
+(replay / practice mode). Live entry would also need KADIMA_INTRADAY_TREND_LIVE=1.
 """
 from __future__ import annotations
 
@@ -47,11 +44,10 @@ from .utils import now_ist
 
 STRATEGY = 'intraday_trend'
 POLICY = dict(
-    id='intraday_trend_v1',
+    id='intraday_trend_v2',
     interval_min=5,
     first_decision=(9, 30),
     last_entry=(14, 30),
-    opening_window=((9, 30), (10, 30)),
     pullback_window=((9, 45), (14, 30)),
     afternoon_window=((13, 0), (14, 30)),
     consolidation_from=(12, 0),
@@ -71,6 +67,18 @@ POLICY = dict(
     no_progress_gain_pct=5.0,
     time_exit=(15, 10),
     decision_retention_days=30,
+    # v2 (11 Oct 2026): rules taken from the trader's Master Checklist v8.0, not fitted to data.
+    confirm_next_bar=True,         # s.10: enter only after trigger confirmation; never the first spike
+    shield_min_score=70.0,         # Bull Shield v2.1 ACTIVE: >=70 in the setup direction ...
+    shield_hold_bars=2,            # ... on the setup bar AND one extra 5-min bar
+    shield_hold_bars_banknifty=3,  # Bank Nifty variant: two extra candles
+    bank_min_confirm=2,            # Bank Nifty variant: >=2 of HDFC, ICICI, Kotak, SBI
+    pre_expiry_cap_after=(13, 0),  # postmortem rule: -20% on Shield scores after 13:00 pre-expiry
+    pre_expiry_cap_factor=0.8,
+    stop_buffer_ranges=0.25,       # stop beyond the structure level, not on it
+    stop_buffer_min_points=5.0,
+    target_r=2.0,                  # minimum RR 1:2; full exit at 2R (1 lot cannot be split)
+    invalidation_bars=2,           # EMA flips against the trade within 2 candles -> exit
 )
 _SOURCE_SHA = hashlib.sha256(open(__file__, 'rb').read()).hexdigest()
 POLICY_ID = POLICY['id'] + ':' + hashlib.sha256(
@@ -153,21 +161,6 @@ def trend_alignment(direction, snap):
 
 
 # ------------------------------------------------------------------ setups
-def _opening_continuation(bars, last, avg):
-    lo_t, hi_t = POLICY['opening_window']
-    if not _t(lo_t) <= last['at'].time() < _t(hi_t):
-        return None, 'outside_opening_window'
-    opening = [b for b in bars if b['at'].time() < _t(POLICY['first_decision'])]
-    if len(opening) != 3 or opening[0]['at'].time() != dtime(9, 15) or not _contiguous(opening):
-        return None, 'opening_range_incomplete'
-    hi, lo = max(b['high'] for b in opening), min(b['low'] for b in opening)
-    if last['close'] > hi:
-        return dict(direction='CE', level=hi, spot_stop=last['low']), None
-    if last['close'] < lo:
-        return dict(direction='PE', level=lo, spot_stop=last['high']), None
-    return None, 'no_close_beyond_opening_range'
-
-
 def _pullback_recovery(bars, last, avg):
     lo_t, hi_t = POLICY['pullback_window']
     if not _t(lo_t) <= last['at'].time() < _t(hi_t):
@@ -218,40 +211,109 @@ def _afternoon_breakout(bars, last, avg):
     return None, 'no_close_beyond_consolidation'
 
 
-FAMILIES = (('opening_continuation', _opening_continuation),
-            ('afternoon_breakout', _afternoon_breakout),
+# v2: opening_continuation removed (0 wins in 6 replayed trades; it bought the first
+# spike before confirmation, against checklist s.10).
+FAMILIES = (('afternoon_breakout', _afternoon_breakout),
             ('pullback_recovery', _pullback_recovery))
 
 
-def detect(rows, spot, snap, technical_at, now):
-    """Setup on the latest closed 5-min bar, or (None, {family: reason}).
+def shield_score(snap, oi_bias=None):
+    """Bull Shield v2.1 weighted score, same weights and legs as engine._score,
+    except that a fake index VWAP (equal to the close) sits out instead of voting PE.
+    oi_bias: 'CE', 'PE' or None (no OI-velocity evidence). Returns (direction, score).
+    Used where the engine's own per-bar score is not available (offline replay)."""
+    bull = bear = 0.0
+    above = getattr(snap, 'above_vwap', None)
+    vwap, close = getattr(snap, 'vwap', None), getattr(snap, 'close', None)
+    if vwap is not None and close is not None and vwap == close:
+        # Index spot has no volume: the candle builder's "VWAP" is then the close
+        # itself and close > vwap is always False, so the leg would always vote PE.
+        # Trader's 5 Oct rule: the VWAP factor sits out (no rescaling) until
+        # index-futures VWAP is live.
+        above = None
+    if above is not None:
+        bull, bear = (bull + 25.0, bear) if above else (bull, bear + 25.0)
+    if getattr(snap, 'ema_bull', None) is not None:
+        bull, bear = (bull + 20.0, bear) if snap.ema_bull else (bull, bear + 20.0)
+    rsi = getattr(snap, 'rsi', None)
+    if rsi is not None:
+        bull, bear = (bull + 20.0, bear) if rsi > 50 else (bull, bear + 20.0)
+    if getattr(snap, 'avg_vol', None) and getattr(snap, 'vol', 0) > snap.avg_vol * 1.5:
+        bull, bear = (bull + 15.0, bear) if above else (bull, bear + 15.0)
+    if oi_bias == 'CE':
+        bull += 15.0
+    elif oi_bias == 'PE':
+        bear += 15.0
+    if getattr(snap, 'failed_breakdown', None):
+        bull += 5.0
+    elif getattr(snap, 'failed_breakout', None):
+        bear += 5.0
+    return ('CE' if bull >= bear else 'PE'), max(bull, bear)
 
-    Returns (setup, evaluations). The same bar always yields the same episode,
-    so a restart or repeated poll can never create a second opportunity."""
+
+def _shield_gate(direction, shield, underlying, bar_close, days_to_expiry):
+    """Checklist v8.0: score >= shield_min_score in the trade direction on the setup
+    bar and the confirmation bar (Bank Nifty: one more), consecutive 5-min closes.
+    shield: [{'closed_at': datetime, 'direction': 'CE'|'PE', 'score': float}, ...]."""
+    if not shield:
+        return 'shield_unavailable'
+    need = POLICY['shield_hold_bars_banknifty' if underlying == 'BANKNIFTY' else 'shield_hold_bars']
+    rows = sorted(shield, key=lambda r: r['closed_at'])[-need:]
+    if len(rows) < need or rows[-1]['closed_at'] != bar_close:
+        return 'shield_not_held'
+    for i, r in enumerate(rows):
+        if i and (r['closed_at'] - rows[i - 1]['closed_at']).total_seconds() != 300:
+            return 'shield_not_held'
+        score = r['score']
+        if days_to_expiry == 1 and r['closed_at'].time() >= _t(POLICY['pre_expiry_cap_after']):
+            score *= POLICY['pre_expiry_cap_factor']
+        if r['direction'] != direction:
+            return 'shield_direction_against'
+        if not _finite(score) or score < POLICY['shield_min_score']:
+            return 'shield_below_active'
+    return None
+
+
+def detect(rows, spot, snap, technical_at, now, shield=None, banks=None,
+           days_to_expiry=None, underlying=None):
+    """v2: a setup found on the previous closed 5-min bar and confirmed by the
+    latest closed bar (checklist s.10), then the Bull Shield and bank gates.
+
+    Returns (setup, evaluations). The same confirmation bar always yields the same
+    episode, so a restart or repeated poll can never create a second opportunity."""
     bars = closed_bars(rows, now)
     last = bars[-1]
     if last['at'].time() < _t(POLICY['first_decision']):
         raise ValueError('before_first_decision')
     if last['at'].time() >= _t(POLICY['last_entry']):
         raise ValueError('after_last_entry')
-    recent = bars[-6:]
-    avg = _avg_range(recent)
+    if len(bars) < 2 or not _contiguous(bars[-2:]):
+        raise ValueError('candle_warmup')
+    setup_bars, setup_bar = bars[:-1], bars[-2]
+    avg = _avg_range(setup_bars[-6:])
     if not _finite(avg) or avg <= 0:
         raise ValueError('flat_underlying')
+    bar_close = last['at'] + timedelta(minutes=5)
     evaluations = {}
     for family, fn in FAMILIES:
-        setup, reason = fn(bars, last, avg)
+        setup, reason = fn(setup_bars, setup_bar, avg)
         if setup is None:
             evaluations[family] = reason
             continue
         direction, sign = setup['direction'], 1 if setup['direction'] == 'CE' else -1
+        if sign * (last['close'] - setup_bar['close']) <= 0 or sign * (last['close'] - setup['level']) <= 0:
+            evaluations[family] = 'not_confirmed_by_next_bar'
+            continue
         if sign * (last['close'] - setup['level']) > POLICY['max_extension_ranges'] * avg:
             evaluations[family] = 'breakout_extended'
             continue
+        structure = min(setup['spot_stop'], last['low']) if sign > 0 else max(setup['spot_stop'], last['high'])
+        buffer = max(POLICY['stop_buffer_min_points'], POLICY['stop_buffer_ranges'] * avg)
+        spot_stop = structure - sign * buffer
         if not trade_policy.positive(spot) or sign * (spot - setup['level']) <= 0:
             evaluations[family] = 'breakout_invalidated_at_decision'
             continue
-        if sign * (spot - setup['spot_stop']) <= 0:
+        if sign * (spot - spot_stop) <= 0:
             evaluations[family] = 'invalid_structure'
             continue
         if technical_at is None or not 0 <= (now - technical_at).total_seconds() <= POLICY['technical_max_age_sec']:
@@ -261,10 +323,22 @@ def detect(rows, spot, snap, technical_at, now):
         if not all(aligned.values()):
             evaluations[family] = 'trend_not_aligned:' + ','.join(k for k, v in aligned.items() if not v)
             continue
+        gate = _shield_gate(direction, shield, underlying, bar_close, days_to_expiry)
+        if gate:
+            evaluations[family] = gate
+            continue
+        if underlying == 'BANKNIFTY':
+            if banks is None:
+                evaluations[family] = 'bank_confirmation_unavailable'
+                continue
+            if sum(banks.get(b) == direction for b in ('HDFCBANK', 'ICICIBANK', 'KOTAKBANK', 'SBIN')) \
+                    < POLICY['bank_min_confirm']:
+                evaluations[family] = 'bank_confirmation_missing'
+                continue
         evaluations[family] = 'SETUP'
-        bar_close = last['at'] + timedelta(minutes=5)
         return dict(family=family, direction=direction, level=setup['level'],
-                    spot_stop=setup['spot_stop'], bar_start=last['at'].isoformat(),
+                    spot_stop=round(spot_stop, 2), structure_level=structure,
+                    setup_bar_start=setup_bar['at'].isoformat(), bar_start=last['at'].isoformat(),
                     decided_at=bar_close.isoformat(), avg_range=round(avg, 2)), evaluations
     return None, evaluations
 
@@ -399,15 +473,26 @@ def celestial_exit_guard(pos, now):
     return None
 
 
-def exit_reason(pos, now):
-    """Intraday-trend holding policy only; every other kind returns None."""
+def exit_reason(pos, now, snap=None, ltp=None):
+    """Intraday-trend holding policy only; every other kind returns None.
+    v2 adds: full exit at target_r x initial risk (checklist minimum RR 1:2), and
+    exit when the EMA trend flips against the trade within invalidation_bars
+    candles of entry (checklist auto-invalidation)."""
     if getattr(pos, 'kind', None) != STRATEGY:
         return None
     if now.astimezone(IST).time() >= _t(POLICY['time_exit']):
         return 'intraday_trend_time_exit'
     if not pos.entry_ts or not pos.entry_price:
         return None
+    stop = getattr(pos, 'structural_stop', None)
+    if ltp is not None and _finite(ltp, stop) and 0 < stop < pos.entry_price and \
+            ltp >= pos.entry_price + POLICY['target_r'] * (pos.entry_price - stop):
+        return 'intraday_trend_target_2r'
     held = (now - pos.entry_ts).total_seconds()
+    if snap is not None and held <= POLICY['invalidation_bars'] * 300 and \
+            getattr(pos, 'direction', None) in ('CE', 'PE') and \
+            trend_alignment(pos.direction, snap)['ema'] is False:
+        return 'intraday_trend_shield_invalidated'
     peak = pos.peak_price or pos.entry_price
     if held >= POLICY['no_progress_min'] * 60 and peak < pos.entry_price * (1 + POLICY['no_progress_gain_pct'] / 100):
         return 'intraday_trend_no_progress_45min'
@@ -468,8 +553,15 @@ class Lane:
         row = dict(underlying=st.name, strategy=STRATEGY, policy_id=POLICY_ID, ts=now.isoformat(),
                    stage='NO_SETUP', blocked_reasons=[], evaluations={})
         try:
+            # v2 gates need the engine's per-bar Shield history and bank alignment;
+            # until those are wired (not in this release) they are None and the lane
+            # fails closed with shield_unavailable. Practice mode runs offline.
             setup, evaluations = detect(storage.recent_candles(st.chain.index.token, 5, 90),
-                                        st.spot, st.snap, getattr(st, 'technical_at', None), now)
+                                        st.spot, st.snap, getattr(st, 'technical_at', None), now,
+                                        shield=getattr(st, 'trend_shield', None),
+                                        banks=getattr(st, 'trend_banks', None),
+                                        days_to_expiry=getattr(st, 'trend_days_to_expiry', None),
+                                        underlying=st.name)
             row['evaluations'] = evaluations
             if st.name in self.pending:
                 self._close(st.name, 'SETUP_EXPIRED', reason='superseded_by_next_bar')
