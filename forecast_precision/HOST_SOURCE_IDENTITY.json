@@ -1,0 +1,106 @@
+{
+  "inspection": "READ_ONLY_STATIC_SOURCE_NOT_RUNTIME_VERIFICATION",
+  "files": {
+    "kadima/hourly_forecast.py": {
+      "sha256": "c702310cfcc7f98a61af334a6b428f08215d770e4a314d82e79a3eb0dee1e870",
+      "git_blob_sha1": "83e344e5aa2d2573809d6000663cbec85304d7bc",
+      "bytes": 36566,
+      "status": "READ",
+      "selected_constants": {
+        "FORECAST_INDICES": "DYNAMIC_NOT_EVALUATED",
+        "LOOP_SEC": 5,
+        "SPOT_FRESH_SEC": 30
+      },
+      "make_forecast_call_keywords": [
+        [
+          "as_of",
+          "atm_iv",
+          "oi",
+          "params",
+          "shield_dir",
+          "shield_score",
+          "tod"
+        ]
+      ],
+      "make_forecast_signatures": []
+    },
+    "kadima/hourly_forecast_model.py": {
+      "sha256": "4856671e3fec23a113648ba0ff1d649a8b49d22e3375f58a0d6636101be11fd3",
+      "git_blob_sha1": "a351d20d414de238b953e92e5f064687f00c2578",
+      "bytes": 31650,
+      "status": "READ",
+      "selected_constants": {
+        "STEP_MIN": 5,
+        "SIGMA_LOOKBACK": 24,
+        "MODEL_VERSION": "hf-2.0"
+      },
+      "make_forecast_call_keywords": [],
+      "make_forecast_signatures": [
+        {
+          "positional": [
+            "days",
+            "di",
+            "i",
+            "n",
+            "anchor"
+          ],
+          "keyword_only": [
+            "as_of",
+            "tod",
+            "params",
+            "atm_iv",
+            "shield_dir",
+            "shield_score",
+            "oi"
+          ]
+        }
+      ]
+    },
+    "kadima/forecast_chain_data.py": {
+      "sha256": "19bd15543fd81606dcf2f1e18babb509eddf3e6b2947031d141017542ff0775d",
+      "git_blob_sha1": "2ee52fdf068753309c5b8e1dac7340a115f6a16e",
+      "bytes": 12573,
+      "status": "READ",
+      "selected_constants": {},
+      "make_forecast_call_keywords": [],
+      "make_forecast_signatures": []
+    },
+    "kadima/constituent_radar.py": {
+      "status": "ABSENT"
+    },
+    "kadima/feed.py": {
+      "sha256": "9ac0d6ffa06c71d0122df3b14bf7005d6d1173981098ca5818fb88d672d7e344",
+      "git_blob_sha1": "8a9f8ea0aa5a708739c9297583badabc85fc2c2a",
+      "bytes": 8048,
+      "status": "READ",
+      "selected_constants": {},
+      "make_forecast_call_keywords": [],
+      "make_forecast_signatures": []
+    },
+    "kadima/engine.py": {
+      "sha256": "d4ed0266dd08514e7c2d3c3d4e3f3df1cd34f5cf2b0b6b0ae1d3cd29a616895d",
+      "git_blob_sha1": "86d1638d0120fedcaaa66a7e97cb57a33b4769a6",
+      "bytes": 45066,
+      "status": "READ",
+      "selected_constants": {},
+      "make_forecast_call_keywords": [],
+      "make_forecast_signatures": []
+    },
+    "tools/forecast_nightly.py": {
+      "sha256": "c5062898066d9cf525440a01a982e35006d05a379582eb96220e9e3cc93655d5",
+      "git_blob_sha1": "573bdf3c5645fd88a5c7a5faaa5d48e6a7a15af5",
+      "bytes": 9572,
+      "status": "READ",
+      "selected_constants": {},
+      "make_forecast_call_keywords": [
+        [
+          "as_of",
+          "oi",
+          "params",
+          "tod"
+        ]
+      ],
+      "make_forecast_signatures": []
+    }
+  }
+}
