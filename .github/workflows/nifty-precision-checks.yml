@@ -1,0 +1,55 @@
+name: NIFTY precision offline checks
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+    paths: ['forecast_precision/**', '.github/workflows/nifty-precision-*.yml']
+permissions:
+  contents: read
+jobs:
+  precision:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: Research test dependencies only
+        run: python -m pip install -r forecast_precision/requirements.txt
+      - name: Candidate and native-cache adapter tests
+        working-directory: forecast_precision
+        env:
+          OPENBLAS_NUM_THREADS: '1'
+          OMP_NUM_THREADS: '1'
+        run: python -m unittest discover -s tests -v
+      - name: Compile added source
+        run: python -m compileall -q forecast_precision
+      - name: Exact additive scope and blocked release plan
+        env:
+          REVIEWED_SHA: ${{ github.event.pull_request.head.sha }}
+        run: python forecast_precision/release_plan.py --release-sha "$REVIEWED_SHA"
+  existing-suites:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        suite: [test_hourly_forecast.py, test_hourly_forecast_201.py, test_forecast_manual_buy.py, test_audit_fixes.py, test_offline.py, test_oi_confirmation.py, test_shield_v9.py, test_timing.py, test_cas_executor.py]
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.event.pull_request.head.sha }}
+          persist-credentials: false
+      - uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.11'
+      - name: Existing test dependencies
+        run: python -m pip install -r requirements.txt -r forecast_precision/requirements.txt
+      - name: Existing suite in isolated home without network
+        env:
+          SUITE: ${{ matrix.suite }}
+        run: python forecast_precision/offline_suite.py "$SUITE"

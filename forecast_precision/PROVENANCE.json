@@ -1,0 +1,12 @@
+{
+  "schema": 1,
+  "base_commit": "15a05c25497f3cb93b6f5ec61025de6824737ce4",
+  "reference_breadth_commit": "b2902137d75bce0815b1d48cede6f30222757b61",
+  "input_package_sha256": "ba6fea7f82efb859221ed4b2d685a882f8a5786635fc48bbcabdbfbfc7487afc",
+  "local_test_count": 98,
+  "local_test_data": "synthetic; no market backtest",
+  "host_state": "not inspected",
+  "aws_apply": false,
+  "runtime_hook_installed": false,
+  "source_scope": "new forecast_precision/ and two workflows only"
+}
