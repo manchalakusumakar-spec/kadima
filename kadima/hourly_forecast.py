@@ -89,6 +89,21 @@ CREATE TABLE IF NOT EXISTS history_candles (
 """
 EVAL_SLOTS = 20             # most recent resolved slots held out to judge new weights
 SCHEMA += FCD.SCHEMA
+# hf-2.0.1: one re-forecast per slot after the price first leaves the 68% band. Shown as
+# "updated"; never used for calibration, scored separately so its record is visible.
+SCHEMA += """
+CREATE TABLE IF NOT EXISTS hourly_forecast_updates (
+    day TEXT NOT NULL, index_name TEXT NOT NULL, slot TEXT NOT NULL,
+    made_at TEXT NOT NULL, from_k INTEGER NOT NULL, from_ts TEXT NOT NULL,
+    anchor REAL NOT NULL, direction TEXT NOT NULL, prob_up REAL NOT NULL,
+    projected_pts REAL NOT NULL, points TEXT NOT NULL, levels TEXT,
+    dir_hit INTEGER, coverage REAL,
+    PRIMARY KEY (day, index_name, slot)
+);
+"""
+HEAVY_WEIGHTS = (('HDFCBANK', 13.0), ('ICICIBANK', 9.0), ('RELIANCE', 9.0), ('INFY', 5.0), ('TCS', 3.0))
+# Approximate NIFTY 50 weights (%), used only to weight the heavyweight vote.
+UPDATE_MIN_STEPS_LEFT = 3   # no update in the last 15 minutes of a slot
 
 _local = threading.local()
 
@@ -103,6 +118,9 @@ def conn(path=None):
         c = sqlite3.connect(path, timeout=30, check_same_thread=False)
         c.row_factory = sqlite3.Row
         c.executescript(SCHEMA)
+        cols = {r['name'] for r in c.execute('PRAGMA table_info(hourly_forecasts)')}
+        if 'coverage95' not in cols:
+            c.execute('ALTER TABLE hourly_forecasts ADD COLUMN coverage95 REAL')
         cache[path] = c
     return cache[path]
 
@@ -282,7 +300,7 @@ def save_params(index_name, params, reason, db=None):
 def describe_change(old, new):
     names = dict(beta_reg='pattern', beta_analog='similar-days', beta_tech='technicals',
                  beta_shield='Bull Shield', beta_trend='trend-day', beta_oi='option chain',
-                 band_z='band width', prob_c='confidence')
+                 beta_heavy='heavyweights', band_z='band width', band_z95='wide band', prob_c='confidence')
     parts = [f"{label} {old.get(k, 0):.2f}\u2192{new.get(k, 0):.2f}" for k, label in names.items()
              if abs((new.get(k) or 0) - (old.get(k) or 0)) >= 0.005]
     if bool(old.get('band_only')) != bool(new.get('band_only')):
@@ -386,6 +404,40 @@ class HourlyForecaster:
         shield_score = st.score if shield_dir else None
         return spot, iv, shield_dir, shield_score
 
+    def _heavy_tilt(self, now):
+        """-1..+1: weighted vote of HDFC Bank, ICICI Bank, Reliance, Infosys, TCS. Each stock
+        scores (bull legs - bear legs) / 3 on price vs its session VWAP, EMA20 vs EMA50 and RSI 50,
+        using only fresh 5-min snapshots. None when fewer than 3 stocks are fresh."""
+        eng = self.engine
+        pool = dict(getattr(eng, 'bank_states', {}) or {})
+        pool.update(getattr(eng, 'heavy_states', {}) or {})
+        total = weight = 0.0
+        used = {}
+        for name, w in HEAVY_WEIGHTS:
+            hs = pool.get(name)
+            snap = getattr(hs, 'snap', None)
+            if hs is None or snap is None or not hs.technical_at or not hs.last_updated:
+                continue
+            if not (0 <= (now - hs.technical_at).total_seconds() <= 360
+                    and 0 <= (now - hs.last_updated).total_seconds() <= 60):
+                continue
+            legs = []
+            if M.finite(snap.vwap) and M.finite(hs.spot) and snap.vwap > 0:
+                legs.append(1 if hs.spot > snap.vwap else -1 if hs.spot < snap.vwap else 0)
+            if snap.ema_bull is not None:
+                legs.append(1 if snap.ema_bull else -1)
+            if M.finite(snap.rsi):
+                legs.append(1 if snap.rsi > 50 else -1 if snap.rsi < 50 else 0)
+            if len(legs) < 2:
+                continue
+            vote = sum(legs) / 3.0
+            used[name] = round(vote, 2)
+            total += w * vote
+            weight += w
+        if len(used) < 3 or weight <= 0:
+            return None, used
+        return M.clip(total / weight, -1.0, 1.0), used
+
     def ensure_forecast(self, name, st, slot, now):
         start, end = slot
         day = now.date()
@@ -407,11 +459,13 @@ class HourlyForecaster:
             iv, shield_dir, shield_score = None, None, None
             if anchor is None:
                 return None
+        heavy, heavy_used = (None, {}) if late else self._heavy_tilt(now)
         return self.generate(name, token, day, slot, anchor, late, now,
-                             atm_iv=iv, shield_dir=shield_dir, shield_score=shield_score)
+                             atm_iv=iv, shield_dir=shield_dir, shield_score=shield_score,
+                             heavy=heavy, heavy_used=heavy_used, st=None if late else st)
 
     def generate(self, name, token, day, slot, anchor, late, now, *, atm_iv=None,
-                 shield_dir=None, shield_score=None, rows=None):
+                 shield_dir=None, shield_score=None, rows=None, heavy=None, heavy_used=None, st=None):
         start, end = slot
         t0 = _slot_dt(day, start)
         rows = rows if rows is not None else history_rows(token, t0)
@@ -430,7 +484,24 @@ class HourlyForecaster:
         oi = oi_features(name, t0, step)
         f = M.make_forecast(days, di, i, n, anchor, as_of=day, tod=self._tod_cache[key],
                             params=params, atm_iv=atm_iv, shield_dir=shield_dir,
-                            shield_score=shield_score, oi=oi)
+                            shield_score=shield_score, oi=oi, heavy=heavy)
+        if f is not None:
+            levels = None
+            try:
+                bars = [(r[2], r[3]) for r in rows if r[0].date() == day]
+                vwap = None
+                if st is not None:
+                    v9 = getattr(st, 'shield_v9', None) or {}
+                    fut = v9.get('futures') or {}
+                    at = datetime.fromisoformat(v9['closed_at']) if v9.get('closed_at') else None
+                    if at and 0 <= (now - at).total_seconds() <= 600 and fut.get('vwap') and fut.get('close'):
+                        vwap = anchor * fut['vwap'] / fut['close']
+                o = oi or {}
+                levels = M.key_levels(anchor, bars, o.get('ce_wall_now'), o.get('pe_wall_now'), vwap)
+            except Exception:                           # noqa: BLE001 - display extra only
+                levels = None
+            f.inputs.update(levels=levels, bias=M.bias_text(f.direction, levels),
+                            heavy_used=dict(heavy_used or {}))
         if f is None:
             audit.log('hourly_forecast_skipped', index=name, slot=M.slot_label(start),
                       reason='insufficient_history_or_volatility')
@@ -481,10 +552,87 @@ class HourlyForecaster:
             if changed:
                 pts = c.execute('SELECT * FROM hourly_forecast_points WHERE day=? AND index_name=? AND slot=? '
                                 'ORDER BY k', (r['day'], name, r['slot'])).fetchall()
+            if not r['late'] and r['status'] == 'live':
+                try:
+                    self._maybe_update(r, pts, now, token, name)
+                except Exception as exc:                # noqa: BLE001 - display extra only
+                    audit.log('hourly_forecast_update_error', error=str(exc)[:200])
             done = all(p['actual'] is not None for p in pts)
             age = (now - end_ts).total_seconds()
             if (done and age >= 0) or age >= FINALIZE_GIVE_UP_SEC or (give_up and age >= 0):
                 self.finalize(r, pts)
+
+    def _maybe_update(self, r, pts, now, token, name):
+        """First time the price closes outside the 68% band, re-forecast the rest of the slot
+        from that point. One update per slot; the original forecast stays and is scored as before."""
+        c = conn(self.db)
+        if c.execute('SELECT 1 FROM hourly_forecast_updates WHERE day=? AND index_name=? AND slot=?',
+                     (r['day'], name, r['slot'])).fetchone():
+            return None
+        brk = next((p for p in pts if p['actual'] is not None
+                    and not p['lower'] <= p['actual'] <= p['upper']), None)
+        if brk is None or r['steps'] - brk['k'] < UPDATE_MIN_STEPS_LEFT:
+            return None
+        ts = _dt(brk['ts'])
+        if (now - ts).total_seconds() > 300:     # only while it is still news
+            return None
+        day = ts.date()
+        rows = history_rows(token, ts)
+        days = M.build_days(rows)
+        if not days or days[-1].day != day:
+            return None
+        di = len(days) - 1
+        i, n = M.bar_index((ts.hour, ts.minute)), r['steps'] - brk['k']
+        st = self.engine.states.get(name) if self.engine else None
+        iv = shield_dir = shield_score = None
+        if st is not None:
+            _, iv, shield_dir, shield_score = self._live_inputs(st, now)
+        heavy, heavy_used = self._heavy_tilt(now) if self.engine else (None, {})
+        step = INDICES[name].strike_step if name in INDICES else 50
+        oi = oi_features(name, ts, step)
+        key = (name, day)
+        tod = self._tod_cache.get(key) or M.tod_profile(days[:di])
+        f = M.make_forecast(days, di, i, n, brk['actual'], as_of=day, tod=tod,
+                            params=load_params(name, self.db), atm_iv=iv, shield_dir=shield_dir,
+                            shield_score=shield_score, oi=oi, heavy=heavy)
+        if f is None:
+            return None
+        bars = [(x[2], x[3]) for x in rows if x[0].date() == day]
+        o = oi or {}
+        levels = M.key_levels(brk['actual'], bars, o.get('ce_wall_now'), o.get('pe_wall_now'))
+        points = [(brk['k'] + k, round(mn, 2), round(up, 2), round(lo, 2)) for k, mn, up, lo in f.points]
+        with c:
+            c.execute('INSERT OR IGNORE INTO hourly_forecast_updates (day,index_name,slot,made_at,from_k,'
+                      'from_ts,anchor,direction,prob_up,projected_pts,points,levels) VALUES (?,?,?,?,?,?,?,?,?,?,?,?)',
+                      (r['day'], name, r['slot'], now.isoformat(), brk['k'], brk['ts'], brk['actual'],
+                       f.direction, f.prob_up, f.projected_pts, json.dumps(points),
+                       json.dumps(dict(levels or {}, bias=M.bias_text(f.direction, levels),
+                                       heavy_used=heavy_used))))
+        audit.log('hourly_forecast_updated', index=name, slot=r['slot'], from_ts=brk['ts'],
+                  anchor=brk['actual'], direction=f.direction, prob_up=f.prob_up)
+        return f
+
+    def _score_update(self, r, pts):
+        c = conn(self.db)
+        u = c.execute('SELECT * FROM hourly_forecast_updates WHERE day=? AND index_name=? AND slot=?',
+                      (r['day'], r['index_name'], r['slot'])).fetchone()
+        if u is None:
+            return
+        actual = {p['k']: p['actual'] for p in pts}
+        upts = json.loads(u['points'])
+        pairs = [(p, actual.get(p[0])) for p in upts if actual.get(p[0]) is not None]
+        end = actual.get(upts[-1][0]) if upts else None
+        if not pairs or end is None:
+            return
+        move = end - u['anchor']
+        tol = M.FLAT_SCORE_PCT / 100 * u['anchor']
+        hit = move > 0 if u['direction'] == 'UP' else move < 0 if u['direction'] == 'DOWN' else abs(move) <= tol
+        cov = sum(1 for p, a in pairs if p[3] <= a <= p[2]) / len(pairs)
+        with c:
+            c.execute('UPDATE hourly_forecast_updates SET dir_hit=?, coverage=? WHERE day=? AND index_name=? '
+                      'AND slot=?', (int(hit), round(cov, 3), r['day'], r['index_name'], r['slot']))
+        audit.log('hourly_forecast_update_scored', index=r['index_name'], slot=r['slot'],
+                  dir_hit=bool(hit), coverage=round(cov, 3))
 
     def finalize(self, r, pts):
         c = conn(self.db)
@@ -495,14 +643,28 @@ class HourlyForecaster:
         except (TypeError, ValueError, KeyError, IndexError):
             sd_end = math.sqrt(r['steps'])
         sc = M.score(points, r['anchor'], actual, r['direction'], r['sigma'], sd_end) or {}
+        cov95 = None
+        try:
+            outer = {k: (u, lo) for k, u, lo in json.loads(r['inputs']).get('outer') or []}
+            pairs = [(outer[p['k']], p['actual']) for p in pts if p['actual'] is not None and p['k'] in outer]
+            if pairs:
+                cov95 = round(sum(1 for (u, lo), a in pairs if lo <= a <= u) / len(pairs), 3)
+        except (TypeError, ValueError, KeyError):
+            cov95 = None
+        if sc:
+            sc['coverage95'] = cov95
         with c:
             c.execute("UPDATE hourly_forecasts SET status='final', dir_hit=?, mae_pts=?, coverage=?, "
-                      "end_error_pts=?, actual_pct=?, actual_end=?, finalized_at=? WHERE day=? AND "
+                      "end_error_pts=?, actual_pct=?, actual_end=?, finalized_at=?, coverage95=? WHERE day=? AND "
                       "index_name=? AND slot=?",
                       (None if 'dir_hit' not in sc else int(sc['dir_hit']), sc.get('mae_pts'),
                        sc.get('coverage'), sc.get('end_error_pts'), sc.get('actual_pct'),
-                       actual[-1] if actual else None, now_ist().isoformat(),
+                       actual[-1] if actual else None, now_ist().isoformat(), cov95,
                        r['day'], r['index_name'], r['slot']))
+        try:
+            self._score_update(r, pts)
+        except Exception as exc:                        # noqa: BLE001
+            audit.log('hourly_forecast_update_score_error', error=str(exc)[:200])
         audit.log('hourly_forecast_scored', index=r['index_name'], day=r['day'], slot=r['slot'], **sc)
         # Self-audit after every slot: why it deviated, then a guarded recalibration.
         modification, decision = None, None
@@ -660,7 +822,30 @@ def view(name, day=None, engine=None, now=None, db=None):
                 dir_hit=None if r['dir_hit'] is None else bool(r['dir_hit']), mae_pts=r['mae_pts'],
                 coverage=r['coverage'], end_error_pts=r['end_error_pts'], actual_pct=r['actual_pct']),
             live=live_price if (r['status'] == 'live' and t0 <= now < t1 + timedelta(seconds=60)) else None)
-        base['inputs'] = {'oi_features': json.loads(r['inputs'] or '{}').get('oi_features', {})}
+        inp = json.loads(r['inputs'] or '{}')
+        base['inputs'] = {'oi_features': inp.get('oi_features', {}), 'heavy_used': inp.get('heavy_used', {})}
+        outer = {k: (u, lo) for k, u, lo in inp.get('outer') or []}
+        for p in base['points']:
+            if p['k'] in outer:
+                p['upper95'], p['lower95'] = outer[p['k']]
+        base['levels'] = inp.get('levels')
+        base['bias'] = inp.get('bias')
+        base['heavy'] = inp.get('heavy')
+        if base.get('score') is not None:
+            base['score']['coverage95'] = r['coverage95'] if 'coverage95' in r.keys() else None
+        u = c.execute('SELECT * FROM hourly_forecast_updates WHERE day=? AND index_name=? AND slot=?',
+                      (day.isoformat(), name, label)).fetchone()
+        if u:
+            ul = json.loads(u['levels'] or '{}')
+            base['update'] = dict(made_at=u['made_at'], from_ts=u['from_ts'], anchor=u['anchor'],
+                                  direction=u['direction'], prob_up=u['prob_up'],
+                                  projected_pts=u['projected_pts'],
+                                  points=[dict(k=k, forecast=m, upper=up, lower=lo,
+                                               ts=(t0 + timedelta(minutes=M.STEP_MIN * k)).isoformat())
+                                          for k, m, up, lo in json.loads(u['points'])],
+                                  bias=ul.get('bias'), levels={k: ul.get(k) for k in ('trigger', 'failure')},
+                                  dir_hit=None if u['dir_hit'] is None else bool(u['dir_hit']),
+                                  coverage=u['coverage'])
         a = c.execute('SELECT * FROM hourly_forecast_audit WHERE day=? AND index_name=? AND slot=?',
                       (day.isoformat(), name, label)).fetchone()
         if a:
@@ -684,7 +869,9 @@ def view(name, day=None, engine=None, now=None, db=None):
                 model=dict(version=M.MODEL_VERSION, calibrated_on=params.get('n_samples', 0),
                            min_samples=M.MIN_SAMPLES, band_only=bool(params.get('band_only')),
                            params={k: params[k] for k in ('beta_reg', 'beta_analog', 'beta_tech', 'beta_shield',
-                                                          'beta_trend', 'beta_oi', 'band_z', 'prob_c')},
+                                                          'beta_trend', 'beta_oi', 'beta_heavy', 'band_z',
+                                                          'band_z95', 'prob_c')},
+                           revision=M.REVISION,
                            changes=[dict(ts=h['ts'], reason=h['reason']) for h in c.execute(
                                'SELECT ts, reason FROM hourly_forecast_model_history WHERE index_name=? '
                                'ORDER BY ts DESC LIMIT 5', (name,))],

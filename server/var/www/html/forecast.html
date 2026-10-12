@@ -9,7 +9,7 @@
   :root { color-scheme: dark;
     --bg: #0b0f17; --panel: #121826; --panel2: #182033; --line: #253049;
     --text: #e6ebf5; --muted: #8b97b0; --dim: #5d6882;
-    --up: #2fd08a; --down: #ff5c6c; --flat: #f2b84b; --fc: #8fb4ff; --band: rgba(143,180,255,.14);
+    --up: #2fd08a; --down: #ff5c6c; --flat: #f2b84b; --fc: #8fb4ff; --band: rgba(143,180,255,.14); --band95: rgba(143,180,255,.06); --upd: #c792ea;
     --actual: #f5f7fb; --live: #ffd166; --accent: #7c9cff;
   }
   * { box-sizing: border-box; }
@@ -130,7 +130,10 @@
   <div class="legend">
     <span><i style="border-color:var(--fc);border-top-style:dashed"></i>Forecast</span>
     <span><i style="border-color:var(--actual)"></i>Actual</span>
-    <span><i style="border-color:var(--band);border-top-width:8px"></i>Forecast band</span>
+    <span><i style="border-color:var(--band);border-top-width:8px"></i>Likely band (68%)</span>
+    <span><i style="border-color:var(--band95);border-top-width:8px"></i>Wide band (95%)</span>
+    <span><i style="border-color:var(--upd);border-top-style:dashed"></i>Updated forecast</span>
+    <span><i style="border-color:var(--up);border-top-style:dotted"></i>Trigger / <span style="color:var(--down)">failure</span></span>
     <span><i style="border-color:var(--live);border-top-width:6px;width:6px;border-radius:50%"></i>Live price</span>
   </div>
 
@@ -197,7 +200,9 @@
     const t0 = Date.parse(s.start_ts), t1 = Date.parse(s.end_ts);
     const xs = ts => L + (Date.parse(ts) - t0) / (t1 - t0) * (W - L - R);
     const all = [s.anchor];
-    pts.forEach(p => { all.push(p.upper, p.lower); if (p.actual != null) all.push(p.actual); });
+    pts.forEach(p => { all.push(p.upper, p.lower); if (p.upper95 != null) all.push(p.upper95, p.lower95); if (p.actual != null) all.push(p.actual); });
+    const u = s.update;
+    if (u) u.points.forEach(p => all.push(p.upper, p.lower));
     if (s.live) all.push(s.live.price);
     let lo = Math.min(...all), hi = Math.max(...all); const pad = (hi - lo) * .08 || 5; lo -= pad; hi += pad;
     const ys = v => T + (hi - v) / (hi - lo) * (H - T - B);
@@ -209,6 +214,27 @@
     if (s.live) act.push({ts: s.live.ts, v: s.live.price});
     const path = a => a.map((p, i) => (i ? 'L' : 'M') + xs(p.ts).toFixed(1) + ' ' + ys(p.v).toFixed(1)).join(' ');
     const band = path(up) + ' ' + dn.slice().reverse().map(p => 'L' + xs(p.ts).toFixed(1) + ' ' + ys(p.v).toFixed(1)).join(' ') + ' Z';
+    let band95 = '';
+    if (pts.every(p => p.upper95 != null)) {
+      const u95 = [start, ...pts.map(p => ({ts: p.ts, v: p.upper95}))];
+      const d95 = [start, ...pts.map(p => ({ts: p.ts, v: p.lower95}))];
+      band95 = `<path d="${path(u95) + ' ' + d95.slice().reverse().map(p => 'L' + xs(p.ts).toFixed(1) + ' ' + ys(p.v).toFixed(1)).join(' ') + ' Z'}" fill="var(--band95)"/>`;
+    }
+    let upd = '';
+    if (u && u.points.length) {
+      const us = [{ts: u.from_ts, v: u.anchor}, ...u.points.map(p => ({ts: p.ts, v: p.forecast}))];
+      upd = `<path d="${path(us)}" fill="none" stroke="var(--upd)" stroke-width="2" stroke-dasharray="4 3"/>` +
+            `<circle cx="${xs(u.from_ts)}" cy="${ys(u.anchor)}" r="3" fill="var(--upd)"/>`;
+    }
+    let lv = '';
+    const L2 = s.levels || {};
+    [['trigger', 'var(--up)'], ['failure', 'var(--down)']].forEach(([k, col]) => {
+      const v = L2[k];
+      if (v != null && v > lo && v < hi) {
+        lv += `<line x1="${L}" x2="${W - R}" y1="${ys(v)}" y2="${ys(v)}" stroke="${col}" stroke-width="1" stroke-dasharray="1 3"/>` +
+              `<text x="${W - R}" y="${ys(v) - 2}" fill="${col}" font-size="8.5" text-anchor="end">${Math.round(v)}</text>`;
+      }
+    });
     let g = '';
     for (let k = 0; k <= 4; k++) {
       const v = lo + (hi - lo) * k / 4, y = ys(v);
@@ -227,8 +253,8 @@
     }
     const liveDot = s.live ? `<circle cx="${xs(s.live.ts)}" cy="${ys(s.live.price)}" r="4" fill="var(--live)"><animate attributeName="r" values="3;5;3" dur="1.6s" repeatCount="indefinite"/></circle>` : '';
     return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Forecast versus actual ${s.slot} to ${s.slot_end}">
-      ${g}<path d="${band}" fill="var(--band)"/>
-      <path d="${path(fc)}" fill="none" stroke="var(--fc)" stroke-width="2" stroke-dasharray="5 4"/>
+      ${g}${band95}<path d="${band}" fill="var(--band)"/>${lv}
+      <path d="${path(fc)}" fill="none" stroke="var(--fc)" stroke-width="2" stroke-dasharray="5 4"/>${upd}
       ${act.length > 1 ? `<path d="${path(act)}" fill="none" stroke="var(--actual)" stroke-width="2"/>` : ''}
       ${dev}${liveDot}</svg>`;
   }
@@ -253,14 +279,19 @@
       kv = `<div class="kv">
         <div><span>Forecast move</span><b class="${s.direction}">${sign(s.projected_pct)}${fmt(s.projected_pct)}%</b></div>
         <div><span>Points</span><b>${sign(s.projected_pts)}${fmt(s.projected_pts, 0)}</b></div>
-        <div><span>Band (end)</span><b>±${fmt(s.band_pts, 0)}</b></div>
+        <div><span>Band (end)</span><b>±${fmt(s.band_pts, 0)}${last.upper95 != null ? ` <small style="color:var(--muted)">/ ±${fmt((last.upper95 - last.lower95) / 2, 0)} wide</small>` : ''}</b></div>
         <div><span>Start</span><b>${fmt(s.anchor, 1)}</b></div>
         <div><span>Forecast ${s.slot_end}</span><b>${fmt(last.forecast, 1)}</b></div>
         <div><span>${s.status === 'final' ? 'Actual ' + s.slot_end : 'Actual now'}</span><b>${fmt(s.status === 'final' ? last.actual : now, 1)}</b></div>
         ${s.score ? `<div><span>Actual move</span><b>${sign(s.score.actual_pct)}${fmt(s.score.actual_pct)}%</b></div>
         <div><span>Avg error</span><b>${fmt(s.score.mae_pts, 0)} pts</b></div>
-        <div><span>Inside band</span><b>${s.score.coverage == null ? '—' : Math.round(s.score.coverage * 100) + '%'}</b></div>` : ''}
+        <div><span>Inside band</span><b>${s.score.coverage == null ? '—' : Math.round(s.score.coverage * 100) + '%'}${s.score.coverage95 != null ? ` <small style="color:var(--muted)">/ ${Math.round(s.score.coverage95 * 100)}% wide</small>` : ''}</b></div>` : ''}
       </div>`;
+    }
+    if (s.bias) kv += `<div style="font-size:12.5px;margin:2px 0">${esc(s.bias)}${(s.levels && s.levels.trigger_source) ? ` <span style="color:var(--dim)">(${esc(s.levels.trigger_source)}${s.levels.failure_source ? ' / ' + esc(s.levels.failure_source) : ''})</span>` : ''}</div>`;
+    if (s.update) {
+      const uu = s.update, ud = uu.direction === 'DOWN' ? 1 - uu.prob_up : uu.direction === 'UP' ? uu.prob_up : Math.max(uu.prob_up, 1 - uu.prob_up);
+      kv += `<div style="font-size:12.5px;color:var(--upd)">Updated ${hhmm(uu.from_ts)} after leaving the band: ${uu.direction} ${Math.round(ud * 100)}% from ${fmt(uu.anchor, 1)}${uu.bias ? ' · ' + esc(uu.bias) : ''}${uu.dir_hit != null ? ` · <b>${uu.dir_hit ? 'HIT' : 'MISS'}</b>` : ''}</div>`;
     }
     return `<div class="card ${st}">
       <div class="row"><span class="slot">${s.slot} – ${s.slot_end}</span>${chips}<span class="grow"></span>${head}</div>

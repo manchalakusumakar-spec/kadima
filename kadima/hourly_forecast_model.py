@@ -41,7 +41,10 @@ RECENCY_HALFLIFE_DAYS = 45.0
 MIN_SAMPLES = 30               # ridge prior strength, in resolved slots
 FEATURE_WEIGHTS = (0.5, 1.0, 1.0, 0.8, 0.8, 0.6, 0.6)
 FLAT_BAND = 0.05               # |p_up - 0.5| below this reads as FLAT
-MODEL_VERSION = 'hf-2.0'
+MODEL_VERSION = 'hf-2.0'       # params version: unchanged in 2.0.1 so learned weights are kept
+REVISION = 'hf-2.0.1'          # 12 Oct 2026: opening band, 95% band, heavyweights, levels, updates
+OPENING_LOOKBACK_DAYS = 20     # past sessions used for the typical opening-hour volatility
+GAP_DAY_MIN_CALENDAR_DAYS = 3  # a session after a weekend or holiday
 FLAT_SCORE_PCT = 0.10        # FLAT counts as a hit if the slot moved less than this
 
 DEFAULT_PARAMS = dict(
@@ -51,6 +54,8 @@ DEFAULT_PARAMS = dict(
     beta_shield=0.10,   # live Bull Shield direction x score
     beta_trend=0.05,    # day move so far / opening gap (new: starts small, earns weight)
     beta_oi=0.05,       # option-chain PCR change and OI wall shifts (new: starts small)
+    beta_heavy=0.05,    # heavyweights HDFC Bank, ICICI Bank, Reliance, Infosys, TCS (new 2.0.1: starts small)
+    band_z95=1.96,      # outer band half-width in model sds (1.96 ~ 95%), calibrated like band_z
     band_only=False,    # set by the self-audit when no part shows skill: show the range only
     band_z=1.0,         # band half-width in model sds (1.0 ~ 68%)
     prob_c=0.7,         # probability sharpness around 0.5 (cautious until calibrated)
@@ -445,6 +450,80 @@ class Forecast:
     inputs: dict = field(default_factory=dict)   # raw regressors for later refitting
 
 
+def opening_sigma(days, di, tod):
+    """(typical first-hour base sigma, gap-day factor) from up to OPENING_LOOKBACK_DAYS earlier
+    sessions. Base sigma is tod-normalised like sigma_at. The 09:15 slot otherwise borrows its
+    volatility from the previous afternoon, which is calmer than an open (12 Oct 2026 miss).
+    The gap-day factor (session after >= 3 calendar days) is measured, shrunk to 1.0 when thin."""
+    norm = math.sqrt(sum(t * t for t in tod[:12]) / 12)
+    if norm <= 0:
+        return None, 1.0
+    per_day = []
+    for k in range(max(0, di - OPENING_LOOKBACK_DAYS), di):
+        rets = [r for r in bar_returns(days[k])[:12] if r is not None]
+        if len(rets) >= 8:
+            s = robust_sigma(rets)
+            if s:
+                gap = k > 0 and (days[k].day - days[k - 1].day).days >= GAP_DAY_MIN_CALENDAR_DAYS
+                per_day.append((s / norm, gap))
+    if len(per_day) < 3:
+        return None, 1.0
+    vals = sorted(v for v, _ in per_day)
+    typical = vals[len(vals) // 2]
+    gap_vals = sorted(v for v, g in per_day if g)
+    other = sorted(v for v, g in per_day if not g)
+    factor = 1.0
+    if gap_vals and other:
+        raw = gap_vals[len(gap_vals) // 2] / other[len(other) // 2]
+        w = len(gap_vals) / (len(gap_vals) + 5.0)
+        factor = clip(w * raw + (1 - w) * 1.0, 0.8, 1.6)
+    return typical, factor
+
+
+def key_levels(anchor, bars_today, ce_wall=None, pe_wall=None, vwap=None):
+    """Trigger (above) and failure (below) levels for a slot, from what is known at its start:
+    the 09:15-09:30 opening range, the last hour's high/low, the CE/PE OI walls and VWAP.
+    bars_today: [(high, low)] closed 5-min bars of today, oldest first. Display only."""
+    if not finite(anchor):
+        return None
+    above, below = [], []
+
+    def add(name, v):
+        if finite(v) and v > 0:
+            (above if v > anchor else below if v < anchor else []).append((abs(v - anchor), name, round(v, 1)))
+    if len(bars_today) >= 3:
+        add('opening range high', max(h for h, _ in bars_today[:3]))
+        add('opening range low', min(lo for _, lo in bars_today[:3]))
+    if len(bars_today) >= 4:
+        last = bars_today[-12:]
+        add('last hour high', max(h for h, _ in last))
+        add('last hour low', min(lo for _, lo in last))
+    add('CE wall', ce_wall)
+    add('PE wall', pe_wall)
+    if finite(vwap):
+        add('VWAP', vwap)
+    up = min(above) if above else None
+    dn = min(below) if below else None
+    return dict(trigger=up[2] if up else None, trigger_source=up[1] if up else None,
+                failure=dn[2] if dn else None, failure_source=dn[1] if dn else None,
+                vwap=round(vwap, 1) if finite(vwap) else None)
+
+
+def bias_text(direction, levels):
+    """Conditional bias line for the slot card."""
+    lv = levels or {}
+    t, f = lv.get('trigger'), lv.get('failure')
+    up = f'above {t:,.0f}' if t else None
+    dn = f'below {f:,.0f}' if f else None
+    if direction == 'UP':
+        return 'Bullish' + (f' while {dn[6:]} holds; breakout {up}' if dn and up else '')
+    if direction == 'DOWN':
+        return 'Bearish' + (f' while {up[6:]} caps; breakdown {dn}' if up and dn else '')
+    if up and dn:
+        return f'No edge: bullish {up}, bearish {dn}'
+    return 'No edge'
+
+
 def iv_sigma(iv_pct):
     if not finite(iv_pct) or not 3 <= iv_pct <= 150:
         return None
@@ -452,11 +531,20 @@ def iv_sigma(iv_pct):
 
 
 def make_forecast(days, di, i, n, anchor, *, as_of, tod=None, params=None,
-                  atm_iv=None, shield_dir=None, shield_score=None, oi=None):
+                  atm_iv=None, shield_dir=None, shield_score=None, oi=None, heavy=None):
     """Forecast n 5-minute points from bar i of days[di], using nothing at or after bar i."""
     params = {**DEFAULT_PARAMS, **(params or {})}
     tod = tod or tod_profile(days[:di])
     s_real = sigma_at(days, di, i, tod)
+    s_open, gap_factor = (None, 1.0)
+    if i == 0:
+        # 09:15 slot: never narrower than a typical opening hour (x the gap-day factor
+        # after a weekend or holiday). Other slots are unchanged.
+        s_open, gap_factor = opening_sigma(days, di, tod)
+        gap_day = di > 0 and (days[di].day - days[di - 1].day).days >= GAP_DAY_MIN_CALENDAR_DAYS
+        if s_open:
+            floor = s_open * (gap_factor if gap_day else 1.0)
+            s_real = max(s_real or 0.0, floor) or None
     s_iv = iv_sigma(atm_iv)
     if s_iv is not None:
         s_iv /= math.sqrt(sum(t * t for t in tod) / len(tod))
@@ -472,6 +560,7 @@ def make_forecast(days, di, i, n, anchor, *, as_of, tod=None, params=None,
     shield = parts.get('shield', 0.0)
     trend = trend_tilt(days, di, i, anchor, sigma)
     oit, oi_parts = oi_tilt(oi)
+    heavy_tilt = clip(heavy, -1.0, 1.0) if finite(heavy) else 0.0
 
     mults = [tod[min(i + k, BARS_PER_DAY - 1)] for k in range(n)]
     model_sd = [math.sqrt(sum(x * x for x in mults[:k + 1])) for k in range(n)]
@@ -482,10 +571,10 @@ def make_forecast(days, di, i, n, anchor, *, as_of, tod=None, params=None,
           if use_an else model_sd)
     root = math.sqrt(n)
     x = dict(x_reg=reg_end, x_analog=a_mean[-1], x_tech=m * root, x_shield=shield * root,
-             x_trend=trend * root, x_oi=oit * root)
+             x_trend=trend * root, x_oi=oit * root, x_heavy=heavy_tilt * root)
     ramp = (x['x_reg'] * params['beta_reg'] + x['x_tech'] * params['beta_tech']
             + x['x_shield'] * params['beta_shield'] + x['x_trend'] * params['beta_trend']
-            + x['x_oi'] * params['beta_oi'])
+            + x['x_oi'] * params['beta_oi'] + x['x_heavy'] * params.get('beta_heavy', 0.0))
     mean = [ramp * (k + 1) / n + params['beta_analog'] * a_mean[k] for k in range(n)]
     if params.get('band_only'):
         mean = [0.0] * n
@@ -494,6 +583,10 @@ def make_forecast(days, di, i, n, anchor, *, as_of, tod=None, params=None,
                anchor * math.exp(mean[k] * sigma),
                anchor * math.exp((mean[k] + z * sd[k]) * sigma),
                anchor * math.exp((mean[k] - z * sd[k]) * sigma)) for k in range(n)]
+    z95 = max(params.get('band_z95', 1.96), z)
+    outer = [(k + 1,
+              anchor * math.exp((mean[k] + z95 * sd[k]) * sigma),
+              anchor * math.exp((mean[k] - z95 * sd[k]) * sigma)) for k in range(n)]
 
     p_model = norm_cdf(mean[-1] / sd[-1]) if sd[-1] > 0 else 0.5
     p_raw = 0.5 * p_model + 0.5 * an.up_frac if use_an else p_model
@@ -509,7 +602,9 @@ def make_forecast(days, di, i, n, anchor, *, as_of, tod=None, params=None,
                     sigma=sigma, sigma_real=s_real, sigma_iv=s_iv, tech=m, tech_parts=parts,
                     trend=trend, oi=oit, oi_parts=oi_parts, oi_features=dict(oi or {}), band_only=bool(params.get('band_only')),
                     analog_used=bool(use_an), analog_up=an.up_frac if an else None,
-                    features=feat, params=dict(params)))
+                    features=feat, params=dict(params), revision=REVISION,
+                    outer=[(k, round(u, 2), round(lo, 2)) for k, u, lo in outer],
+                    heavy=heavy_tilt, sigma_open=s_open, gap_factor=gap_factor))
 
 
 # ---------------------------------------------------------------- scoring
@@ -536,7 +631,8 @@ def score(points, anchor, actual, direction, sigma, sd_end):
 # ---------------------------------------------------------------- calibration
 BETAS = (('beta_reg', 'x_reg', -0.5, 1.5), ('beta_analog', 'x_analog', -0.5, 1.5),
          ('beta_tech', 'x_tech', -0.5, 0.5), ('beta_shield', 'x_shield', -0.5, 0.5),
-         ('beta_trend', 'x_trend', -0.5, 0.5), ('beta_oi', 'x_oi', -0.5, 0.5))
+         ('beta_trend', 'x_trend', -0.5, 0.5), ('beta_oi', 'x_oi', -0.5, 0.5),
+         ('beta_heavy', 'x_heavy', -0.5, 0.5))
 COMPONENTS = tuple(b[1] for b in BETAS)
 
 
@@ -571,6 +667,9 @@ def fit_params(samples, prior=None):
     if zs:
         q = zs[min(len(zs) - 1, int(0.6827 * len(zs)))]
         out['band_z'] = round(clip((n * q + lam * prior['band_z']) / (n + lam), 0.6, 2.0), 4)
+        q95 = zs[min(len(zs) - 1, int(0.95 * len(zs)))]
+        p95 = prior.get('band_z95', DEFAULT_PARAMS['band_z95'])
+        out['band_z95'] = round(clip((n * q95 + lam * p95) / (n + lam), 1.2, 3.5), 4)
     # Probability sharpness: regress (outcome - 0.5) on (p_raw - 0.5).
     sxx = sum((x['p_raw'] - 0.5) ** 2 for x in s)
     sxy = sum((x['p_raw'] - 0.5) * ((1.0 if x['up'] else 0.0) - 0.5) for x in s)
@@ -635,7 +734,8 @@ def step_toward(champion, challenger, max_step=MAX_STEP):
     for name, _, lo, hi in BETAS:
         a, b = champion.get(name, DEFAULT_PARAMS[name]), challenger.get(name, DEFAULT_PARAMS[name])
         out[name] = round(clip(a + clip(b - a, -max_step, max_step), lo, hi), 4)
-    for name, lo, hi, step in (('band_z', 0.6, 2.0, 0.1), ('prob_c', 0.0, 1.5, 0.15)):
+    for name, lo, hi, step in (('band_z', 0.6, 2.0, 0.1), ('prob_c', 0.0, 1.5, 0.15),
+                               ('band_z95', 1.2, 3.5, 0.2)):
         a, b = champion.get(name, DEFAULT_PARAMS[name]), challenger.get(name, DEFAULT_PARAMS[name])
         out[name] = round(clip(a + clip(b - a, -step, step), lo, hi), 4)
     out['n_samples'] = challenger.get('n_samples', 0)

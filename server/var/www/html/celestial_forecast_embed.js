@@ -11,7 +11,7 @@
  */
 (function () {
   var HIDE_TITLE = 'Daily Price Memory';
-  var SRC = '/forecast.html?embed=1&v=4';
+  var SRC = '/forecast.html?embed=1&v=5';
   var FRAME_ID = 'kadima-hourly-forecast-frame';
   var HOLD_ID = 'kadima-hourly-forecast-slot';
   var frameHeight = 600;

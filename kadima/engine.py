@@ -21,6 +21,7 @@ from types import SimpleNamespace
 from . import alerts, audit, indicators, killswitch, last_known, storage, strike_selector
 from . import auto_executor
 from . import shield_v9
+HEAVY_NAMES = ('RELIANCE', 'INFY', 'TCS')   # forecast heavyweights besides HDFC Bank, ICICI Bank
 from .fast_momentum import Lane as FastLane
 from .cas_engine import Lane as CASLane
 from .shield_confirmation import (SHIELD_MIN_SCORE, BANK_NAMES, ShieldEvidence,
@@ -161,6 +162,25 @@ class Engine:
         except Exception as exc:                        # noqa: BLE001
             audit.log('shield_v9_setup_failed', error=type(exc).__name__)
 
+        # HEAVYWEIGHTS (forecast hf-2.0.1, 12 Oct 2026): Reliance, Infosys, TCS tracked like the
+        # banks, for the hourly forecaster only (display). Kept apart from bank_states so the
+        # Bank Nifty confirmation count is unchanged. A failure here never stops the engine.
+        self.heavy_states, self.heavy_tokens = {}, {}
+        try:
+            for name in HEAVY_NAMES:
+                matches = [r for r in self.scrips.rows if r.get('exch_seg') == 'NSE'
+                           and r.get('symbol') == name + '-EQ' and r.get('token')]
+                if len(matches) != 1:
+                    audit.log('heavyweight_source_unavailable', stock=name)
+                    continue
+                token = str(matches[0]['token'])
+                heavy = IndexState(name=name)
+                heavy.builder = CandleBuilder(token, on_close=self._on_heavy_close)
+                self.heavy_states[name] = heavy
+                self.heavy_tokens[token] = name
+        except Exception as exc:                        # noqa: BLE001
+            audit.log('heavyweight_setup_failed', error=type(exc).__name__)
+
         self.bank_history = StockExecutionWorker(auto_executor.EXECUTOR, self.scrips)
         self._bank_warmup_at = {}
         self.stock_worker = StockExecutionWorker(auto_executor.EXECUTOR, self.scrips)
@@ -234,6 +254,8 @@ class Engine:
             self.feed.subscribe(EXCHANGE_TYPE[idx.exchange], [idx.token])
         if self.bank_tokens:
             self.feed.subscribe(EXCHANGE_TYPE['NSE'], list(self.bank_tokens))
+        if self.heavy_tokens:                            # heavyweights (forecast display only)
+            self.feed.subscribe(EXCHANGE_TYPE['NSE'], list(self.heavy_tokens))
         for token, fut_name in self.fut_tokens.items():   # SHIELD v9 futures
             self.feed.subscribe(EXCHANGE_TYPE[self.fut_bars[fut_name].contract['exchange']], [token])
         self.feed.start()
@@ -283,6 +305,15 @@ class Engine:
             bank.spot, bank.last_updated = tick['ltp'], now_ist()
             bank.builder.add_tick(tick['ts'], tick['ltp'], tick['volume'])
             return
+        heavy_name = self.heavy_tokens.get(tick["token"])
+        if heavy_name:                                   # heavyweights: candles only
+            heavy = self.heavy_states[heavy_name]
+            heavy.spot, heavy.last_updated = tick['ltp'], now_ist()
+            try:
+                heavy.builder.add_tick(tick['ts'], tick['ltp'], tick['volume'])
+            except Exception as exc:                    # noqa: BLE001
+                audit.log('heavyweight_tick_error', stock=heavy_name, error=type(exc).__name__)
+            return
         fut_name = self.fut_tokens.get(tick["token"])
         if fut_name:                                     # SHIELD v9 futures: candles only
             try:
@@ -317,11 +348,24 @@ class Engine:
             ma_long_p=55, rsi_p=14)
         bank.technical_at = candle.start + timedelta(minutes=5)
 
+    def _on_heavy_close(self, candle: Candle) -> None:
+        if candle.interval != 5:
+            return
+        try:
+            heavy = self.heavy_states[self.heavy_tokens[candle.token]]
+            heavy.snap = indicators.compute(storage.recent_candles(candle.token, 5, limit=150),
+                session_vwap=heavy.builder.session_vwap(), ema_fast_p=20, ema_slow_p=50,
+                ma_long_p=55, rsi_p=14)
+            heavy.technical_at = candle.start + timedelta(minutes=5)
+        except Exception as exc:                        # noqa: BLE001
+            audit.log('heavyweight_close_error', error=type(exc).__name__)
+
     def _warm_bank_history(self):
         # Read-only history uses the existing validated candle loader. A separate
         # worker keeps its history cache/throttle independent of stock execution.
-        for token, name in self.bank_tokens.items():
-            bank = self.bank_states[name]
+        tracked = [(t, n, self.bank_states[n]) for t, n in self.bank_tokens.items()]
+        tracked += [(t, n, self.heavy_states[n]) for t, n in getattr(self, 'heavy_tokens', {}).items()]
+        for token, name, bank in tracked:
             if bank.snap.ema_slow is not None:
                 continue
             clock = time.monotonic()
