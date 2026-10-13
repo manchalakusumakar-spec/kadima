@@ -1,0 +1,64 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>KADIMA • Forecast Learning Panel — Illustrative Only</title>
+<style>
+:root{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#d9e4f4;background:#0b1220}
+*{box-sizing:border-box}body{margin:0;padding:24px 12px}main{max-width:1050px;margin:auto}
+h1{font-size:21px;margin:0 0 6px}p{line-height:1.48}h3{font-size:17px;margin:0 0 5px}h4{font-size:14px;margin:0 0 12px}
+small,.muted{color:#9fb0c8}.banner{border:1px solid #9f8248;padding:11px 14px;border-radius:9px;color:#ffdb99;background:#2b271f;margin:0 0 17px}
+.surface{border:1px solid #263751;border-radius:14px;padding:20px;background:#111d30;margin:14px 0 22px}
+.chart{width:100%;height:auto;display:block}.leg{display:flex;gap:20px;font-size:12px;color:#cbd5e1;flex-wrap:wrap}
+.leg span:before{content:'—';font-weight:bold;font-size:20px;margin-right:7px}.leg .forecast:before{color:#61a9fa}.leg .actual:before{color:#49d3af}
+.leg .band:before{color:#9f8ed8}.kfl-root{background:#101e32;border:1px solid #344664;border-radius:14px;padding:18px}
+.kfl-header,.kfl-event-head{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+.kfl-header h3{color:#eef4ff}.kfl-note{font-size:12px;color:#9db1cb;margin:5px 0 0}
+.kfl-label,.kfl-pill{font-size:11px;font-weight:600;letter-spacing:.04em;background:#1f334f;border:1px solid #3a5374;border-radius:999px;padding:4px 10px;color:#c0dcff}
+.kfl-cards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:19px 0 23px}
+.kfl-card{border:1px solid #30435e;border-radius:10px;background:#162640;padding:13px;min-width:0}
+.kfl-card-caption{font-size:12px;color:#a9bfda}.kfl-card-value{font-size:16px;font-weight:700;margin-top:7px;overflow-wrap:anywhere}
+.kfl-events h4{color:#e9f2ff}.kfl-event{padding:12px 4px 13px;border-top:1px solid #2b3d57}
+.kfl-event-head strong{font-size:13px}.kfl-detail{font-size:13px;margin:8px 0 3px;color:#cee2fd}
+.kfl-id{font-size:11px;margin:5px 0 0;color:#728fae;overflow-wrap:anywhere}
+.kfl-footer{border-top:1px solid #30435e;padding-top:10px;margin-top:5px}.kfl-empty{font-size:13px;color:#9db1cb}
+@media(max-width:720px){.kfl-cards{grid-template-columns:repeat(2,minmax(0,1fr))}.surface{padding:12px}.kfl-root{padding:12px}}
+</style>
+</head>
+<body>
+<main>
+<div class="banner"><strong>ILLUSTRATIVE PREVIEW — NOT LIVE KADIMA DATA</strong><div>All displayed market values and events below are fictional UI fixtures.</div></div>
+<h1>KADIMA — NIFTY Forecast vs Actual</h1>
+<p class="muted">Original forecast remains preserved · Five-minute checkpoints · Strict ±5-point target envelope</p>
+<section class="surface" aria-label="Illustrative forecast map">
+<svg class="chart" viewBox="0 0 920 310" role="img" aria-label="Illustrative forecast blue, actual green, and a five-point shaded target band">
+<defs><linearGradient id="glow" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#68a8f7" stop-opacity=".2"/><stop offset="1" stop-color="#68a8f7" stop-opacity=".04"/></linearGradient></defs>
+<rect x="58" y="22" width="832" height="244" rx="4" fill="#0e1828"/>
+<path d="M58 73H890M58 128H890M58 183H890M58 238H890" stroke="#2b3a52" stroke-dasharray="4 6"/>
+<path d="M68 165L208 136L348 111L488 88L628 139L768 96L876 79L876 104L768 121L628 164L488 113L348 136L208 161L68 190Z" fill="#6476aa" opacity=".32"/>
+<polyline points="68,178 208,149 348,123 488,100 628,151 768,109 876,91" fill="none" stroke="#66a9ff" stroke-width="3" stroke-linecap="round"/>
+<polyline points="68,181 208,155 348,127 488,133 628,173 768,124 876,117" fill="none" stroke="#4cddb9" stroke-width="3" stroke-linecap="round"/>
+<path d="M684 30V260" stroke="#f1c46d" stroke-width="1.4" stroke-dasharray="6 5"/>
+<text x="690" y="45" fill="#f1c46d" font-size="12">13:37 shock</text>
+<g font-size="13" fill="#a4b6d0"><text x="8" y="76">24,060</text><text x="8" y="132">24,045</text><text x="8" y="188">24,030</text><text x="8" y="242">24,015</text><text x="58" y="285">13:15</text><text x="197" y="285">13:20</text><text x="337" y="285">13:25</text><text x="477" y="285">13:30</text><text x="616" y="285">13:35</text><text x="756" y="285">13:40</text></g>
+</svg>
+<div class="leg"><span class="forecast">Original forecast</span><span class="actual">Actual</span><span class="band">Target band ±5</span></div>
+</section>
+<div id="learning-panel"></div>
+</main>
+<script src="./learning_panel.js"></script>
+<script>
+// Synthetic display fixture only — never an API response or historic result.
+const demo={mode:'CAPTURE_ONLY',accuracy:{below_5_fraction:null,scored:0},
+ learning:{model_status:'INSUFFICIENT_DATA',outcomes:{}},events:[
+ {event:{kind:'MARKET_SHOCK',trigger_at:'2026-10-13T13:37:00+05:30',
+  original_forecast_id:'SYNTHETIC-ORIGINAL-V1',previous_forecast_id:'SYNTHETIC-V1',
+  reasons:['PRICE_AND_VOLUME']},receipt:{outcome:'SHADOW_ONLY'}},
+ {event:{kind:'SCHEDULED_DEVIATION',trigger_at:'2026-10-13T13:45:02+05:30',
+  matched_target_at:'2026-10-13T13:45:00+05:30',deviation_points:6.8,
+  original_forecast_id:'SYNTHETIC-ORIGINAL-V1',previous_forecast_id:'SYNTHETIC-V2'},
+  receipt:{outcome:'NO_FITTED_MODEL'}}]};
+KadimaLearningPanel.mount(document.getElementById('learning-panel'),demo);
+</script>
+</body></html>
