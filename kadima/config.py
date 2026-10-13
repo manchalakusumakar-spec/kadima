@@ -181,7 +181,45 @@ MAX_CONCURRENT_POSITIONS = 1
 MAX_LOTS_PER_SIGNAL = 2
 DAILY_LOSS_LIMIT_INR = 10_000      # set to your real number
 NO_NEW_SIGNALS_AFTER_HOUR = 13     # non-expiry days, per your own rule
-ORDER_PLACEMENT_ENABLED = True     # LIVE since 2026-08-21, trader's explicit decision
+# ---------------------------------------------------------------- execution mode
+#
+# AUTO_TRADE_ENABLED controls whether automatic entry evaluation is allowed.
+#
+# PAPER_TRADE and LIVE_TRADING_ENABLED deliberately remain separate:
+#   AUTO_TRADE_ENABLED=true + PAPER_TRADE=true + LIVE_TRADING_ENABLED=false
+#       => normal signal/risk/ledger pipeline, synthetic broker fills only.
+#
+# Live broker writes require LIVE_TRADING_ENABLED=true and PAPER_TRADE=false.
+# Installing this source does NOT enable live trading.
+def _env_flag(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise ValueError(f"{name} must be true/false")
+
+
+AUTO_TRADE_ENABLED = _env_flag("AUTO_TRADE_ENABLED", False)
+PAPER_TRADE = _env_flag("PAPER_TRADE", True)
+LIVE_TRADING_ENABLED = _env_flag("LIVE_TRADING_ENABLED", False)
+
+# These protections are mandatory for automatic entries.
+MANUAL_TRADE_PROTECTION = _env_flag("MANUAL_TRADE_PROTECTION", True)
+
+# Historical name retained because deployment/configuration already refers to
+# ONE_POSITION_GUARD. It DOES NOT cap the number of filled/open positions.
+# It means one unresolved submission episode at a time. Fully reconciled
+# positions may coexist subject to portfolio_capacity, capital and risk limits.
+ONE_POSITION_GUARD = _env_flag("ONE_POSITION_GUARD", True)
+
+# Compatibility name consumed by angel_orders.py.
+# False means place_limit_order() produces a DRYRUN fill instead of touching
+# SmartAPI. Real broker writes are possible only in explicit live mode.
+ORDER_PLACEMENT_ENABLED = LIVE_TRADING_ENABLED and not PAPER_TRADE
 
 
 

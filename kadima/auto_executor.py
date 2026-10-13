@@ -498,7 +498,15 @@ class AutoExecutor:
         real VWAP (not a stub) in the entry-quality check."""
         # KADIMA SESSION AUTO ENTRY GUARD v1
         from . import market_session_gate
-        session_block = market_session_gate.entry_block(chain.index.opt_exchange)
+        from . import auto_trade_guard
+        if manual_request:
+            session_block = market_session_gate.entry_block(
+                chain.index.opt_exchange
+            )
+        else:
+            session_block = auto_trade_guard.entry_block(
+                self, chain.index.opt_exchange
+            )
         if session_block:
             return self._reject(session_block, index_name, direction)
         if not getattr(chain, '_entry_guard', lambda: True)():
@@ -508,7 +516,7 @@ class AutoExecutor:
         fast = None
         gap = None
         if kind == 'fast_momentum':
-            if not ORDER_PLACEMENT_ENABLED:
+            if not config.AUTO_TRADE_ENABLED and not manual_request:
                 return self._reject('broker_orders_disabled',index_name,direction)
             fast = fast_context() if callable(fast_context) else None
             if (not fast or not fast.get('eligible') or fast.get('strategy')!='fast_momentum'
@@ -517,7 +525,7 @@ class AutoExecutor:
                     or fast_momentum.live_blocks(index_name,direction,now_ist(),fast.get('score',0))):
                 return self._reject('fast_context_or_live_gate_blocked',index_name,direction)
         if kind == 'gap_and_go':
-            if not ORDER_PLACEMENT_ENABLED:
+            if not config.AUTO_TRADE_ENABLED and not manual_request:
                 return self._reject('broker_orders_disabled',index_name,direction)
             gap = gap_context() if callable(gap_context) else None
             if (not gap or not gap.get('eligible') or gap.get('strategy')!='gap_and_go'
