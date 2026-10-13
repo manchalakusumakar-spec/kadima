@@ -1,7 +1,8 @@
 # PR42 follow-up — event-driven reforecast and self-learning
 
 **Release status: SOURCE CANDIDATE ONLY, DISABLED, NOT INSTALLED, NOT LIVE-VALIDATED.**
-The work adds three pure forecast-only Python modules, a bottom-of-chart
+The work adds pure forecast-only Python modules, a lightweight no-NumPy
+event validator, a bottom-of-chart
 learning-panel renderer, an illustrative preview and automated tests. It does
 **not** install a KADIMA engine hook, attach to the current Celestial forecast,
 subscribe to Angel One, poll options, place broker orders, modify Gamma/CAS,

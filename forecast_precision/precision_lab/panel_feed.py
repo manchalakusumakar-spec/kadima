@@ -5,7 +5,7 @@ This does not create an API route or authorize production publication.
 """
 from __future__ import annotations
 
-from .core import EvidenceError, instant
+from .causal import EvidenceError, instant
 
 MODES={'NOT_INSTALLED','STAGED_DISABLED','CAPTURE_ONLY','SHADOW_RUNNING',
        'WAITING_FOR_LIVE_SESSION','BLOCKED','UNAVAILABLE'}

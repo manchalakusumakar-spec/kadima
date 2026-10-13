@@ -1,6 +1,6 @@
 import copy
 import unittest
-from precision_lab.core import EvidenceError
+from precision_lab.causal import EvidenceError
 from precision_lab.panel_feed import panel_snapshot
 
 NOW='2026-10-13T14:00:00+05:30'

@@ -12,7 +12,7 @@ from datetime import datetime
 import math
 import statistics
 
-from .core import EvidenceError, digest, instant
+from .causal import EvidenceError, digest, instant
 
 
 @dataclass(frozen=True)

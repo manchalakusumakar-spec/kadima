@@ -7,7 +7,7 @@ import sqlite3
 import tempfile
 import unittest
 
-from precision_lab.core import EvidenceError,instant
+from precision_lab.causal import EvidenceError,instant
 from precision_lab.reforecast_events import EventGate,EventJournal,TriggerPolicy
 
 NOW='2026-10-13T13:37:04+05:30'

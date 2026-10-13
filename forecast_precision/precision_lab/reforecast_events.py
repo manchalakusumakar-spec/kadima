@@ -15,7 +15,7 @@ from pathlib import Path
 import sqlite3
 import threading
 
-from .core import EvidenceError, canonical, digest, instant
+from .causal import EvidenceError, canonical, digest, instant
 
 
 @dataclass(frozen=True)

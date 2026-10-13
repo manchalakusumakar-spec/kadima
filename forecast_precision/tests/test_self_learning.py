@@ -3,7 +3,7 @@ import copy
 from datetime import date,datetime,timedelta,timezone
 import unittest
 
-from precision_lab.core import EvidenceError,instant
+from precision_lab.causal import EvidenceError,instant
 from precision_lab.self_learning import (LearningPolicy,learn_next_forecast_bias,
                                           propose_next_shadow_path)
 
