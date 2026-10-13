@@ -25,6 +25,14 @@ from . import audit, celestial, killswitch
 from .utils import now_ist
 
 POLICY = Path('/etc/kadima-session-auto/policy.json')
+# RETIRED 2026-10-14 (trader's decision). The session scheduler
+# (kadima-session-auto, state in SCHEDULER_STATE_DIR) owns morning arming.
+# Its day baseline is taken at midnight; this cron's 09:05 flip of
+# auto_trade_enabled looked like a dashboard change, so the scheduler set
+# OPERATOR_PAUSED and kept the equity lane closed all day
+# (lane_permit_not_granted on every entry, 13-Oct). Do not re-enable while
+# the scheduler is installed.
+SCHEDULER_STATE_DIR = Path('/var/lib/kadima-session-auto')
 
 
 def _holiday(today: str) -> bool:
@@ -35,6 +43,9 @@ def _holiday(today: str) -> bool:
 
 
 def main() -> int:
+    if SCHEDULER_STATE_DIR.exists():
+        audit.log('auto_arm_retired', reason='session_scheduler_owns_arming')
+        return 0
     now = now_ist()
     today = now.date().isoformat()
     if now.weekday() >= 5 or _holiday(today):
