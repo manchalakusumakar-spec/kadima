@@ -78,3 +78,21 @@ test('repeat mount replaces only owned children',()=>{
   assert.equal(h.getElementsByTagName('article').length,0);
   assert.match(h.textContent,/No verified forecast events recorded/);
 });
+
+test('shows five-minute deviation outside scheduled quarter-hour review',()=>{
+  const h=host();api.mount(h,{events:[evt({
+    kind:'FIVE_MINUTE_DEVIATION',deviation_points:5.5,
+    matched_target_at:'2026-10-13T13:40:00+05:30'})]});
+  assert.match(h.textContent,/5-minute accuracy alert/);
+  assert.match(h.textContent,/Matched-point deviation/);
+  assert.match(h.textContent,/13:40:00 IST/);
+});
+test('labels interpolated intrabar deviation as unscored, not an issued point',()=>{
+  const h=host();api.mount(h,{events:[evt({
+    kind:'INTRABAR_DEVIATION',deviation_points:-6.75,
+    actual_at:'2026-10-13T13:37:04+05:30',matched_target_at:null})]});
+  assert.match(h.textContent,/Intrabar deviation alert/);
+  assert.match(h.textContent,/Live deviation \(interpolated, unscored\)/);
+  assert.match(h.textContent,/-6.75 pts/);
+  assert.match(h.textContent,/NOT ISSUED/);
+});

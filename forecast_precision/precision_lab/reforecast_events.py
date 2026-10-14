@@ -95,6 +95,8 @@ class EventGate:
         self._mutex = threading.Lock()
         self._seen_reviews: set[tuple[str, str]] = set()
         self._last_shock: datetime | None = None
+        self._live_seen_day = None
+        self._live_seen_versions: set[str] = set()
 
     @staticmethod
     def _check_forecast(forecast_id: str, original_id: str, published_at: str,
@@ -155,6 +157,138 @@ class EventGate:
                      next_target_at=next_target.isoformat(),
                      outcome='REQUESTED_NOT_PUBLISHED')
         return {'state':'REQUEST_REFORECAST', 'event':{'id':digest(event), **event}}
+
+
+    def point_deviation(self, *, now: str, target_at: str, actual_at: str,
+                        actual_available_at: str, actual: float, projected: float,
+                        actual_source: str, forecast_id: str, original_id: str,
+                        published_at: str, next_target_at: str) -> dict:
+        """Evaluate EVERY newly completed 5-minute target, not just quarter-hours.
+
+        Called on the bounded forecast observation worker, never an order or
+        broker tick callback. This compares an actual with the genuine issued
+        price at the EXACT matching 5-minute timestamp.
+        """
+        clock, target, observed, available = map(instant, (
+            now, target_at, actual_at, actual_available_at))
+        if not self.policy.enabled:
+            return {'state':'DISABLED'}
+        if (not _session(clock) or target.date()!=clock.date()
+                or target.minute%5 or target.second or target.microsecond):
+            return {'state':'NOT_FIVE_MINUTE_TARGET'}
+        if observed!=target or not target<=available<=clock:
+            return {'state':'MISSING_MATCHED_ACTUAL'}
+        if not 0<=(clock-target).total_seconds()<=self.policy.review_lag_seconds:
+            return {'state':'LATE_OR_EARLY_REVIEW'}
+        if (not isinstance(actual_source,str) or not actual_source.strip()
+                or len(actual_source)>160):
+            raise EvidenceError('verified actual source identity required')
+        if (type(actual) not in (int,float) or type(projected) not in (int,float)
+                or not math.isfinite(actual) or not math.isfinite(projected)
+                or actual<=0 or projected<=0):
+            raise EvidenceError('positive finite index values required')
+        next_target=self._check_forecast(
+            forecast_id,original_id,published_at,clock,next_target_at)
+        if instant(published_at)>=target:
+            raise EvidenceError('forecast publication must predate exact scored target')
+        key=(forecast_id,target.isoformat())
+        with self._mutex:
+            if key in self._seen_reviews:
+                return {'state':'ALREADY_REVIEWED'}
+            self._seen_reviews.add(key)
+        deviation=float(actual)-float(projected)
+        if abs(deviation)<5:
+            return {'state':'CONTINUE','abs_error':abs(deviation)}
+        event=dict(kind='FIVE_MINUTE_DEVIATION',
+                   trigger_at=clock.isoformat(),matched_target_at=target.isoformat(),
+                   previous_forecast_id=forecast_id,original_forecast_id=original_id,
+                   previous_published_at=instant(published_at).isoformat(),
+                   deviation_points=deviation,abs_error_points=abs(deviation),
+                   evidence={'source':actual_source,'comparison':'EXACT_ISSUED_TARGET',
+                             'actual_available_at':available.isoformat()},
+                   next_target_at=next_target.isoformat(),
+                   outcome='REQUESTED_NOT_PUBLISHED')
+        return {'state':'REQUEST_REFORECAST','event':{'id':digest(event),**event}}
+
+    def intrabar_deviation(self, *, now: str, actual_at: str,
+                           actual_available_at: str, actual: float,
+                           actual_source: str, prior_target_at: str,
+                           prior_projected: float, next_target_at: str,
+                           next_projected: float, forecast_id: str,
+                           original_id: str, published_at: str,
+                           confirmations: dict | None=None) -> dict:
+        """Promptly detect a confirmed >/=5 point LIVE deviation between targets.
+
+        Compares to linear interpolation of two originally issued path points.
+        Interpolation is explicitly UNSCORED: it cannot alter original 5-minute
+        accuracy or be passed off as an issued point forecast. Market-source
+        attestation is required upstream; research policy remains off by default.
+        """
+        clock,observed,available,prior=map(instant,(
+            now,actual_at,actual_available_at,prior_target_at))
+        if not self.policy.enabled:
+            return {'state':'DISABLED'}
+        if not _session(clock):
+            return {'state':'OUTSIDE_SESSION'}
+        following=self._check_forecast(
+            forecast_id,original_id,published_at,clock,next_target_at)
+        publication=instant(published_at)
+        if (observed.date()!=clock.date() or
+                observed<=publication or not observed<=available<=clock or
+                (clock-observed).total_seconds()>self.policy.max_signal_age_seconds):
+            return {'state':'STALE_OR_CAUSALLY_INVALID_ACTUAL'}
+        if (prior.date()!=clock.date() or not prior<=observed<following or
+                (following-prior).total_seconds()>300 or
+                not 0<(following-prior).total_seconds() or
+                (prior.minute%5 or prior.second or prior.microsecond)
+                    and not 0<=(publication-prior).total_seconds()<=30):
+            raise EvidenceError('live deviation requires adjacent genuine path endpoints')
+        if (not isinstance(actual_source,str) or not actual_source.strip()
+                or len(actual_source)>160):
+            raise EvidenceError('verified actual source identity required')
+        values=(actual,prior_projected,next_projected)
+        if any(type(v) not in (int,float) or not math.isfinite(v) or v<=0 for v in values):
+            raise EvidenceError('positive finite index values required')
+        fraction=(observed-prior).total_seconds()/(following-prior).total_seconds()
+        interpolated=float(prior_projected)+fraction*(float(next_projected)-float(prior_projected))
+        deviation=float(actual)-interpolated
+        if abs(deviation)<5:
+            return {'state':'CONTINUE','abs_error':abs(deviation),
+                    'comparison':'INTERPOLATED_UNSCORED'}
+        proof=confirmations or {}
+        distinct=proof.get('distinct_ticks',0)
+        span=proof.get('span_seconds',0)
+        verified=(proof.get('verified_exchange_sequence') is True and
+                  proof.get('same_side_of_threshold') is True and
+                  type(distinct) is int and distinct>=self.policy.min_confirming_ticks
+                  and type(span) in (float,int) and math.isfinite(span)
+                  and span>=self.policy.minimum_tick_span_seconds)
+        if not verified:
+            return {'state':'UNCONFIRMED_LIVE_DEVIATION',
+                    'abs_error':abs(deviation)}
+        with self._mutex:
+            if self._live_seen_day!=clock.date():
+                self._live_seen_day=clock.date()
+                self._live_seen_versions.clear()
+            if forecast_id in self._live_seen_versions:
+                return {'state':'ALREADY_REQUESTED_FOR_ACTIVE_VERSION'}
+            self._live_seen_versions.add(forecast_id)
+        event=dict(kind='INTRABAR_DEVIATION',
+                   trigger_at=clock.isoformat(),matched_target_at=None,
+                   actual_at=observed.isoformat(),
+                   previous_forecast_id=forecast_id,original_forecast_id=original_id,
+                   previous_published_at=publication.isoformat(),
+                   deviation_points=deviation,abs_error_points=abs(deviation),
+                   evidence={'source':actual_source,
+                             'comparison':'INTERPOLATED_UNSCORED',
+                             'prior_target_at':prior.isoformat(),
+                             'next_target_at':following.isoformat(),
+                             'interpolated_value':interpolated,
+                             'actual_available_at':available.isoformat(),
+                             'verified_distinct_ticks':distinct},
+                   next_target_at=following.isoformat(),
+                   outcome='REQUESTED_NOT_PUBLISHED')
+        return {'state':'REQUEST_REFORECAST','event':{'id':digest(event),**event}}
 
     def shock(self, *, now: str, signals: dict, forecast_id: str,
               original_id: str, published_at: str, next_target_at: str,

@@ -107,6 +107,98 @@ class ScheduledTests(unittest.TestCase):
                 next_target_at='2026-10-13T13:50:00+05:30')
 
 
+
+def point(gate, *, error=5, target='2026-10-13T13:40:00+05:30',
+          now='2026-10-13T13:40:02+05:30', available=None, source='nifty-live-index',
+          **kw):
+    return gate.point_deviation(
+        now=now,target_at=target,actual_at=kw.get('actual_at',target),
+        actual_available_at=available or now,actual=24000+error,projected=24000,
+        actual_source=source,forecast_id=ACTIVE,original_id=ORIGINAL,
+        published_at=PUBLISHED,next_target_at='2026-10-13T13:45:00+05:30')
+
+
+def intrabar(gate, *, now=NOW, actual=24012, available=None,
+             observed=None, proof=None, source='nifty-live-index', **kw):
+    return gate.intrabar_deviation(
+        now=now,actual_at=observed or now,actual_available_at=available or now,
+        actual=actual,actual_source=source,
+        prior_target_at=kw.get('prior_target_at','2026-10-13T13:35:00+05:30'),
+        prior_projected=24000.0,next_target_at='2026-10-13T13:40:00+05:30',
+        next_projected=24010.0,forecast_id=kw.get('forecast_id',ACTIVE),
+        original_id=ORIGINAL,published_at=PUBLISHED,
+        confirmations=proof)
+
+
+class AnytimeDeviationTests(unittest.TestCase):
+    PROOF={'distinct_ticks':3,'span_seconds':2.1,
+           'verified_exchange_sequence':True,'same_side_of_threshold':True}
+
+    def test_1340_five_minute_miss_does_not_wait_until_1345(self):
+        r=point(EventGate(TriggerPolicy(enabled=True)))
+        self.assertEqual(r['state'],'REQUEST_REFORECAST')
+        self.assertEqual(r['event']['kind'],'FIVE_MINUTE_DEVIATION')
+        self.assertEqual(r['event']['matched_target_at'],'2026-10-13T13:40:00+05:30')
+    def test_five_minute_threshold_both_signs_and_underfive(self):
+        for value,expected in ((5,'REQUEST_REFORECAST'),(-5,'REQUEST_REFORECAST'),
+                               (4.9,'CONTINUE')):
+            self.assertEqual(point(EventGate(TriggerPolicy(enabled=True)),error=value)['state'],expected)
+    def test_five_minute_requires_exact_actual_and_causal_receipt(self):
+        g=EventGate(TriggerPolicy(enabled=True))
+        self.assertEqual(point(g,actual_at='2026-10-13T13:39:59+05:30')['state'],
+                         'MISSING_MATCHED_ACTUAL')
+        self.assertEqual(point(g,available='2026-10-13T13:41:00+05:30')['state'],
+                         'MISSING_MATCHED_ACTUAL')
+        self.assertEqual(point(g)['state'],'REQUEST_REFORECAST')
+    def test_five_minute_dedupe_with_same_forecast(self):
+        g=EventGate(TriggerPolicy(enabled=True))
+        self.assertEqual(point(g)['state'],'REQUEST_REFORECAST')
+        self.assertEqual(point(g)['state'],'ALREADY_REVIEWED')
+    def test_not_future_and_closed_session(self):
+        self.assertEqual(point(EventGate(TriggerPolicy(enabled=True)),
+            now='2026-10-13T15:31:00+05:30',target='2026-10-13T15:30:00+05:30')['state'],
+            'NOT_FIVE_MINUTE_TARGET')
+    def test_intrabar_at_1337_confirmed_deviation(self):
+        r=intrabar(EventGate(TriggerPolicy(enabled=True)),proof=self.PROOF)
+        self.assertEqual(r['state'],'REQUEST_REFORECAST')
+        e=r['event']
+        self.assertEqual(e['kind'],'INTRABAR_DEVIATION')
+        self.assertIsNone(e['matched_target_at'])
+        self.assertEqual(e['evidence']['comparison'],'INTERPOLATED_UNSCORED')
+        self.assertGreater(e['abs_error_points'],5)
+    def test_intrabar_under_five_does_not_request(self):
+        r=intrabar(EventGate(TriggerPolicy(enabled=True)),actual=24007,proof=self.PROOF)
+        self.assertEqual(r['state'],'CONTINUE')
+    def test_intrabar_requires_verified_confirmation(self):
+        for p in (None,dict(self.PROOF,same_side_of_threshold=False),
+                  dict(self.PROOF,verified_exchange_sequence=False),
+                  dict(self.PROOF,distinct_ticks=2)):
+            self.assertEqual(intrabar(EventGate(TriggerPolicy(enabled=True)),proof=p)['state'],
+                             'UNCONFIRMED_LIVE_DEVIATION')
+    def test_intrabar_stale_or_future_observation(self):
+        g=EventGate(TriggerPolicy(enabled=True))
+        self.assertEqual(intrabar(g,proof=self.PROOF,observed='2026-10-13T13:36:00+05:30')['state'],
+                         'STALE_OR_CAUSALLY_INVALID_ACTUAL')
+        self.assertEqual(intrabar(g,proof=self.PROOF,available='2026-10-13T13:38:00+05:30')['state'],
+                         'STALE_OR_CAUSALLY_INVALID_ACTUAL')
+    def test_intrabar_one_request_per_forecast_version(self):
+        g=EventGate(TriggerPolicy(enabled=True))
+        self.assertEqual(intrabar(g,proof=self.PROOF)['state'],'REQUEST_REFORECAST')
+        self.assertEqual(intrabar(g,proof=self.PROOF)['state'],
+                         'ALREADY_REQUESTED_FOR_ACTIVE_VERSION')
+        self.assertEqual(intrabar(g,proof=self.PROOF,forecast_id='newly-published')[
+            'state'],'REQUEST_REFORECAST')
+    def test_intrabar_not_on_tick_callback_by_default(self):
+        self.assertEqual(intrabar(EventGate(),proof=self.PROOF)['state'],'DISABLED')
+    def test_intrabar_requires_adjacent_bracketing_point(self):
+        with self.assertRaises(EvidenceError):
+            intrabar(EventGate(TriggerPolicy(enabled=True)),proof=self.PROOF,
+                     prior_target_at='2026-10-13T13:25:00+05:30')
+    def test_forecast_never_claimed_published(self):
+        r=intrabar(EventGate(TriggerPolicy(enabled=True)),proof=self.PROOF)
+        self.assertEqual(r['event']['outcome'],'REQUESTED_NOT_PUBLISHED')
+
+
 class ShockTests(unittest.TestCase):
     def setUp(self): self.g=EventGate(TriggerPolicy(enabled=True))
     def test_disabled_by_default(self):

@@ -84,14 +84,20 @@
       var ev=item.event, row=node(list,'article',null,'kfl-event');
       var upper=node(row,'div',null,'kfl-event-head');
       node(upper,'strong',clock(ev.trigger_at)+' · '+(ev.kind==='MARKET_SHOCK'?'Market shock':
-        ev.kind==='SCHEDULED_DEVIATION'?'15-minute precision review':'Forecast event'));
+        ev.kind==='SCHEDULED_DEVIATION'?'15-minute precision review':
+        ev.kind==='FIVE_MINUTE_DEVIATION'?'5-minute accuracy alert':
+        ev.kind==='INTRABAR_DEVIATION'?'Intrabar deviation alert':'Forecast event'));
       node(upper,'span',item.receipt && item.receipt.outcome==='PUBLISHED'?'ISSUED':'NOT ISSUED',
         'kfl-pill');
       var reasons=Array.isArray(ev.reasons)?ev.reasons.join(' · '):'';
       if (reasons) node(row,'p','Trigger: '+string(reasons,160),'kfl-detail');
       if(finite(ev.deviation_points))
-        node(row,'p','Matched-point deviation: '+(ev.deviation_points>=0?'+':'')+
-          ev.deviation_points.toFixed(2)+' pts · target '+clock(ev.matched_target_at),'kfl-detail');
+        node(row,'p',(ev.kind==='INTRABAR_DEVIATION'?
+          'Live deviation (interpolated, unscored): ':'Matched-point deviation: ')+
+          (ev.deviation_points>=0?'+':'')+ev.deviation_points.toFixed(2)+
+          ' pts · '+(ev.kind==='INTRABAR_DEVIATION'?'observed ':'target ')+
+          clock(ev.kind==='INTRABAR_DEVIATION'?ev.actual_at:ev.matched_target_at),
+          'kfl-detail');
       node(row,'p',statusLabel(item.receipt),'kfl-note');
       if (ev.original_forecast_id)
         node(row,'p','Original: '+string(ev.original_forecast_id,56)+

@@ -10,6 +10,19 @@ retrain live weights or change any production configuration.
 
 ## Behavior
 
+- **Anytime precision correction (new):** Every new actual at an exact issued
+  five-minute target is eligible for an immediate >=5-point error check,
+  including 13:40 between 13:30 and 13:45 quarter-hour checks.
+  For an intrabar observation such as 13:37, a source-verified fresh NIFTY
+  tick may be checked against the *linearly interpolated* immutable path
+  (adjacent issued points only). Intrabar >=5-point deviation must persist
+  across at least three independently verified ticks spanning >=2 seconds,
+  all on the same side of the threshold. This interpolation is a
+  **trigger diagnostic, NOT a scored original five-minute prediction**.
+  An already-requested active forecast cannot spam unlimited intrabar requests.
+  Both new checks operate only on the bounded forecast observation worker and
+  still require a future genuine target and independent publication receipts.
+  The 15-minute check below stays as a fallback, not as a waiting gate.
 - **Scheduled precision check:** At a genuine 15-minute checkpoint compare the
   active *issued* forecast's price for that exact timestamp with a timestamped
   completed actual. An absolute error **>=5 NIFTY points** requests a new
@@ -99,7 +112,9 @@ OPENBLAS_NUM_THREADS=1 python -m unittest discover -s tests -v
 node --test tests/test_learning_panel.cjs
 ```
 
-The Python tests cover strict ≥5 triggers, intrabar shocks, stale/future
+The Python tests cover strict >=5 triggers at any five-minute target,
+confirmed intrabar deviation, precise issue/actual time matching, interpolation
+never counted as measured forecast accuracy, intrabar shocks, stale/future
 inputs, dedupe, scheduled timing, immutable publication receipts, no
 retroactive learning, session holdout and strict original-only panel metrics.
 Node tests cover the DOM rendering, unissued vs issued statuses, bounding,
