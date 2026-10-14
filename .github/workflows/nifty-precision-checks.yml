@@ -26,6 +26,8 @@ jobs:
           OPENBLAS_NUM_THREADS: '1'
           OMP_NUM_THREADS: '1'
         run: python -m unittest discover -s tests -v
+      - name: Browser learning panel DOM tests (no network)
+        run: node --test forecast_precision/tests/test_learning_panel.cjs
       - name: Compile added source
         run: python -m compileall -q forecast_precision
       - name: Exact additive scope and blocked release plan
