@@ -1,0 +1,14 @@
+.kfm-root{color:#dce9fa;font-size:13px}
+.kfm-root h3{font-size:17px;margin:0 0 5px;color:#ecf6ff}
+.kfm-note{font-size:12px;color:#9db5d1;margin:8px 0 13px;line-height:1.5}
+.kfm-scroll{overflow-x:auto;overscroll-behavior-x:contain;width:100%;border:1px solid #283d58;border-radius:10px;background:#0e1a2c;margin:10px 0;scrollbar-color:#456381 #0e1a2c}
+.kfm-scroll svg{display:block;max-width:none}
+.kfm-table{width:100%;min-width:660px;border-collapse:collapse;font-size:12px;font-variant-numeric:tabular-nums}
+.kfm-table th,.kfm-table td{padding:9px 11px;text-align:left;border-bottom:1px solid #293b53;white-space:nowrap}
+.kfm-table th{font-weight:600;color:#aec5e2;background:#15263d;position:sticky;top:0}
+.kfm-table td{color:#d4e2f5}
+.kfm-table tr:last-child td{border-bottom:0}
+.kfm-table td.kfm-alert{color:#ff9588;font-weight:600}
+.kfm-table td.kfm-ok{color:#62e6b9}
+.kfm-table td.kfm-wait{color:#8da4bf}
+@media(max-width:700px){.kfm-root h3{font-size:16px}.kfm-table{font-size:11px}}

@@ -49,6 +49,17 @@ retrain live weights or change any production configuration.
   error. If evidence is insufficient, no corrected candidate is produced.
   A qualified offset can be applied only to a **future shadow alternative**;
   it never overwrites originals or promotes production weights.
+- **Five-minute chart milestones (new):** `web/forecast_milestones.js` + `web/forecast_milestones.css`
+  render every issued forecast target as a visible, numeric, timestamped
+  marker and table row. At each target display original forecast, exact-time
+  verified actual when available, signed deviation, and strict >=5-point
+  alert status. Future observations remain pending, never zero. The +/-5 target
+  band, source-verified issue times, and selected revision identity are
+  maintained. Each timestamp can be inspected via SVG title and the scrollable
+  table remains accessible on mobile. Intrabar interpolated alerts are
+  deliberately not scored as issued five-minute milestones. Read-only renderer
+  and preview only: production Celestial mounting and API binding are still
+  outstanding and must be separately reviewed.
 - **Bottom panel:** `web/learning_panel.js` is a read-only renderer that accepts
   the bounded output of `panel_feed.panel_snapshot`. It displays operational
   mode, <5 target, independently scored original accuracy, learning state,
@@ -109,7 +120,7 @@ gate = EventGate(TriggerPolicy(enabled=False))
 cd forecast_precision
 python -m pip install -r requirements.txt
 OPENBLAS_NUM_THREADS=1 python -m unittest discover -s tests -v
-node --test tests/test_learning_panel.cjs
+node --test tests/test_learning_panel.cjs tests/test_forecast_milestones.cjs
 ```
 
 The Python tests cover strict >=5 triggers at any five-minute target,
