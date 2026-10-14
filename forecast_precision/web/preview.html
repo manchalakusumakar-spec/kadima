@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>KADIMA • Forecast Learning Panel — Illustrative Only</title>
+<link rel="stylesheet" href="./forecast_milestones.css"/>
+<style>
+:root{font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;color:#d9e4f4;background:#0b1220}
+*{box-sizing:border-box}body{margin:0;padding:24px 12px}main{max-width:1050px;margin:auto}
+h1{font-size:21px;margin:0 0 6px}p{line-height:1.48}h3{font-size:17px;margin:0 0 5px}h4{font-size:14px;margin:0 0 12px}
+small,.muted{color:#9fb0c8}.banner{border:1px solid #9f8248;padding:11px 14px;border-radius:9px;color:#ffdb99;background:#2b271f;margin:0 0 17px}
+.surface{border:1px solid #263751;border-radius:14px;padding:20px;background:#111d30;margin:14px 0 22px}
+.chart{width:100%;height:auto;display:block}.leg{display:flex;gap:20px;font-size:12px;color:#cbd5e1;flex-wrap:wrap}
+.leg span:before{content:'—';font-weight:bold;font-size:20px;margin-right:7px}.leg .forecast:before{color:#61a9fa}.leg .actual:before{color:#49d3af}
+.leg .band:before{color:#9f8ed8}.kfl-root{background:#101e32;border:1px solid #344664;border-radius:14px;padding:18px}
+.kfl-header,.kfl-event-head{display:flex;gap:10px;align-items:center;justify-content:space-between;flex-wrap:wrap}
+.kfl-header h3{color:#eef4ff}.kfl-note{font-size:12px;color:#9db1cb;margin:5px 0 0}
+.kfl-label,.kfl-pill{font-size:11px;font-weight:600;letter-spacing:.04em;background:#1f334f;border:1px solid #3a5374;border-radius:999px;padding:4px 10px;color:#c0dcff}
+.kfl-cards{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;margin:19px 0 23px}
+.kfl-card{border:1px solid #30435e;border-radius:10px;background:#162640;padding:13px;min-width:0}
+.kfl-card-caption{font-size:12px;color:#a9bfda}.kfl-card-value{font-size:16px;font-weight:700;margin-top:7px;overflow-wrap:anywhere}
+.kfl-events h4{color:#e9f2ff}.kfl-event{padding:12px 4px 13px;border-top:1px solid #2b3d57}
+.kfl-event-head strong{font-size:13px}.kfl-detail{font-size:13px;margin:8px 0 3px;color:#cee2fd}
+.kfl-id{font-size:11px;margin:5px 0 0;color:#728fae;overflow-wrap:anywhere}
+.kfl-footer{border-top:1px solid #30435e;padding-top:10px;margin-top:5px}.kfl-empty{font-size:13px;color:#9db1cb}
+@media(max-width:720px){.kfl-cards{grid-template-columns:repeat(2,minmax(0,1fr))}.surface{padding:12px}.kfl-root{padding:12px}}
+</style>
+</head>
+<body>
+<main>
+<div class="banner"><strong>ILLUSTRATIVE PREVIEW — NOT LIVE KADIMA DATA</strong><div>All displayed market values and events below are fictional UI fixtures.</div></div>
+<h1>KADIMA — NIFTY Forecast vs Actual</h1>
+<p class="muted">Original forecast remains preserved · Labeled price milestones every five minutes · Strict ±5-point target envelope</p>
+<section class="surface" aria-label="Illustrative forecast map with 5-minute milestones">
+<div id="forecast-milestones"></div>
+</section>
+<div id="learning-panel"></div>
+</main>
+<script src="./forecast_milestones.js"></script>
+<script src="./learning_panel.js"></script>
+<script>
+// Synthetic UI-only fixture. All values, source IDs and outcomes below are invented.
+const demoTimes=['13:15','13:20','13:25','13:30','13:35','13:40','13:45','13:50','13:55','14:00','14:05','14:10','14:15'];
+const demoFc=[22549,22550,22551,22552,22553,22554,22555,22556,22557,22558,22559,22560,22561];
+const demoAct=[22549,22547,22544,22542,22545,22551,22558,22563];
+const demoRows=demoTimes.map((t,i)=>{
+  const ts='2026-10-13T'+t+':00+05:30';
+  const row={ts,forecast:demoFc[i]};
+  if(i<demoAct.length){row.actual=demoAct[i];row.actual_at=ts;
+    row.actual_available_at='2026-10-13T'+t+':02+05:30';
+    row.actual_source='SYNTHETIC_PREVIEW_ONLY';}
+  return row;
+});
+KadimaForecastMilestones.mount(document.getElementById('forecast-milestones'),{
+ kind:'ORIGINAL',forecast_id:'SYNTHETIC-ORIGINAL-V1',
+ issued_at:'2026-10-13T13:14:00+05:30',as_of:'2026-10-13T13:51:00+05:30',
+ rows:demoRows
+});
+
+const demo={mode:'CAPTURE_ONLY',accuracy:{below_5_fraction:null,scored:0},
+ learning:{model_status:'INSUFFICIENT_DATA',outcomes:{}},events:[
+ {event:{kind:'MARKET_SHOCK',trigger_at:'2026-10-13T13:37:00+05:30',
+  original_forecast_id:'SYNTHETIC-ORIGINAL-V1',previous_forecast_id:'SYNTHETIC-V1',
+  reasons:['PRICE_AND_VOLUME']},receipt:{outcome:'SHADOW_ONLY'}},
+ {event:{kind:'SCHEDULED_DEVIATION',trigger_at:'2026-10-13T13:45:02+05:30',
+  matched_target_at:'2026-10-13T13:45:00+05:30',deviation_points:6.8,
+  original_forecast_id:'SYNTHETIC-ORIGINAL-V1',previous_forecast_id:'SYNTHETIC-V2'},
+  receipt:{outcome:'NO_FITTED_MODEL'}}]};
+KadimaLearningPanel.mount(document.getElementById('learning-panel'),demo);
+</script>
+</body></html>
