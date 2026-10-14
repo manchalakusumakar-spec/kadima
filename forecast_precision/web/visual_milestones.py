@@ -19,7 +19,7 @@ MARKERS="""
     const milestoneMarks = pts.map(p => {
       const f = Number(p.forecast);
       const t = String(p.ts || '').slice(11, 16);
-      if (!Number.isFinite(f) || !/^\\\\d{2}:\\\\d{2}$/.test(t)) return '';
+      if (!Number.isFinite(f) || !/^\\[0-9]{2}:\\[0-9]{2}$/.test(t)) return '';
       const x = xs(p.ts), y = ys(f);
       const a = p.actual == null ? null : Number(p.actual);
       const good = a !== null && Number.isFinite(a);
@@ -44,7 +44,7 @@ TABLE="""
     let rows = '';
     for (const p of s.points) {
       const t=String(p.ts || '').slice(11,16), f=Number(p.forecast);
-      if(!/^\\\\d{2}:\\\\d{2}$/.test(t)||!Number.isFinite(f))continue;
+      if(!/^\\[0-9]{2}:\\[0-9]{2}$/.test(t)||!Number.isFinite(f))continue;
       const a=p.actual == null?null:Number(p.actual);
       const has=a!==null&&Number.isFinite(a),d=has?a-f:null;
       const red=INDEX==='NIFTY'&&has&&Math.abs(d)>=5;
