@@ -1,33 +1,53 @@
 # SEBI CAS / derivatives-hours release gate
 
-**Status: BLOCKED — no code or production cutoff change authorized by this note.**  
-Review date: 2026-10-16 (IST)
+**Status: RULE VERIFIED; implementation remains gated on exchange/broker readiness.**  
+Review date: 2026-10-17 (IST)
 
-## Source verified
+## Primary source verified
 
-SEBI circular dated 2026-01-16:
+SEBI circular dated **2026-10-15**:
 
-- Reference: `HO/47/11/11(3)2025-MRD-POD2/I/2765/2026`
-- Title: *Introduction of Closing Auction Session (CAS) in the Equity Cash Segment and certain modifications in the Pre-Open Auction Session*
-- Official source: https://www.sebi.gov.in/legal/circulars/jan-2026/introduction-of-closing-auction-session-in-the-equity-cash-segment-and-certain-modifications-in-the-pre-open-auction-session_99122.html
+- Reference: `HO/47/11/11(3)2025-MRD-POD2/I/23843/2026`
+- Title: *Review of certain aspects of the Closing Auction Session, market timings and settlement methodology for derivatives contracts*
+- Official HTML: https://www.sebi.gov.in/legal/circulars/oct-2026/review-of-certain-aspects-of-the-closing-auction-session-market-timings-and-settlement-methodology-for-derivatives-contracts_105293.html
+- Official PDF: https://www.sebi.gov.in/sebi_data/attachdocs/oct-2026/1792079571420.pdf
 
-The published circular specifies an equity cash CAS from 15:15 to 15:35 and states that the equity-derivatives segment continues to operate until 15:40. These are the timings stated in this verified source; confirm subsequent exchange implementation notices and amendments before relying on them operationally.
+The seven-page primary circular has been opened and checked. Relevant provisions are paragraphs 4.2, 4.3, 4.5, 4.8, 4.9, 4.11 and 6.
 
-## Not verified
+## Confirmed rule and transition dates
 
-A purported SEBI final circular dated 2026-10-15, including new 15:45 regular derivatives hours, a 15:30 expiry-day index-derivatives cutoff, VWAP-based expiry settlement changes, and 2026-12-07 / 2027-02-08 effective dates, was not independently located in SEBI's official circular listings during this review.
+### Effective 2026-12-07 — all modifications except CTS-to-CAS order carry-forward (paragraphs 4.8)
 
-Do not encode those claims, treat a proposal as final, or use a search snippet/media article as sufficient evidence. Obtain the primary SEBI circular, its annexures, and relevant NSE/NSE Clearing implementation circulars before changing trading behavior.
+- Equity cash CAS: **15:30–15:40 IST**. Reference-price/transition phase 15:30–15:31; limit and market order entry 15:31–15:36; limit-only entry 15:36 until a random close between 15:38 and 15:40.
+- Index derivatives: trade until **15:45** on ordinary days; **expiring index-derivative contracts stop at 15:30 on expiry day**.
+- Stock derivatives: trade until **15:45**, including expiry days.
+- Cash post-close: **15:50–16:00**.
+- CAS reference price: cash-security VWAP during the final 15 minutes of continuous trading; if no trade in that interval, use the day's LTP; if no trade all day, use prior close (adjusted close/base price for corporate actions).
+- During cash CAS, only limit and market orders are allowed. New iceberg and stop-loss orders are not allowed.
+- Expiry settlement: index derivatives use the underlying index calculated from constituent-security VWAPs during the final 30 minutes of continuous cash trading. Stock derivatives use the underlying stock's VWAP over the same 30-minute period across all stock exchanges. Exchanges must disseminate indicative values/VWAP continuously in that interval.
+- Stock-futures price-band flexing is not applicable from 15:30–15:45; the band aligns with CAS during that interval.
+- CAS orders are subject to order-level margin, with the circular's specified exception for unmodified CTS orders carried into CAS.
 
-## Required evidence before implementation
+### Effective 2027-02-08 — paragraph 4.8
 
-1. Record the official SEBI circular URL, circular number, publication date, paragraphs and annexures supporting each rule.
-2. Obtain the implementing NSE/NSE Clearing notices and confirm the exact effective date, market segment, expiry-day distinction, holiday handling, and treatment of existing orders/contracts.
-3. Keep cash CAS timing, index-derivatives trading cutoff, stock-derivatives cutoff, and settlement-price calculation as separate settings. Do not apply cash-auction restrictions to F&O by analogy.
-4. Add deterministic IST boundary tests for regular sessions, expiry sessions, special sessions, holidays, delayed/missing exchange data, and broker-reported open orders/positions.
-5. Preserve Gamma Blast, CAS signal/entry logic, Shield, Angel One execution, capital/risk controls, stops, reconciliation, and existing dashboard behavior unless a separately reviewed requirement explicitly calls for a change.
-6. Deploy only after exact-head CI, source/host identity checks, backup/rollback review, and operator approval. A GitHub PR or passing offline tests do not prove AWS deployment or live-session correctness.
+- Unexecuted continuous-session limit orders generally carry into CAS, except stop-loss orders and orders outside CAS price bands.
+- Eligible unexecuted iceberg orders carry forward as fully disclosed limit orders unless the participant opted out at original placement.
+- Transitioned iceberg orders have lower time priority than other carried-forward limit orders. Carried-forward orders otherwise outrank new CAS limit orders; modification changes time priority.
+
+## Implementation boundary
+
+SEBI paragraph 5 directs exchanges and clearing corporations to amend their SOPs within seven days. In this review, the SEBI primary circular is verified, but a separate implementing NSE/NSE Clearing circular and Angel One's exact order/session behavior have **not yet been verified**. Do not claim exchange/broker readiness based on the SEBI circular alone.
+
+Before changing runtime code or deploying:
+
+1. Obtain the NSE/NSE Clearing implementation notices and verify the exact effective dates, instrument scope, special sessions/holidays, order transition and price-band behavior.
+2. Confirm Angel One's supported order types, cutoff behavior, exchange rejection handling, pending-order and fill reconciliation, and whether any broker-specific square-off policy is earlier.
+3. Keep cash CAS timing, regular index-derivatives cutoff, expiry-day index cutoff, stock-derivatives cutoff and settlement calculation as separate settings.
+4. Add deterministic IST boundary tests for regular/expiry/special sessions, holidays, random CAS close bounds, stale/missing VWAP or constituent data, order carry-forward/priority, and broker-reported open orders/positions.
+5. Never use the last displayed index tick as a substitute for the specified constituent-VWAP settlement calculation. Fail closed on incomplete or stale settlement inputs.
+6. Preserve Gamma Blast/CAS signal and entry logic, Shield, Angel One execution policy, capital/risk controls, stops, reconciliation and dashboard behavior unless a separately reviewed requirement calls for a change.
+7. Require exact-head CI, source/host identity checks, backup/rollback review and explicit operator approval. A PR or offline tests do not prove AWS deployment or live-session correctness.
 
 ## Current action
 
-This note documents the source-verification gate only. It does not alter runtime code, market hours, settlement logic, trading permissions, services, or AWS state.
+This is a documentation/source-verification update only. It does not alter runtime code, session gates, settlement logic, trading permissions, services or AWS state.
