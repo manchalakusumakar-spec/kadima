@@ -60,14 +60,15 @@ stop_fraction entry_end force_exit""".split())
 SECRET = re.compile(r"(?i)(bearer\s+\S+|(?:password|api[_-]?key|api[_-]?token|access[_-]?token|refresh[_-]?token|authorization)\s*[:=]\s*[^\s,;]+|eyJ[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+\.[A-Za-z0-9_-]+)")
 
 
-def clean(value, depth=0):
+def clean(value, depth=0, fields=None):
     """Never pass raw payloads, request headers, environment or exception messages."""
+    fields = SAFE_FIELDS if fields is None else fields
     if depth > 7:
         return "[depth limit]"
     if isinstance(value, dict):
-        return {k: clean(v, depth + 1) for k, v in value.items() if k in SAFE_FIELDS}
+        return {k: clean(v, depth + 1, fields) for k, v in value.items() if k in fields}
     if isinstance(value, list):
-        return [clean(v, depth + 1) for v in value[:100]]
+        return [clean(v, depth + 1, fields) for v in value[:100]]
     if isinstance(value, str):
         return SECRET.sub("[redacted]", value[:500])
     if value is None or isinstance(value, (bool, int)):
@@ -249,6 +250,11 @@ def collect(token):
             except (TypeError, ValueError, AttributeError):
                 result = {"ok": False, "error": "unexpected_schema"}
         snapshot["api"][name] = result
+    try:
+        from . import archive  # Local import keeps the snapshot path independent.
+        snapshot["archive"] = archive.run(now)
+    except Exception as exc:  # Archive trouble must never block the live snapshot.
+        snapshot["archive"] = {"ok": False, "error": type(exc).__name__}
     snapshot["completed_at"] = datetime.now(IST).isoformat()
     return snapshot
 

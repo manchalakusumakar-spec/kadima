@@ -1,7 +1,9 @@
 """Evidence views. No healthy-looking inference from missing or stale fields."""
-from datetime import datetime
+from collections import Counter, deque
+from datetime import date, datetime, timedelta
 import json
 from pathlib import Path
+import re
 from typing import Literal
 from .collector import IST
 
@@ -12,6 +14,13 @@ FLAGS = {"cas": "KADIMA_CAS_LIVE", "cas_legacy": "KADIMA_CAS_EXECUTION",
 KINDS = {"cas": {"cas"}, "cas_legacy": {"cas_blast"}, "gamma": {"gamma", "gamma_blast"},
          "index_scalp": {"index_scalp"}, "stock_fast": {"stock_fast"}, "move_capture": {"move_capture"}}
 MAX_AGE = 90
+ARCHIVE_RETAIN_DAYS = 10
+SCAN_CAP = 30_000_000              # bytes read per archive query
+EVENT_FILTER = re.compile(r"^[a-z0-9_]{1,64}\*?$")
+# Event-name fragments that mark a refusal, block or failure. Grouping uses the
+# event's own name and reason; strategy is never inferred from symbol or time.
+REFUSAL_HINTS = ("reject", "block", "refus", "skip", "denied", "disabled", "unfilled",
+                 "failed", "not_granted", "paused", "capped", "exhausted", "unavailable")
 
 
 def age_seconds(stamp, now):
@@ -25,9 +34,10 @@ def age_seconds(stamp, now):
 
 
 class Evidence:
-    def __init__(self, path, clock=None):
+    def __init__(self, path, clock=None, archive_dir=None):
         self.path = Path(path)
         self.clock = clock or (lambda: datetime.now(IST))
+        self.archive_dir = Path(archive_dir) if archive_dir else self.path.parent / "days"
 
     def load(self):
         now = self.clock()
@@ -156,3 +166,150 @@ class Evidence:
                     audit=data.get("audit", {}).get("rows", [])[-limit:],
                     audit_read_ok=data.get("audit", {}).get("ok"),
                     note="Unlabelled lane_permit_not_granted events must not be attributed to CAS.")
+
+    # ---------------------------------------------------------- audit history
+    def _archive_status(self):
+        data = self.load()
+        archive = data.get("archive") if isinstance(data.get("archive"), dict) else {}
+        days = archive.get("days") if isinstance(archive.get("days"), dict) else {}
+        return data, archive, days
+
+    def _day_path(self, day):
+        if not isinstance(day, str) or not re.fullmatch(r"\d{4}-\d{2}-\d{2}", day):
+            raise ValueError("date_must_be_YYYY-MM-DD")
+        try:
+            wanted = date.fromisoformat(day)
+        except ValueError:
+            raise ValueError("date_must_be_YYYY-MM-DD") from None
+        today = self.clock().date()
+        if not today - timedelta(days=ARCHIVE_RETAIN_DAYS - 1) <= wanted <= today:
+            raise ValueError("date_outside_retained_window")
+        path = self.archive_dir / (wanted.isoformat() + ".jsonl")
+        if path.is_symlink():
+            raise ValueError("archive_entry_rejected")
+        return path
+
+    def _rows(self, path):
+        """Stream archived records in file order, bounded by SCAN_CAP bytes."""
+        read = 0
+        truncated = False
+        try:
+            with path.open("rb") as stream:
+                for line in stream:
+                    read += len(line)
+                    if read > SCAN_CAP:
+                        truncated = True
+                        break
+                    try:
+                        row = json.loads(line)
+                    except (ValueError, UnicodeError):
+                        continue
+                    if isinstance(row, dict):
+                        yield row
+        except OSError:
+            return
+        if truncated:
+            yield {"event": "connector_scan_cap_reached"}
+
+    def _day_envelope(self, day, days, archive):
+        status = days.get(day, {})
+        return {"date": day, "archive_ok": archive.get("ok"),
+                "archive_paused": archive.get("paused"),
+                "day_status": status or "not_archived",
+                "complete": bool(status.get("caught_up")) and not status.get("capped"),
+                "note": "Sanitized, allowlisted copy of the engine audit log. Exception text, "
+                        "raw broker responses and credentials are excluded. Incomplete days "
+                        "are still being copied or hit the size cap."}
+
+    def audit_days(self):
+        data, archive, days = self._archive_status()
+        listed = []
+        for day in sorted(days, reverse=True):
+            info = days[day] if isinstance(days[day], dict) else {}
+            listed.append({"date": day, "archived_bytes": info.get("archived_bytes"),
+                           "source_bytes": info.get("source_bytes"),
+                           "complete": bool(info.get("caught_up")) and not info.get("capped"),
+                           "capped": info.get("capped")})
+        return dict(self.envelope(data), archive_ok=archive.get("ok"),
+                    archive_paused=archive.get("paused"),
+                    archive_error=archive.get("error"), days=listed)
+
+    def audit_search(self, day, contains="", event="", limit=50):
+        if isinstance(limit, bool) or not isinstance(limit, int) or not 1 <= limit <= 100:
+            raise ValueError("invalid_limit")
+        if not isinstance(contains, str) or len(contains) > 80:
+            raise ValueError("contains_must_be_text_up_to_80_chars")
+        if not isinstance(event, str) or (event and not EVENT_FILTER.match(event)):
+            raise ValueError("event_must_be_lowercase_name_optionally_ending_in_star")
+        path = self._day_path(day)
+        data, archive, days = self._archive_status()
+        needle = contains.lower()
+        prefix = event[:-1] if event.endswith("*") else None
+        matches, total, scanned, capped = deque(maxlen=limit), 0, 0, False
+        for row in self._rows(path):
+            if row.get("event") == "connector_scan_cap_reached":
+                capped = True
+                break
+            scanned += 1
+            name = row.get("event", "")
+            if event and not (name.startswith(prefix) if prefix is not None else name == event):
+                continue
+            if needle and needle not in json.dumps(row).lower():
+                continue
+            total += 1
+            matches.append(row)
+        return dict(self.envelope(data), **self._day_envelope(day, days, archive),
+                    filters={"contains": contains, "event": event},
+                    records_scanned=scanned, total_matches=total,
+                    returned=len(matches), scan_cap_reached=capped,
+                    matches=list(matches),
+                    order="Most recent matches, oldest first within the returned window.")
+
+    def rejection_summary(self, day, event_prefix="", top=40):
+        if isinstance(top, bool) or not isinstance(top, int) or not 1 <= top <= 100:
+            raise ValueError("invalid_top")
+        if not isinstance(event_prefix, str) or (event_prefix and not re.fullmatch(r"[a-z0-9_]{1,64}", event_prefix)):
+            raise ValueError("event_prefix_must_be_lowercase_name")
+        path = self._day_path(day)
+        data, archive, days = self._archive_status()
+        groups, first, last, symbols = Counter(), {}, {}, {}
+        block_reasons = Counter()
+        scanned, capped = 0, False
+        for row in self._rows(path):
+            if row.get("event") == "connector_scan_cap_reached":
+                capped = True
+                break
+            scanned += 1
+            name = row.get("event", "")
+            if event_prefix and not name.startswith(event_prefix):
+                continue
+            reasons = row.get("blocked_reasons")
+            if isinstance(reasons, list):
+                for reason in reasons[:20]:
+                    if isinstance(reason, str):
+                        block_reasons[(name, reason)] += 1
+            if not any(hint in name for hint in REFUSAL_HINTS):
+                continue
+            reason = row.get("reason") if isinstance(row.get("reason"), str) else None
+            key = (name, reason, row.get("kind") if isinstance(row.get("kind"), str) else None)
+            groups[key] += 1
+            stamp = row.get("ts")
+            first.setdefault(key, stamp)
+            last[key] = stamp
+            symbol = row.get("symbol")
+            if isinstance(symbol, str):
+                seen = symbols.setdefault(key, [])
+                if symbol not in seen and len(seen) < 3:
+                    seen.append(symbol)
+        rows = [{"event": k[0], "reason": k[1], "kind": k[2], "count": n,
+                 "first_ts": first.get(k), "last_ts": last.get(k),
+                 "sample_symbols": symbols.get(k, [])}
+                for k, n in groups.most_common(top)]
+        reasons = [{"event": k[0], "blocked_reason": k[1], "count": n}
+                   for k, n in block_reasons.most_common(top)]
+        return dict(self.envelope(data), **self._day_envelope(day, days, archive),
+                    event_prefix=event_prefix, records_scanned=scanned,
+                    scan_cap_reached=capped, refusal_groups=rows,
+                    blocked_reason_counts=reasons,
+                    attribution_note="Grouped by the event's own name, reason and explicit kind only. "
+                         "An event without a kind is not attributed to any strategy.")

@@ -162,7 +162,9 @@ def test_http_auth_discovery_and_actual_tool_call(auth, snapshot):
         response = client.post("/mcp", json=request, headers=headers)
         assert response.status_code == 200, response.text
         tools = response.json()["result"]["tools"]
-        assert len(tools) == 4
+        assert {t["name"] for t in tools} == {"get_server_status", "get_strategy_readiness",
+            "get_execution_evidence", "get_recent_diagnostics", "list_audit_days", "search_audit",
+            "summarize_rejections"}
         assert all(t["annotations"]["readOnlyHint"] for t in tools)
         hostile_headers = dict(headers, Origin="https://attacker.test")
         assert client.post("/mcp", json=request, headers=hostile_headers).status_code == 403
@@ -252,4 +254,179 @@ def test_cognito_template_boundaries():
     assert client["AllowedOAuthFlows"] == ["code"]
     assert client["GenerateSecret"] is False
     assert client["AllowedOAuthScopes"] == ["openid", "kadima/read"]
-    assert "Default" not in template["Parameters"]["ChatGPTRedirectUri"]
+    # ChatGPT is optional: empty by default (never a guessed callback) and conditional.
+    assert template["Parameters"]["ChatGPTRedirectUri"]["Default"] == ""
+    assert resources["ChatGPTClient"]["Condition"] == "HasChatGPT"
+    claude = resources["ClaudeClient"]["Properties"]
+    assert claude["CallbackURLs"] == ["https://claude.ai/api/mcp/auth_callback"]
+    assert claude["AllowedOAuthFlows"] == ["code"]
+    assert claude["GenerateSecret"] is False
+    assert claude["AllowedOAuthScopes"] == ["openid", "kadima/read"]
+
+
+# ------------------------------------------------------------ audit history
+from server_connector import archive
+
+
+def _write(path, rows, tail=b""):
+    with path.open("ab") as stream:
+        for row in rows:
+            stream.write(json.dumps(row).encode() + b"\n")
+        stream.write(tail)
+
+
+@pytest.fixture
+def history(tmp_path, monkeypatch):
+    source, target = tmp_path / "audit", tmp_path / "days"
+    source.mkdir()
+    monkeypatch.setattr(archive, "_disk_ok", lambda directory: True)
+    return source, target
+
+
+def test_archive_incremental_sanitized_copy(history):
+    source, target = history
+    day = source / "2026-10-06.jsonl"
+    _write(day, [{"ts": "t1", "event": "cas_entry_rejected", "reason": "price_cap",
+                  "symbol": "SENSEX15OCT2673300CE", "api_token": "secret-1",
+                  "error": "Bearer abc.def.ghi failed", "raw": {"jwtToken": "secret-2"}},
+                 {"ts": "t2", "event": "order_placed", "note": "password=secret-3"}],
+           tail=b'{"ts":"t3","event":"half')  # record still being written
+    first = archive.run(NOW, source, target)
+    text = (target / "2026-10-06.jsonl").read_text()
+    assert first["ok"] and text.count("\n") == 2
+    assert "secret" not in text and "abc.def" not in text
+    assert first["days"]["2026-10-06"]["caught_up"] is False  # partial tail pending
+    with day.open("ab") as stream:
+        stream.write(b'"}\n')
+    second = archive.run(NOW, source, target)
+    assert (target / "2026-10-06.jsonl").read_text().count("\n") == 3
+    assert second["days"]["2026-10-06"]["caught_up"] is True
+    archive.run(NOW, source, target)  # idempotent: nothing duplicated
+    assert (target / "2026-10-06.jsonl").read_text().count("\n") == 3
+
+
+def test_archive_skips_oversized_and_rebuilds_after_shrink(history, monkeypatch):
+    source, target = history
+    monkeypatch.setattr(archive, "MAX_LINE", 200)
+    day = source / "2026-10-06.jsonl"
+    day.write_bytes(b'{"event":"x","note":"' + b"a" * 500 + b'"}\n')
+    _write(day, [{"event": "ok_event"}])
+    result = archive.run(NOW, source, target)
+    assert result["days"]["2026-10-06"]["skipped_records"] == 1
+    assert "ok_event" in (target / "2026-10-06.jsonl").read_text()
+    day.write_bytes(b'{"event":"fresh"}\n')  # replaced by a smaller file
+    archive.run(NOW, source, target)
+    assert (target / "2026-10-06.jsonl").read_text().strip() == '{"event":"fresh"}'
+
+
+def test_archive_cap_budget_retention_and_low_disk(history, monkeypatch):
+    source, target = history
+    _write(source / "2026-10-06.jsonl", [{"event": "e", "n": i} for i in range(50)])
+    _write(source / "2026-10-05.jsonl", [{"event": "old"}])
+    target.mkdir()
+    (target / "2026-09-01.jsonl").write_text("stale\n")
+    monkeypatch.setattr(archive, "DAY_CAP", 200)
+    result = archive.run(NOW, source, target)
+    assert result["days"]["2026-10-06"]["capped"] is True
+    assert "connector_archive_capped" in (target / "2026-10-06.jsonl").read_text()
+    assert (target / "2026-10-05.jsonl").exists()  # backfilled with remaining budget
+    assert not (target / "2026-09-01.jsonl").exists()  # outside retention
+    monkeypatch.setattr(archive, "_disk_ok", lambda directory: False)
+    _write(source / "2026-10-05.jsonl", [{"event": "later"}])
+    assert archive.run(NOW, source, target)["paused"] == "low_disk"
+    assert "later" not in (target / "2026-10-05.jsonl").read_text()
+
+
+def test_archive_missing_source_changes_nothing(tmp_path):
+    result = archive.run(NOW, tmp_path / "absent", tmp_path / "days")
+    assert result["ok"] is False and not (tmp_path / "days").exists()
+
+
+@pytest.fixture
+def evidence_with_history(snapshot, tmp_path):
+    days = tmp_path / "days"
+    days.mkdir()
+    _write(days / "2026-10-06.jsonl", [
+        {"ts": "15:16", "event": "cas_entry_rejected", "reason": "price_cap", "symbol": "A"},
+        {"ts": "15:17", "event": "cas_entry_rejected", "reason": "price_cap", "symbol": "B"},
+        {"ts": "15:18", "event": "cas_entry_rejected", "reason": "outside_band", "symbol": "A"},
+        {"ts": "15:19", "event": "entry_gate", "blocked_reasons": ["kill_latched"]},
+        {"ts": "15:20", "event": "order_placed", "symbol": "C", "kind": "cas"}])
+    snapshot[1]["archive"] = {"ok": True, "paused": None, "days": {"2026-10-06": {
+        "caught_up": True, "capped": False, "archived_bytes": 500, "source_bytes": 900}}}
+    path, data = snapshot
+    path.write_text(json.dumps(data))
+    return Evidence(path, lambda: NOW, archive_dir=days)
+
+
+def test_rejection_summary_groups_by_event_and_reason(evidence_with_history):
+    result = evidence_with_history.rejection_summary("2026-10-06", "cas_")
+    assert result["complete"] is True
+    top = result["refusal_groups"][0]
+    assert (top["event"], top["reason"], top["count"]) == ("cas_entry_rejected", "price_cap", 2)
+    assert top["sample_symbols"] == ["A", "B"] and top["kind"] is None
+    all_events = evidence_with_history.rejection_summary("2026-10-06")
+    assert all_events["blocked_reason_counts"] == [
+        {"event": "entry_gate", "blocked_reason": "kill_latched", "count": 1}]
+
+
+def test_search_audit_filters(evidence_with_history):
+    e = evidence_with_history
+    assert e.audit_search("2026-10-06", event="cas_*")["total_matches"] == 3
+    assert e.audit_search("2026-10-06", contains="OUTSIDE")["total_matches"] == 1
+    latest = e.audit_search("2026-10-06", limit=2)
+    assert latest["total_matches"] == 5 and [r["ts"] for r in latest["matches"]] == ["15:19", "15:20"]
+    assert e.audit_days()["days"][0]["complete"] is True
+
+
+@pytest.mark.parametrize("day", ["../snapshot", "2026-10-6", "2026-02-30", "2026-09-01",
+                                 "2026-10-07", 20261006, None])
+def test_audit_history_rejects_bad_or_out_of_window_dates(evidence_with_history, day):
+    with pytest.raises(ValueError):
+        evidence_with_history.audit_search(day)
+
+
+@pytest.mark.parametrize("kwargs", [{"event": "CAS.*"}, {"event": "a" * 70}, {"contains": "x" * 81},
+                                    {"limit": 0}, {"limit": 101}, {"limit": True}])
+def test_audit_search_rejects_bad_filters(evidence_with_history, kwargs):
+    with pytest.raises(ValueError):
+        evidence_with_history.audit_search("2026-10-06", **kwargs)
+
+
+def test_unarchived_day_reports_not_archived(evidence_with_history):
+    result = evidence_with_history.audit_search("2026-10-05")
+    assert result["day_status"] == "not_archived" and result["total_matches"] == 0
+
+
+def test_history_tool_over_http(auth, evidence_with_history):
+    verifier, token = auth
+    app = build(CFG, evidence_with_history, verifier)
+    with TestClient(app, base_url="https://kadima.test") as client:
+        headers = {"Accept": "application/json, text/event-stream", "Authorization": "Bearer " + token()}
+        request = {"jsonrpc": "2.0", "id": 1, "method": "tools/call", "params": {
+            "name": "summarize_rejections", "arguments": {"date": "2026-10-06", "event_prefix": "cas_"}}}
+        result = client.post("/mcp", json=request, headers=headers).json()["result"]
+        assert result["structuredContent"]["refusal_groups"][0]["count"] == 2
+        request["params"]["arguments"] = {"date": "../../etc/passwd"}
+        assert client.post("/mcp", json=request, headers=headers).json()["result"]["isError"]
+
+
+def test_collector_archive_failure_does_not_block_snapshot(monkeypatch):
+    monkeypatch.setattr(collector, "service_state", lambda: {})
+    monkeypatch.setattr(collector, "disk_source", lambda: {})
+    monkeypatch.setattr(collector, "audit_tail", lambda now: {"ok": True, "rows": []})
+    monkeypatch.setattr(collector, "get_local", lambda name, token: {"ok": False, "error": "x"})
+    def broken(now):
+        raise RuntimeError("disk exploded")
+    monkeypatch.setattr(archive, "run", broken)
+    snapshot = collector.collect("t")
+    assert snapshot["archive"] == {"ok": False, "error": "RuntimeError"}
+    assert "completed_at" in snapshot
+
+
+def test_archive_budget_is_small_during_market_hours():
+    trading = datetime.fromisoformat("2026-10-15T11:00:00+05:30")
+    evening = datetime.fromisoformat("2026-10-15T19:00:00+05:30")
+    saturday = datetime.fromisoformat("2026-10-17T11:00:00+05:30")
+    assert archive.run_budget(trading) == archive.MARKET_BUDGET < archive.run_budget(evening)
+    assert archive.run_budget(saturday) == archive.OFF_HOURS_BUDGET

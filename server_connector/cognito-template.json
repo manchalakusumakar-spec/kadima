@@ -1,11 +1,12 @@
 {
   "AWSTemplateFormatVersion": "2010-09-09",
-  "Description": "Dedicated KADIMA read-only connector login. No EC2, IAM, broker or trading changes.",
+  "Description": "Dedicated KADIMA read-only connector login for Claude (and optionally ChatGPT). No EC2, IAM, broker or trading changes.",
   "Parameters": {
     "ChatGPTRedirectUri": {
       "Type": "String",
-      "Description": "Exact OAuth callback copied from this ChatGPT connection; never guess it.",
-      "AllowedPattern": "https://chatgpt[.]com/connector(?:_platform_oauth_redirect|/oauth/[A-Za-z0-9_-]+)"
+      "Description": "Optional. Exact OAuth callback copied from a ChatGPT connection; leave empty for Claude only. Never guess it.",
+      "AllowedPattern": "^$|https://chatgpt[.]com/connector(?:_platform_oauth_redirect|/oauth/[A-Za-z0-9_-]+)",
+      "Default": ""
     },
     "LoginDomainPrefix": {
       "Type": "String",
@@ -107,7 +108,8 @@
           "IdToken": "minutes",
           "RefreshToken": "days"
         }
-      }
+      },
+      "Condition": "HasChatGPT"
     },
     "LoginDomain": {
       "Type": "AWS::Cognito::UserPoolDomain",
@@ -132,6 +134,55 @@
           "Ref": "ChatGPTClient"
         },
         "UseCognitoProvidedValues": true
+      },
+      "Condition": "HasChatGPT"
+    },
+    "ClaudeClient": {
+      "Type": "AWS::Cognito::UserPoolClient",
+      "DependsOn": "ReadOnlyResource",
+      "Properties": {
+        "UserPoolId": {
+          "Ref": "OperatorPool"
+        },
+        "ClientName": "kadima-claude-readonly",
+        "GenerateSecret": false,
+        "AllowedOAuthFlowsUserPoolClient": true,
+        "AllowedOAuthFlows": [
+          "code"
+        ],
+        "AllowedOAuthScopes": [
+          "openid",
+          "kadima/read"
+        ],
+        "SupportedIdentityProviders": [
+          "COGNITO"
+        ],
+        "CallbackURLs": [
+          "https://claude.ai/api/mcp/auth_callback"
+        ],
+        "PreventUserExistenceErrors": "ENABLED",
+        "EnableTokenRevocation": true,
+        "AccessTokenValidity": 15,
+        "IdTokenValidity": 15,
+        "RefreshTokenValidity": 7,
+        "TokenValidityUnits": {
+          "AccessToken": "minutes",
+          "IdToken": "minutes",
+          "RefreshToken": "days"
+        }
+      }
+    },
+    "ClaudeLoginBranding": {
+      "Type": "AWS::Cognito::ManagedLoginBranding",
+      "DependsOn": "LoginDomain",
+      "Properties": {
+        "UserPoolId": {
+          "Ref": "OperatorPool"
+        },
+        "ClientId": {
+          "Ref": "ClaudeClient"
+        },
+        "UseCognitoProvidedValues": true
       }
     }
   },
@@ -144,10 +195,34 @@
     "ClientId": {
       "Value": {
         "Ref": "ChatGPTClient"
-      }
+      },
+      "Condition": "HasChatGPT"
     },
     "ReadScope": {
       "Value": "kadima/read"
+    },
+    "ClaudeClientId": {
+      "Value": {
+        "Ref": "ClaudeClient"
+      },
+      "Description": "Enter this as the OAuth client ID in Claude's custom connector dialog; leave the secret empty."
+    },
+    "ClaudeRedirectUri": {
+      "Value": "https://claude.ai/api/mcp/auth_callback"
+    }
+  },
+  "Conditions": {
+    "HasChatGPT": {
+      "Fn::Not": [
+        {
+          "Fn::Equals": [
+            {
+              "Ref": "ChatGPTRedirectUri"
+            },
+            ""
+          ]
+        }
+      ]
     }
   }
 }

@@ -1,4 +1,14 @@
-# KADIMA server diagnostics connector — 0.1.0
+# KADIMA server diagnostics connector — 0.2.0
+
+**0.2.0 (17 Oct 2026):** adds Claude as a client (see [CLAUDE_SETUP.md](CLAUDE_SETUP.md))
+and three audit-history tools over a sanitized 10-day copy of the audit log:
+`list_audit_days`, `search_audit`, `summarize_rejections`. The collector builds
+that copy incrementally (`archive.py`): ~1 MB of new log per 30 s during market
+hours, 4 MB after hours, 25 MB/day cap, pauses below 1.5 GB or 10% free disk.
+Same allowlist/redaction as the snapshot, widened only by diagnostic fields
+(exception text, raw broker responses and tokens stay excluded).
+
+0.1.0 notes follow.
 
 Prepared 6 October 2026. **Source implemented and locally tested; AWS deployment,
 TLS routing, OAuth account connection and live tool discovery are not verified.**
@@ -13,6 +23,9 @@ grant an entry permit, enable execution, or prove that a future trade will fill.
 | `get_strategy_readiness` | separate `cas`, `cas_legacy`, `gamma`, `index_scalp`, `stock_fast`, `move_capture` evidence |
 | `get_execution_evidence` | bounded local positions/ledger/audit; strategy attribution by explicit kind or signal ID only |
 | `get_recent_diagnostics` | bounded sanitized audit events and entry-block reasons |
+| `list_audit_days` | retained days, copy progress, whether each day is complete |
+| `search_audit` | one day; plain-text and event-name filters; up to 100 matches |
+| `summarize_rejections` | one day's refusals grouped by event, reason and explicit kind |
 
 `cas` means the newer CASLane; `cas_legacy` means legacy `cas_blast`. The newer
 priority endpoint is not evidence of legacy CAS readiness. An unlabelled
