@@ -126,10 +126,10 @@ def retain_for_gain(gain):
     return 0.75 if gain >= 1.0 else 0.65 if gain >= 0.35 else RETAIN_PROFIT
 
 
-def ratchet(entry, peak, previous, structural):
+def ratchet(entry, peak, previous, structural, activation=None):
     """Both CE and PE are long premiums: their protection prices only rise."""
     if not positive(entry, peak, structural):
         raise ValueError('Missing position protection')
-    active = peak >= entry * (1 + ACTIVATION)
+    active = peak >= entry * (1 + (activation or ACTIVATION))
     trail = entry + (peak - entry) * retain_for_gain(peak / entry - 1) if active else structural
     return max(previous or 0, structural, trail), active

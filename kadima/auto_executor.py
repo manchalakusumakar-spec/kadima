@@ -554,6 +554,14 @@ class AutoExecutor:
         for pos in list(self.state.positions.values()):
             if pos.index != index_name or pos.status != 'open' or pos.kind in ('cas','MANUAL_PROTECTED'):
                 continue
+            if getattr(pos, 'kind', None) == 'gamma_blast':
+                from . import trend_rules
+                if trend_rules.mode() != 'off':
+                    try:
+                        trend_rules.update_band_stop(pos, chain, spot, self.state.premium_tracker,
+                                                     trade_policy.COST_RESERVE)
+                    except Exception as exc:  # noqa: BLE001 - never block structure updates
+                        audit.log('band_stop_error', signal_id=pos.signal_id, error=str(exc)[:200])
             result = self._structure(chain, pos.direction, spot)
             quote = chain.quotes.get(pos.token)
             if result is None or quote is None:
@@ -694,6 +702,15 @@ class AutoExecutor:
         if structure is None:
             return self._reject('fresh_structure_or_valid_expiry_unavailable', index_name, direction)
         swing_level, days_to_expiry = structure
+        if kind == 'gamma_blast':
+            # Trader rules 2026-10-19: day trend, gamma with trend, band stop, min-risk entry.
+            from . import trend_rules
+            gate = trend_rules.entry_gate(index_name, chain.index.token, direction, spot,
+                                          snap.vwap if snap is not None else None, now_ist())
+            if gate.get('block'):
+                return self._reject(gate['block'], index_name, direction)
+            if gate.get('stop_level') is not None:
+                swing_level = gate['stop_level']
 
         last_poll = getattr(chain, '_last_poll', 0)
         if not last_poll or not 0 <= time.monotonic() - last_poll <= 30:
@@ -736,8 +753,9 @@ class AutoExecutor:
                 option_type=r.quote.opt_type, ltp=r.quote.ltp, bid=r.quote.bid,
                 ask=r.quote.ask, delta=r.quote.delta, volume=r.quote.volume,
                 open_interest=r.quote.oi,
-                stop_price=trade_policy.premium_stop(spot, swing_level, r.quote.strike,
-                                                    r.quote.ltp, days_to_expiry, direction))
+                stop_price=_bounded_entry_stop(kind, trade_policy.premium_stop(
+                    spot, swing_level, r.quote.strike, r.quote.ltp, days_to_expiry, direction),
+                    r.quote, self.state.premium_tracker))
             for r in ranked
         ]
 
@@ -1070,6 +1088,17 @@ class AutoExecutor:
                     pos.effective_stop, active = celestial.trail_stop(pos.entry_price,pos.peak_price,
                         pos.effective_stop,structural,celestial.retain_fraction(pos.signal_id))
             pos.trail_active = pos.trail_active or active
+            from . import trend_rules
+            managed = trend_rules.managed_stop(
+                pos, ltp, self.state.premium_tracker,
+                celestial.retain_fraction(pos.signal_id) if celestial.enabled() else None, now)
+            if managed is not None:
+                band_base, band_eff, band_active, band_reason = managed
+                if band_reason and not pos.exit_reason:
+                    pos.exit_reason = band_reason
+                elif band_base is not None:
+                    structural = pos.structural_stop = band_base
+                    pos.effective_stop, pos.trail_active = band_eff, bool(band_active)
             storage.upsert_position(pos)
             # A queued exit remains binding after cancellation, restart or rebound.
             reason = pos.exit_reason
@@ -1110,6 +1139,8 @@ class AutoExecutor:
                     if lock < ltp and lock > (pos.effective_stop or 0):
                         pos.effective_stop = lock
                         storage.upsert_position(pos)
+                        from . import trend_rules
+                        trend_rules.note_lock(pos.signal_id, lock)
                         audit.log('celestial_exit_softened', signal_id=pos.signal_id,
                                   signal=reason, stop=round(lock, 2), ltp=ltp)
                     reason = None
@@ -1315,3 +1346,13 @@ AutoExecutor.forecast_manual_buy = (serialized(_hf_forecast_manual_buy)
 
 
 EXECUTOR = AutoExecutor()
+
+
+def _bounded_entry_stop(kind, stop, quote, tracker):
+    """Trader rules 2026-10-19: gamma entry stop gets the 35% hard cap and is kept
+    outside the premium's own noise. Other kinds unchanged."""
+    if kind != 'gamma_blast' or stop is None:
+        return stop
+    from . import trend_rules
+    return trend_rules.entry_stop(stop, quote.ltp,
+                                  trend_rules.tracker_samples(tracker, quote.token))

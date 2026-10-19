@@ -281,12 +281,12 @@ def set_retain(signal_id, value):
                   'DO UPDATE SET retain=MAX(retain,excluded.retain)', (signal_id, value))
 
 
-def trail_stop(entry, peak, previous, structural, retain=.5):
+def trail_stop(entry, peak, previous, structural, retain=.5, activation=None):
     if not all(finite(v, .000001) for v in (entry, peak, structural)):
         raise ValueError('Missing protection inputs')
     from .trade_policy import ACTIVATION, retain_for_gain
     gain = peak / entry - 1
-    active = gain >= ACTIVATION - 1e-12   # 2026-10-19: was .05 (shared with trade_policy)
+    active = gain >= (activation or ACTIVATION) - 1e-12   # 2026-10-19: was .05 (shared with trade_policy)
     fraction = max(retain, retain_for_gain(gain))
     stop = entry + (peak-entry) * fraction if active else structural
     return max(previous or 0, structural, stop), active
