@@ -1101,8 +1101,18 @@ class AutoExecutor:
                     reason = decision.reason if decision.should_exit else None
 
             if not reason and celestial.enabled() and not is_mcx and pos.kind != 'cas':
-                from .celestial_exit import evaluate
+                from .celestial_exit import evaluate, SOFT_REASONS
                 reason = evaluate(pos, ltp, now)
+                # 2026-10-19: in profit, an adverse signal only locks breakeven;
+                # the trail / structural stop decides the actual exit.
+                if reason in SOFT_REASONS and ltp > pos.entry_price:
+                    lock = pos.entry_price * (1 + trade_policy.COST_RESERVE)
+                    if lock < ltp and lock > (pos.effective_stop or 0):
+                        pos.effective_stop = lock
+                        storage.upsert_position(pos)
+                        audit.log('celestial_exit_softened', signal_id=pos.signal_id,
+                                  signal=reason, stop=round(lock, 2), ltp=ltp)
+                    reason = None
 
             if reason:
                 self._close_position(pos, ltp, reason)

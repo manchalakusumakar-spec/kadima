@@ -5,6 +5,15 @@ from datetime import datetime
 from . import celestial
 from .utils import now_ist
 
+# 2026-10-19 early-exit fix: EMA/VWAP breaks need this many consecutive
+# completed one-minute candles; while a trade is in profit these signals
+# only lock breakeven (see auto_executor) instead of exiting outright.
+CONFIRM_CANDLES = 2
+SOFT_REASONS = frozenset({
+    'premium_below_completed_1m_ema9', 'underlying_lost_vwap',
+    'opposite_gamma_confirmed', 'opposite_shield_active',
+    'directional_oi_reversed', 'fresh_catalyst_risk_block'})
+
 
 def connection():
     c = celestial.connection()
@@ -41,39 +50,45 @@ def evaluate(pos, ltp, now=None):
     minute = now.replace(second=0, microsecond=0)
     last = datetime.fromisoformat(state['ts']) if state else None
     previous_minute = datetime.fromisoformat(state['minute']) if state else None
+    evidence = celestial.health('structure:' + pos.index)
+    live = bool(evidence and celestial.fresh(evidence['ts'], now)
+                and celestial.fresh(evidence.get('spot_at'), now))
+    beyond = None
+    if live:
+        vwap, spot = evidence.get('vwap'), evidence.get('spot')
+        if celestial.finite(vwap, .000001) and celestial.finite(spot, .000001):
+            beyond = (pos.direction == 'CE' and spot < vwap) or (pos.direction == 'PE' and spot > vwap)
     # Gaps reset the indicator, never fill missing candles with invented prices.
     if last is None or not 0 <= (now-last).total_seconds() <= 90 or last.date() != now.date():
-        state = dict(minute=minute.isoformat(), ts=now.isoformat(), close=ltp, count=0, ema=None)
+        state = dict(minute=minute.isoformat(), ts=now.isoformat(), close=ltp, count=0, ema=None,
+                     below=0, vwap_breaks=0, beyond=None)
     elif minute > previous_minute:
         if (minute-previous_minute).total_seconds() != 60:
-            state.update(count=0, ema=None)
+            state.update(count=0, ema=None, below=0, vwap_breaks=0, beyond=None)
         close = state['close']
         state['ema'] = close if state['ema'] is None else .2*close + .8*state['ema']
         state['count'] += 1
+        # 2026-10-19: count consecutive COMPLETED 1m closes, not a single tick.
+        state['below'] = state.get('below', 0) + 1 if close < state['ema'] else 0
+        state['vwap_breaks'] = state.get('vwap_breaks', 0) + 1 if state.get('beyond') else 0
         state['minute'] = minute.isoformat()
-    state.update(ts=now.isoformat(), close=ltp)
+    state.update(ts=now.isoformat(), close=ltp, beyond=beyond)
     with c:
         c.execute('INSERT OR REPLACE INTO celestial_exit_state VALUES (?,?)',
                   (pos.signal_id, json.dumps(state, allow_nan=False)))
-    quote = celestial.health('quote:' + pos.exchange + ':' + pos.token)
-    if quote and celestial.fresh(quote['ts'], now):
-        bid, ask = quote.get('bid'), quote.get('ask')
-        if bid and ask and 200*(ask-bid)/(ask+bid) > 3:
-            return 'spread_widened_above_3pct'
-    if state['count'] >= 9 and ltp < state['ema']:
+    # 2026-10-19: spread width is an exit-pricing concern only (cheap expiry
+    # strikes routinely quote >3% wide) - it no longer forces an exit.
+    if state['count'] >= 9 and state.get('below', 0) >= CONFIRM_CANDLES and ltp < state['ema']:
         return 'premium_below_completed_1m_ema9'
-    evidence = celestial.health('structure:' + pos.index)
-    if evidence and celestial.fresh(evidence['ts'], now) and celestial.fresh(evidence.get('spot_at'), now):
-        vwap, spot = evidence.get('vwap'), evidence.get('spot')
-        if celestial.finite(vwap, .000001) and celestial.finite(spot, .000001):
-            if (pos.direction == 'CE' and spot < vwap) or (pos.direction == 'PE' and spot > vwap):
-                return 'underlying_lost_vwap'
+    if live:
+        if beyond and state.get('vwap_breaks', 0) >= CONFIRM_CANDLES:
+            return 'underlying_lost_vwap'
         opposite = 'PE' if pos.direction == 'CE' else 'CE'
         if evidence.get('direction') == opposite and evidence.get('score', 0) >= 70:
             return 'opposite_gamma_confirmed'
         if evidence.get('shield_direction') == opposite and (evidence.get('shield_score') or 0) >= 70:
             return 'opposite_shield_active'
-        if evidence.get('oi_direction') == opposite:
+        if evidence.get('oi_direction') == opposite and evidence.get('score', 0) >= 70:
             return 'directional_oi_reversed'
     news = celestial.news_impact(pos.index, pos.direction, now)
     if news['news_blocked']:

@@ -12,8 +12,8 @@ from .shield_confirmation import SHIELD_MIN_SCORE, ShieldEvidence, is_shield_con
 GAMMA_MIN_SCORE = 70.0
 
 RISK_FRACTION = 0.15
-ACTIVATION = 0.05
-RETAIN_PROFIT = 0.50
+ACTIVATION = 0.15     # 2026-10-19: was 0.05 - trail armed on noise and exited near breakeven
+RETAIN_PROFIT = 0.50  # base retain; widens with gain via retain_for_gain()
 ENTRY_BUFFER = 0.025
 EXIT_BUFFER = 0.025
 COST_RESERVE = 0.01  # round-trip reserve as a fraction of purchase premium
@@ -121,10 +121,15 @@ def lots_within_allocation(allocation, entry_limit, stop, lot_size, maximum):
                       int(allocation // (entry_limit * (1 + COST_RESERVE) * lot_size))))
 
 
+def retain_for_gain(gain):
+    """Fraction of peak gain kept once the trail is armed (2026-10-19 ladder)."""
+    return 0.75 if gain >= 1.0 else 0.65 if gain >= 0.35 else RETAIN_PROFIT
+
+
 def ratchet(entry, peak, previous, structural):
     """Both CE and PE are long premiums: their protection prices only rise."""
     if not positive(entry, peak, structural):
         raise ValueError('Missing position protection')
     active = peak >= entry * (1 + ACTIVATION)
-    trail = entry + (peak - entry) * RETAIN_PROFIT if active else structural
+    trail = entry + (peak - entry) * retain_for_gain(peak / entry - 1) if active else structural
     return max(previous or 0, structural, trail), active

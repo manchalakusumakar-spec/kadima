@@ -284,9 +284,9 @@ def set_retain(signal_id, value):
 def trail_stop(entry, peak, previous, structural, retain=.5):
     if not all(finite(v, .000001) for v in (entry, peak, structural)):
         raise ValueError('Missing protection inputs')
+    from .trade_policy import ACTIVATION, retain_for_gain
     gain = peak / entry - 1
-    active = gain >= .05 - 1e-12
-    fraction = max(retain, .8 if gain >= .75 else .75 if gain >= .35 else
-                   .7 if gain >= .2 else .6 if gain >= .1 else .5)
+    active = gain >= ACTIVATION - 1e-12   # 2026-10-19: was .05 (shared with trade_policy)
+    fraction = max(retain, retain_for_gain(gain))
     stop = entry + (peak-entry) * fraction if active else structural
     return max(previous or 0, structural, stop), active
