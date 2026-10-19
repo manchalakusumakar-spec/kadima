@@ -28,7 +28,7 @@ def main():
         text = (root / f).read_text()
         for pf, old, new in PATCHES:
             if pf != f: continue
-            if text.count(new) == 1 and text.count(old) == 0:
+            if new in text:
                 continue  # already applied
             if text.count(old) != 1:
                 sys.exit(f'ABORT: anchor not found exactly once in {f}; nothing written:\n{old[:300]}')
