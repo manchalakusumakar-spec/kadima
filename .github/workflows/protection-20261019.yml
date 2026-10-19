@@ -1,0 +1,41 @@
+name: 19-Oct protection fixes
+on:
+  push:
+    branches: [claude/trend-band-rules-20261019]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      ORDER_PLACEMENT_ENABLED: '0'
+      KADIMA_CELESTIAL_ENABLED: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # all branches: the installer tests use three live snapshots
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Make sure the live-code snapshot branches are present
+        run: |
+          for b in main codex/ec2-release-source-20261014 \
+                   codex/verify-sebi-cas-circular-before-cutoff-change live/2026-10-11; do
+            git rev-parse --verify -q "origin/$b" >/dev/null || git fetch --no-tags origin "+refs/heads/$b:refs/remotes/origin/$b"
+          done
+      - name: Overlay config.py (the EC2 snapshot omits it; tests only)
+        run: git show origin/main:kadima/config.py > kadima/config.py
+      - name: Compile
+        run: python -m compileall -q kadima tools
+      - name: Import the patched executor
+        run: KADIMA_DATA_DIR=$(mktemp -d) python -c "import kadima.auto_executor, kadima.celestial_adoption, kadima.protection, kadima.trend_rules; print('imports ok')"
+      - name: Exit fix tests
+        run: KADIMA_DATA_DIR=$(mktemp -d) python tools/test_exit_fix_20261019.py
+      - name: Trend and band rule tests
+        run: KADIMA_DATA_DIR=$(mktemp -d) python tools/test_trend_rules_20261019.py
+      - name: Protection tests (CF basis, near-stop checks, re-entry, rejections, broker stop shadow)
+        run: KADIMA_DATA_DIR=$(mktemp -d) python tools/test_protection_20261019.py
+      - name: Installers on three live-code snapshots (install, re-run, --live, rollback)
+        run: bash tools/test_installers_20261019.sh "$PWD" "$(mktemp -d)"

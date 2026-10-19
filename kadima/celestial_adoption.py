@@ -51,7 +51,7 @@ def inspect(executor, broker_rows, book, owned_ids, owned_tags, master):
                 view['reason']='contract_or_lot_mismatch'
             else:
                 try:
-                    price = float(row.get('buyavgprice') or 0)
+                    price = float(__import__(__package__ + '.protection', fromlist=['entry_basis']).entry_basis(row) or 0)  # 2026-10-19 CF fix
                 except (TypeError,ValueError):
                     price = 0
                 if not math.isfinite(price) or price<=0:

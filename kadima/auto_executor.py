@@ -668,7 +668,17 @@ class AutoExecutor:
             # zero daily-loss enforcement until now.
             return self._reject("daily_loss_limit_breached", index_name, direction)
         if execution_ledger.seen(source_signal_id):
-            return self._reject("signal_already_submitted", index_name, direction)
+            # 2026-10-19: one bounded re-entry path after a loss stop-out.
+            from . import protection
+            try:
+                reentry = protection.reentry_signal(kind, index_name, direction, source_signal_id,
+                                                    tier, score, execution_ledger.seen)
+            except Exception as exc:  # noqa: BLE001
+                audit.log('reentry_error', error=str(exc)[:200])
+                reentry = None
+            if reentry is None:
+                return self._reject("signal_already_submitted", index_name, direction)
+            source_signal_id = reentry
         if index_name in getattr(self, '_manual_carryforward_underlyings', set()):
             return self._reject("manual_carryforward_same_underlying", index_name, direction)
         with self._lock:
@@ -1100,6 +1110,11 @@ class AutoExecutor:
                     structural = pos.structural_stop = band_base
                     pos.effective_stop, pos.trail_active = band_eff, bool(band_active)
             storage.upsert_position(pos)
+            try:
+                from . import protection
+                protection.broker_stop_plan(pos, ltp, self.state.premium_tracker, now)
+            except Exception as exc:  # noqa: BLE001 - shadow logging only
+                audit.log('broker_stop_shadow_error', error=str(exc)[:200])
             # A queued exit remains binding after cancellation, restart or rebound.
             reason = pos.exit_reason
             if daily_loss_breached:
@@ -1209,7 +1224,15 @@ class AutoExecutor:
                 self.check_exits()
             except Exception as exc:                    # noqa: BLE001
                 audit.log("position_monitor_loop_error", error=str(exc))
-            self._stop.wait(max(0.1, POSITION_MONITOR_INTERVAL_SEC - (time.monotonic() - started)))
+            interval = POSITION_MONITOR_INTERVAL_SEC
+            try:
+                # 2026-10-19: rejected-order alerts and faster checks near a stop.
+                from . import protection
+                protection.watch_rejections()
+                interval = min(interval, protection.monitor_interval(self))
+            except Exception as exc:                    # noqa: BLE001
+                audit.log("protection_loop_error", error=str(exc)[:200])
+            self._stop.wait(max(0.1, interval - (time.monotonic() - started)))
 
     def stop(self) -> None:
         self._stop.set()

@@ -63,3 +63,9 @@ SELLs rejected with no alert. Full incident list: `codex_tasks/2026-10-19_protec
 
 **Deviation noted:** trail activation is max(15%, 2x premium noise), not fully noise-driven -
 a calm option arming at +2-3% would recreate the 19-Oct early-exit problem.
+
+**Update 21:30 IST (Claude):** built B (CF entry basis), D (3 s near-stop checks), E (re-entry,
+max 2/signal/day, 5-min cooldown, requires trend rules live), F (rejection alerts, live) and C in
+shadow only; every feature has its own switch in `trend_rules.json`. Broker-stop live placement
+deliberately not built: an SL fill KADIMA does not reconcile could leave a phantom open position
+or trigger a second sell. Left for Codex with the reconciliation design and a 1-lot test.

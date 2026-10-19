@@ -8,6 +8,27 @@ Trader priority (Kusumakar, verbatim intent): **saving is more important than ea
 losing a chance is also not acceptable.** Every change below follows that rule: hard protection
 against crashes and wrong-side trades, loose on normal noise so winners can run.
 
+## STATUS (updated 19-Oct 21:30 IST) — read first
+
+Built by Claude on this branch, tested in GitHub Actions (`.github/workflows/protection-20261019.yml`):
+- **B** `kadima/protection.py:entry_basis` + one-line hook in `celestial_adoption.py` (switch `cf_protect`).
+  Note: in the 17-Oct lineage CF positions are still "observed, not managed"; the EC2 lineage
+  (13-Oct snapshot) adopts CF, so the entry-basis fix is what it needed.
+- **D** adaptive monitor 3 s / 10 s (switch `monitor`).
+- **E** re-entry after a loss stop-out, max 2 per signal per day, 5-min cooldown, only when
+  the trend/band rules are live (switch `reentry`).
+- **F** rejected-order watchdog with broker reason, KADIMA/MANUAL source, Telegram + Celestial
+  health key `rejections` (switch `watchdog`, live by default - alerts only).
+- **C** broker second-line stop: **shadow only** (`broker_stop_shadow` audit lines with the exact
+  trigger/limit it would place or modify). Live placement NOT built.
+- **G** data only: Celestial health keys `trend:<INDEX>` and `rejections`. No dashboard card yet.
+Installer: `tools/install_protection_20261019.py` (after the exit-fix and trend installers).
+
+**Remaining for Codex:** C live (reconcile broker-side SL fills with the execution ledger and
+external-order detection - our SL order must be "owned", an SL fill must close the position,
+never a double sell; then the 1-lot market-hours test), and the G dashboard card. Everything
+else below is reference.
+
 ## Hard constraints (do not break)
 
 - Buy-only CE/PE. LIMIT orders only (SL orders must be STOPLOSS_LIMIT, never market).

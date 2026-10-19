@@ -37,6 +37,11 @@ FLIP_CANDLES = 2           # completed 15-min closes needed to flip a trend
 BAND_FRESH_SEC = 600       # forecast point must be for the next 10 minutes
 STATE_FRESH_SEC = 90       # band stop older than this is ignored (fallback)
 GAMMA_KINDS = ('gamma_blast',)
+# Every feature is shadow until switched; the rejection watchdog only alerts, so it
+# starts live. broker_stop is shadow-only in this build (live is refused in code).
+FEATURE_DEFAULTS = {'mode': 'shadow', 'entry': 'half', 'cf_protect': 'shadow',
+                    'reentry': 'shadow', 'monitor': 'shadow', 'watchdog': 'live',
+                    'broker_stop': 'shadow'}
 
 _cfg = {'at': 0.0, 'value': None}
 _lock = threading.Lock()
@@ -48,7 +53,7 @@ _trend: dict = {}
 def _config():
     now = time.monotonic()
     if _cfg['value'] is None or now - _cfg['at'] > 30:
-        value = {'mode': 'shadow', 'entry': 'half'}
+        value = dict(FEATURE_DEFAULTS)
         try:
             with open(os.path.join(DATA_DIR, 'trend_rules.json')) as f:
                 value.update({k: v for k, v in json.load(f).items() if k in value})
@@ -56,8 +61,9 @@ def _config():
             pass
         value['mode'] = os.environ.get('KADIMA_TREND_RULES', value['mode'])
         value['entry'] = os.environ.get('KADIMA_TREND_ENTRY', value['entry'])
-        if value['mode'] not in ('off', 'shadow', 'live'):
-            value['mode'] = 'shadow'
+        for key, default in FEATURE_DEFAULTS.items():
+            if key != 'entry' and value[key] not in ('off', 'shadow', 'live'):
+                value[key] = default
         if value['entry'] not in ('half', 'band'):
             value['entry'] = 'half'
         _cfg.update(at=now, value=value)
@@ -66,6 +72,11 @@ def _config():
 
 def mode():
     return _config()['mode']
+
+
+def feature(name):
+    """off | shadow | live for a protection feature (see FEATURE_DEFAULTS)."""
+    return _config().get(name, 'shadow')
 
 
 def live():
@@ -199,6 +210,12 @@ def day_trend(name, token, spot, vwap, now=None):
             st.update(since=now.isoformat(), against=0)
         label = st['label']
     if label != old:
+        try:
+            from . import celestial
+            celestial.health('trend:' + name, dict(label=label, since=now.isoformat(),
+                             frm=old, threshold_pct=round(threshold_pct(data), 3), mode=mode()))
+        except Exception:  # noqa: BLE001 - display only
+            pass
         audit.log('day_trend_changed', index=name, frm=old, to=label, spot=spot, vwap=vwap,
                   threshold_pct=round(threshold_pct(data), 3), mode=mode())
     return label
@@ -278,7 +295,7 @@ def bound_stop(stop, entry, ltp, noise, previous=None):
 
 
 # ------------------------------------------------------------------ rule 4 + entry
-def entry_gate(index_name, token, direction, spot, vwap, now=None):
+def _entry_gate_impl(index_name, token, direction, spot, vwap, now=None):
     """Called for gamma entries. Returns {'block': reason|None, 'stop_level': x|None}.
     In shadow mode it logs what it would have done and never blocks."""
     now = now or now_ist()
@@ -308,7 +325,7 @@ def entry_gate(index_name, token, direction, spot, vwap, now=None):
             'stop_level': stop_level(direction, b) if b is not None and block is None else None}
 
 
-def entry_stop(stop, ltp, samples, now=None):
+def _entry_stop_impl(stop, ltp, samples, now=None):
     """Bound a candidate's initial premium stop (hard cap + noise floor)."""
     if not live() or not _finite(stop, ltp):
         return stop
@@ -336,7 +353,7 @@ def save_state(signal_id, state):
                   (str(signal_id), json.dumps(state, allow_nan=False, default=str)))
 
 
-def note_lock(signal_id, price):
+def _note_lock_impl(signal_id, price):
     st = load_state(signal_id)
     if _finite(price) and price > (st.get('lock') or 0):
         st['lock'] = price
@@ -393,7 +410,7 @@ def update_band_stop(pos, chain, spot, tracker, cost_reserve=0.01, now=None):
                   lock=round(lock, 2), trend=label, band_source=b['source'], mode=mode())
 
 
-def managed_stop(pos, ltp, tracker, retain=None, now=None):
+def _managed_stop_impl(pos, ltp, tracker, retain=None, now=None):
     """(structural, effective, trail_active, reason) for a band-managed position, or
     None to keep the existing logic. Live mode only."""
     from . import celestial, trade_policy
@@ -423,3 +440,33 @@ def managed_stop(pos, ltp, tracker, retain=None, now=None):
                                            activation=activation)
     eff = max(eff, st.get('lock') or 0)
     return base, eff, active, None
+
+
+# ------------------------------------------------------------------ safe wrappers
+# A failure inside these rules must never stop KADIMA's existing entry or exit
+# logic: on any error they fall back to "no change" and leave an audit line.
+def _safe(name, fallback, fn, *a, **k):
+    try:
+        return fn(*a, **k)
+    except Exception as exc:  # noqa: BLE001
+        try:
+            audit.log('trend_rules_error', where=name, error=str(exc)[:200])
+        except Exception:  # noqa: BLE001
+            pass
+        return fallback(*a, **k) if callable(fallback) else fallback
+
+
+def entry_gate(*a, **k):
+    return _safe('entry_gate', {}, _entry_gate_impl, *a, **k)
+
+
+def entry_stop(stop, *a, **k):
+    return _safe('entry_stop', lambda stop, *a, **k: stop, _entry_stop_impl, stop, *a, **k)
+
+
+def note_lock(*a, **k):
+    return _safe('note_lock', None, _note_lock_impl, *a, **k)
+
+
+def managed_stop(*a, **k):
+    return _safe('managed_stop', None, _managed_stop_impl, *a, **k)
