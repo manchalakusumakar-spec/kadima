@@ -105,3 +105,9 @@ trail for v2 scalps only. T1/T2 in the Trade Audit are now +12% / +20%. Half-boo
 exits (not in the executor) - Codex task. Stop-and-reverse stays off: reds often resumed the original side.
 **Trader rule (20:09 IST):** no other trade may stand in the way of a Gamma Blast; open trades can be exited
 to make room. Design pending confirmation (exit order, which trades, which Gamma tier).
+**Update 20:30 IST — Gamma Blast priority (trader):** a Gamma Blast passing the auto-trade threshold (60)
+and the day-trend rule may force other trades out when capital/risk headroom or a manual position blocks it.
+Exitable: KADIMA's own trades including CAS, and manual trades ("even manual need to be exited if it is a
+hindrance"). Order: Scalp -> Intraday/other -> CAS -> Manual, weakest P&L first; one exit per attempt, so
+only what is needed. Never another Gamma, never past the daily loss limit, never on kill switch or pending
+order. `kadima/gamma_priority.py`, hook in `evaluate_and_enter`; shadow first (`gamma_priority_would_exit`).

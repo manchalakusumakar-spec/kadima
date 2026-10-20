@@ -32,6 +32,8 @@ jobs:
         run: KADIMA_DATA_DIR=$(mktemp -d) python -c "import kadima.auto_executor, kadima.scalp_v2, kadima.trade_audit, kadima.market_session_gate, kadima.cas_executor, kadima.trend_rules; print('imports ok')"
       - name: Scalp v2, index lane, threshold 60, Blocked-by column
         run: KADIMA_DATA_DIR=$(mktemp -d) python tools/test_scalp_v2_20261020.py
+      - name: Gamma Blast priority
+        run: KADIMA_DATA_DIR=$(mktemp -d) python tools/test_gamma_priority_20261020.py
       - name: 19-Oct suites still pass
         run: |
           for t in test_exit_fix_20261019 test_trend_rules_20261019 test_protection_20261019; do

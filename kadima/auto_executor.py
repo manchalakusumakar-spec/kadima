@@ -597,6 +597,10 @@ class AutoExecutor:
             source_signal_id, tier, score, candidate_id=candidate_id,
             manual_request=manual_request, shield_context=shield_context,
             fast_context=fast_context, gap_context=gap_context)
+        if kind == 'gamma_blast' and not (result or {}).get('ok'):
+            from . import gamma_priority   # 2026-10-20: nothing may block a Gamma Blast
+            gamma_priority.make_room(self, index_name, direction, (result or {}).get('reason'),
+                                     source_signal_id)
         if kind == 'gamma_blast':
             timing_recorder.record_evaluation(
                 signal_id=source_signal_id, kind=kind, index_name=index_name,
