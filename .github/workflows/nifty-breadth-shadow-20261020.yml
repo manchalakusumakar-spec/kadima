@@ -1,0 +1,31 @@
+name: NIFTY 50 breadth shadow
+on:
+  push:
+    branches: [claude/nifty50-breadth-shadow-20261020]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      ORDER_PLACEMENT_ENABLED: '0'
+      KADIMA_CELESTIAL_ENABLED: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - run: git rev-parse --verify -q origin/claude/forecast-milestones-chart-20261020 >/dev/null || git fetch --no-tags origin "+refs/heads/claude/forecast-milestones-chart-20261020:refs/remotes/origin/claude/forecast-milestones-chart-20261020"
+      - name: Overlay config.py (tests only)
+        run: git show origin/main:kadima/config.py > kadima/config.py
+      - run: python -m compileall -q kadima tools
+      - run: KADIMA_DATA_DIR=$(mktemp -d) python tools/test_nifty_breadth_20261020.py
+      - run: KADIMA_DATA_DIR=$(mktemp -d) python tools/test_forecast_scoring_20261020.py
+      - run: KADIMA_DATA_DIR=$(mktemp -d) python tools/test_forecast_milestones_20261020.py
+      - run: KADIMA_DATA_DIR=$(mktemp -d) python tools/test_hourly_forecast.py
+      - run: KADIMA_DATA_DIR=$(mktemp -d) python tools/test_trend_rules_20261019.py
+      - run: bash tools/test_install_nifty_breadth_shadow_20261020.sh "$PWD"

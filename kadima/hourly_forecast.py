@@ -407,6 +407,9 @@ class HourlyForecaster:
             if slot:
                 self.ensure_forecast(name, st, slot, now)
             self.update_actuals(name, now)
+            if slot and name == 'NIFTY':
+                from . import nifty_breadth             # shadow record only; never alters a forecast
+                nifty_breadth.observe(conn(self.db), name, M.slot_label(slot[0]), now)
 
     def _live_inputs(self, st, now):
         """Spot (if fresh), ATM IV and Bull Shield from engine memory. No broker calls."""
