@@ -118,3 +118,10 @@ prior low; two 1-min index closes the wrong side of VWAP within 3 min of entry; 
 quote snapshots. Switches `partial` and `thesis_exits` in scalp_v2.json (shadow); `--live` sets all live.
 Not built (trader deferred): Gamma thesis exits, Intraday regime stops, fast-entry cancel/retry, narrowing
 the manual same-index block.
+**Update 21:30 IST — switched live (trader: "our motto is profit, do whatever required"):** Celestial score
+threshold set to 60 (revision 51); scalp v2 live in place of v1 for index scalps (mode, priority_poll, partial,
+thesis_exits = live); Gamma Blast priority live. Not changed: CAS (live design kept), stock scalps (v1),
+parallel-orders/retry and constituent radar (scheduled after 1-2 clean sessions). Rollback: installer
+--shadow / --gamma-priority-shadow (instant, re-read in 30 s) or --rollback for code.
+Ops fix 21:25: ~/kadima-audit was on a side branch since 13-Oct, so daily pushes failed; switched to main,
+backfilled 14/15/16/19-Oct, push script now always rebases on and pushes to main.
