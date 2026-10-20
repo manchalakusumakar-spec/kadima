@@ -17,6 +17,7 @@ applies every existing entry gate.
 """
 from __future__ import annotations
 
+import hashlib
 import json
 import math
 import os
@@ -42,6 +43,9 @@ FINALIZE_GIVE_UP_SEC = 900   # 15 min after the slot: score it, or mark it incom
 # may enter accuracy scoring. A provisional (unclosed) value is shown, never scored.
 VERIFIED_SOURCES = ('closed_5m', 'closed_1m')
 PROVISIONAL = 'provisional'
+# A closed candle this many points or more from the path in force publishes a revised
+# path (display only). The original rows stay as issued and remain the only thing scored.
+REFORECAST_PTS = 5.0
 CALIBRATION_DAYS = 120
 
 FORECASTER = None            # set by Engine; read by control_api
@@ -68,6 +72,13 @@ CREATE TABLE IF NOT EXISTS hourly_forecast_points (
     forecast REAL NOT NULL, upper REAL NOT NULL, lower REAL NOT NULL,
     actual REAL,
     PRIMARY KEY (day, index_name, slot, k)
+);
+CREATE TABLE IF NOT EXISTS hourly_forecast_revisions (
+    day TEXT NOT NULL, index_name TEXT NOT NULL, slot TEXT NOT NULL, rev INTEGER NOT NULL,
+    trigger_k INTEGER NOT NULL, trigger_ts TEXT NOT NULL, trigger_actual REAL NOT NULL,
+    deviation_pts REAL NOT NULL, published_at TEXT NOT NULL, points TEXT NOT NULL,
+    receipt TEXT NOT NULL,
+    PRIMARY KEY (day, index_name, slot, rev)
 );
 CREATE TABLE IF NOT EXISTS hourly_forecast_model (
     index_name TEXT PRIMARY KEY, params TEXT NOT NULL, updated_at TEXT NOT NULL
@@ -193,6 +204,16 @@ def candle_close(token, start, interval, closed_only=True):
     return r['close'] if r and M.finite(r['close']) else None
 
 
+def candle_bar(token, start):
+    """The 5-minute bar starting at `start` for the panel's candles (display only)."""
+    r = storage.conn().execute(
+        'SELECT open, high, low, close, closed FROM candles WHERE token=? AND interval=5 AND start_ts=?',
+        (token, start.isoformat())).fetchone()
+    if not r or not all(M.finite(r[k]) for k in ('open', 'high', 'low', 'close')):
+        return None
+    return dict(open=r['open'], high=r['high'], low=r['low'], close=r['close'], closed=bool(r['closed']))
+
+
 def candle_open(token, start):
     for interval in (1, 3, 5):
         r = storage.conn().execute(
@@ -226,6 +247,17 @@ def actual_at(token, ts, now):
 
 def verified(p):
     return p['actual'] is not None and p['actual_source'] in VERIFIED_SOURCES
+
+
+def revisions(day, name, slot, db=None):
+    return conn(db).execute('SELECT * FROM hourly_forecast_revisions WHERE day=? AND index_name=? AND slot=? '
+                            'ORDER BY rev', (day, name, slot)).fetchall()
+
+
+def receipt(day, name, slot, rev, trigger_k, path):
+    """Short hash of exactly what was published, so a revision can be checked later."""
+    blob = json.dumps([day, name, slot, rev, trigger_k, path], separators=(',', ':'), sort_keys=True)
+    return hashlib.sha256(blob.encode()).hexdigest()[:16]
 
 
 # ---------------------------------------------------------------- params
@@ -498,12 +530,56 @@ class HourlyForecaster:
             if changed:
                 pts = c.execute('SELECT * FROM hourly_forecast_points WHERE day=? AND index_name=? AND slot=? '
                                 'ORDER BY k', (r['day'], name, r['slot'])).fetchall()
+            try:
+                self.reforecast(r, pts, now)
+            except Exception as exc:                    # noqa: BLE001 - display only, never block scoring
+                audit.log('hourly_forecast_reforecast_error', error=str(exc)[:200])
             done = all(verified(p) for p in pts)
             age = (now - end_ts).total_seconds()
             if done and age >= 0:
                 self.finalize(r, pts)
             elif age >= FINALIZE_GIVE_UP_SEC or (give_up and age >= 0):
                 self.mark_incomplete(r, pts)
+
+    def reforecast(self, r, pts, now):
+        """Publish a revised path each time a closed candle sits REFORECAST_PTS or more from the
+        path in force (the original, then the latest revision). The revision is the original path
+        shifted to pass through that close. Provisional prices never trigger one. Display only:
+        the original rows are untouched and revisions are never scored or used for tuning."""
+        if not pts:
+            return []
+        day, name, slot = r['day'], r['index_name'], r['slot']
+        active = {p['k']: p['forecast'] for p in pts}
+        last_k, rev = 0, 0
+        for v in revisions(day, name, slot, self.db):
+            active.update({q['k']: q['forecast'] for q in json.loads(v['points'])})
+            last_k, rev = v['trigger_k'], v['rev']
+        end_k, made = pts[-1]['k'], []
+        c = conn(self.db)
+        for p in pts:
+            if p['k'] <= last_k or p['k'] >= end_k or not verified(p):
+                continue
+            dev = round(p['actual'] - active[p['k']], 2)
+            if abs(dev) < REFORECAST_PTS:
+                continue
+            shift = p['actual'] - p['forecast']
+            path = [dict(k=q['k'], ts=q['ts'], forecast=round(q['forecast'] + shift, 2),
+                         upper=round(q['upper'] + shift, 2), lower=round(q['lower'] + shift, 2))
+                    for q in pts if q['k'] > p['k']]
+            rev += 1
+            rc = receipt(day, name, slot, rev, p['k'], path)
+            with c:
+                c.execute('INSERT OR IGNORE INTO hourly_forecast_revisions (day,index_name,slot,rev,trigger_k,'
+                          'trigger_ts,trigger_actual,deviation_pts,published_at,points,receipt) '
+                          'VALUES (?,?,?,?,?,?,?,?,?,?,?)',
+                          (day, name, slot, rev, p['k'], p['ts'], p['actual'], dev, now.isoformat(),
+                           json.dumps(path), rc))
+            audit.log('hourly_forecast_reforecast', index=name, day=day, slot=slot, rev=rev,
+                      trigger_ts=p['ts'], deviation_pts=dev, receipt=rc)
+            active.update({q['k']: q['forecast'] for q in path})
+            last_k = p['k']
+            made.append(rev)
+        return made
 
     def mark_incomplete(self, r, pts):
         """Give-up with a required actual missing or unverified: keep the slot unscored and out
@@ -669,6 +745,7 @@ def view(name, day=None, engine=None, now=None, db=None):
     if (st is not None and day == now.date() and st.is_live_tick and st.last_updated
             and M.finite(st.spot) and 0 <= (now - st.last_updated).total_seconds() <= SPOT_FRESH_SEC):
         live_price = dict(ts=st.last_updated.isoformat(), price=st.spot)
+    token = INDICES[name].token if name in INDICES else None
     slots = []
     for start, end in M.SLOTS:
         label, t0, t1 = M.slot_label(start), _slot_dt(day, start), _slot_dt(day, end)
@@ -682,13 +759,22 @@ def view(name, day=None, engine=None, now=None, db=None):
                         'WHERE day=? AND index_name=? AND slot=? ORDER BY k',
                         (day.isoformat(), name, label)).fetchall()
         p_up = r['prob_up']
+        points = [dict(p) for p in pts]
+        if token:
+            for p in points:
+                p['bar'] = candle_bar(token, _dt(p['ts']) - timedelta(minutes=M.STEP_MIN))
         base.update(
             status=r['status'], generated_at=r['generated_at'], late=bool(r['late']),
             anchor=r['anchor'], direction=r['direction'], prob_up=p_up,
             prob_direction=round(max(p_up, 1 - p_up), 4),
             projected_pct=r['projected_pct'], projected_pts=r['projected_pts'], band_pts=r['band_pts'],
             analog_matches=r['n_eff'], model_version=r['model_version'],
-            points=[dict(p) for p in pts],
+            points=points,
+            revisions=[dict(rev=v['rev'], trigger_k=v['trigger_k'], trigger_ts=v['trigger_ts'],
+                            trigger_actual=v['trigger_actual'], deviation_pts=v['deviation_pts'],
+                            published_at=v['published_at'], receipt=v['receipt'],
+                            points=json.loads(v['points']))
+                       for v in revisions(day.isoformat(), name, label, db)],
             score=None if r['status'] != 'final' else dict(
                 dir_hit=None if r['dir_hit'] is None else bool(r['dir_hit']), mae_pts=r['mae_pts'],
                 coverage=r['coverage'], end_error_pts=r['end_error_pts'], actual_pct=r['actual_pct']),

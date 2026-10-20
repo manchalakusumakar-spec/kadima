@@ -17,7 +17,7 @@ import time
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 WWW = os.environ.get('KADIMA_WWW', '/var/www/html')
 DASH = os.path.join(WWW, 'dashboard.html')
-TAG = '<script src="celestial_forecast_embed.js?v=4"></script><!-- HOURLY FORECAST v1 -->'
+TAG = '<script src="celestial_forecast_embed.js?v=5"></script><!-- HOURLY FORECAST v1 -->'
 OLD = re.compile(r'<script src="celestial_forecast_embed\.js[^"]*"></script><!-- HOURLY FORECAST v1 -->')
 
 
@@ -37,6 +37,9 @@ def main():
             f.write(OLD.sub('', html))
         print('REMOVED - Daily Price Memory is back. Backup:', DASH + '.bak-' + stamp)
         return 0
+    for name in ('forecast.html', 'celestial_forecast_embed.js'):
+        if os.path.exists(os.path.join(WWW, name)):
+            shutil.copy2(os.path.join(WWW, name), os.path.join(WWW, name + '.bak-' + stamp))
     shutil.copy2(os.path.join(ROOT, 'web', 'hourly_forecast.html'), os.path.join(WWW, 'forecast.html'))
     shutil.copy2(os.path.join(ROOT, 'web', 'celestial_forecast_embed.js'),
                  os.path.join(WWW, 'celestial_forecast_embed.js'))
@@ -44,7 +47,8 @@ def main():
         if TAG not in html:
             with open(DASH, 'w') as f:
                 f.write(OLD.sub(TAG, html))
-        print('UPDATED - panel files refreshed; dashboard.html already has the forecast.')
+        print('UPDATED - panel files refreshed (old copies saved as *.bak-' + stamp + '); '
+              'dashboard.html already has the forecast.')
         return 0
     shutil.copy2(DASH, DASH + '.bak-' + stamp)
     i = html.lower().rfind('</body>')

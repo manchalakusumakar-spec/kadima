@@ -8,10 +8,13 @@
  * re-rendered area would reload each time, so the forecast frame lives once on
  * <body> and is laid over a placeholder that sits where the hidden section was.
  * The placeholder is re-created whenever the dashboard re-renders; the frame is not.
+ *
+ * Also a layout-only move: the Gamma Blast section is placed directly above Trade Audit.
+ * The section keeps its own nodes, handlers and polling; nothing about Gamma Blast changes.
  */
 (function () {
   var HIDE_TITLE = 'Daily Price Memory';
-  var SRC = '/forecast.html?embed=1&v=4';
+  var SRC = '/forecast.html?embed=1&v=5';
   var FRAME_ID = 'kadima-hourly-forecast-frame';
   var HOLD_ID = 'kadima-hourly-forecast-slot';
   var frameHeight = 600;
@@ -36,6 +39,21 @@
       }
     }
     return null;
+  }
+
+  function sectionTitled(prefix) {
+    var hs = document.querySelectorAll('section h2');
+    for (var i = 0; i < hs.length; i++) {
+      if (hs[i].textContent.trim().indexOf(prefix) === 0) return hs[i].closest('section');
+    }
+    return null;
+  }
+
+  function gammaAboveAudit() {
+    var g = sectionTitled('Gamma Blast');
+    var a = document.getElementById('tradeAudit') || sectionTitled('Trade Audit');
+    if (!g || !a || g === a || g.parentElement !== a.parentElement) return;
+    if (a.compareDocumentPosition(g) & Node.DOCUMENT_POSITION_FOLLOWING) a.parentElement.insertBefore(g, a);
   }
 
   function frame() {
@@ -78,7 +96,10 @@
   function sync() {
     var f = frame(), h = document.getElementById(HOLD_ID);
     try {
-      var ch = f.contentDocument && f.contentDocument.documentElement.scrollHeight;
+      // Height of the forecast content itself. The frame document's scrollHeight is never
+      // less than the frame, so it could grow but never shrink, leaving blank space below.
+      var b = f.contentDocument && f.contentDocument.body;
+      var ch = b && Math.ceil(b.getBoundingClientRect().height);
       if (ch && Math.abs(ch - frameHeight) > 4) {
         frameHeight = ch;
         if (h) h.style.height = ch + 'px';
@@ -93,7 +114,7 @@
     f.style.height = frameHeight + 'px';
   }
 
-  function tick() { place(); sync(); }
+  function tick() { gammaAboveAudit(); place(); sync(); }
 
   function start() {
     frame();
