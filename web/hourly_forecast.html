@@ -10,7 +10,7 @@
     --bg: #0b0f17; --panel: #121826; --panel2: #182033; --line: #253049;
     --text: #e6ebf5; --muted: #8b97b0; --dim: #5d6882;
     --up: #2fd08a; --down: #ff5c6c; --flat: #f2b84b; --fc: #8fb4ff; --band: rgba(143,180,255,.14);
-    --actual: #f5f7fb; --live: #ffd166; --accent: #7c9cff;
+    --actual: #f5f7fb; --live: #ffd166; --accent: #7c9cff; --rev: #ff9f45;
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text);
@@ -44,7 +44,10 @@
   .lots input { width: 52px; text-align: center; }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 12px; }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
-  .card.live { border-color: var(--live); }
+  .card.live { border-color: var(--live); grid-column: 1 / -1; }
+  .revs { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 11.5px; color: var(--muted); margin-top: 4px; }
+  .revs b { color: var(--rev); }
+  .revs code { font: 11px ui-monospace, Menlo, monospace; color: var(--dim); }
   .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .slot { font-weight: 700; font-size: 15px; }
   .chip { font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 999px; background: var(--panel2); color: var(--muted); letter-spacing: .4px; }
@@ -132,6 +135,8 @@
     <span><i style="border-color:var(--actual)"></i>Actual</span>
     <span><i style="border-color:var(--band);border-top-width:8px"></i>Forecast band</span>
     <span><i style="border-color:var(--live);border-top-width:6px;width:6px;border-radius:50%"></i>Live price</span>
+    <span><i style="border-color:var(--rev)"></i>Reforecast (each ≥5 pt miss on a closed candle)</span>
+    <span><i style="border-color:var(--flat);border-top-style:dashed"></i>Provisional bar (not scored)</span>
   </div>
 
   <div class="grid" id="grid"></div>
@@ -190,47 +195,108 @@
   }
 
   // ---------------------------------------------------------------- chart
+  // Original forecast (dashed, never changes) + band, 5-minute candles, and every published
+  // reforecast. Closed bars are solid; a provisional (unclosed) bar is dashed and never scored.
+  const TRIGGER = 5;
   function chart(s) {
     const pts = s.points || [];
     if (!pts.length) return `<div class="empty">${s.status === 'missed' ? 'No forecast was made for this slot' : 'Forecast at ' + s.slot}</div>`;
-    const W = 340, H = 170, L = 50, R = 18, T = 10, B = 22;
+    const wide = s.status === 'live';
+    const W = wide ? 1000 : 340, H = wide ? 300 : 170, L = wide ? 58 : 50, R = wide ? 110 : 18, T = wide ? 26 : 10, B = 22;
+    const fs = wide ? 11 : 9;
     const t0 = Date.parse(s.start_ts), t1 = Date.parse(s.end_ts);
     const xs = ts => L + (Date.parse(ts) - t0) / (t1 - t0) * (W - L - R);
+    const xm = ms => L + (ms - t0) / (t1 - t0) * (W - L - R);
+    const revs = s.revisions || [];
     const all = [s.anchor];
-    pts.forEach(p => { all.push(p.upper, p.lower); if (p.actual != null) all.push(p.actual); });
+    pts.forEach(p => {
+      all.push(p.upper, p.lower);
+      if (p.actual != null) all.push(p.actual);
+      if (p.bar) all.push(p.bar.high, p.bar.low);
+    });
+    revs.forEach(v => v.points.forEach(q => all.push(q.forecast)));
+    if (revs.length) revs[revs.length - 1].points.forEach(q => all.push(q.forecast + TRIGGER, q.forecast - TRIGGER));
     if (s.live) all.push(s.live.price);
     let lo = Math.min(...all), hi = Math.max(...all); const pad = (hi - lo) * .08 || 5; lo -= pad; hi += pad;
     const ys = v => T + (hi - v) / (hi - lo) * (H - T - B);
+    const XY = (ts, v) => xs(ts).toFixed(1) + ' ' + ys(v).toFixed(1);
+    const path = a => a.map((p, i) => (i ? 'L' : 'M') + XY(p.ts, p.v)).join(' ');
     const start = {ts: s.start_ts, v: s.anchor};
     const fc = [start, ...pts.map(p => ({ts: p.ts, v: p.forecast}))];
     const up = [start, ...pts.map(p => ({ts: p.ts, v: p.upper}))];
     const dn = [start, ...pts.map(p => ({ts: p.ts, v: p.lower}))];
-    const act = [start, ...pts.filter(p => p.actual != null).map(p => ({ts: p.ts, v: p.actual}))];
-    if (s.live) act.push({ts: s.live.ts, v: s.live.price});
-    const path = a => a.map((p, i) => (i ? 'L' : 'M') + xs(p.ts).toFixed(1) + ' ' + ys(p.v).toFixed(1)).join(' ');
-    const band = path(up) + ' ' + dn.slice().reverse().map(p => 'L' + xs(p.ts).toFixed(1) + ' ' + ys(p.v).toFixed(1)).join(' ') + ' Z';
+    const band = path(up) + ' ' + dn.slice().reverse().map(p => 'L' + XY(p.ts, p.v)).join(' ') + ' Z';
     let g = '';
     for (let k = 0; k <= 4; k++) {
       const v = lo + (hi - lo) * k / 4, y = ys(v);
       g += `<line x1="${L}" x2="${W - R}" y1="${y}" y2="${y}" stroke="var(--line)" stroke-width="1"/>` +
-           `<text x="${L - 6}" y="${y + 3}" fill="var(--dim)" font-size="9" text-anchor="end">${Math.round(v)}</text>`;
+           `<text x="${L - 6}" y="${y + 3}" fill="var(--dim)" font-size="${fs}" text-anchor="end">${Math.round(v)}</text>`;
     }
-    const step = pts.length > 6 ? 3 : 1;
+    const step = !wide && pts.length > 6 ? 3 : 1;
     [start, ...pts.map(p => ({ts: p.ts}))].forEach((p, i) => {
-      if (i % step === 0 || i === pts.length) g += `<text x="${xs(p.ts)}" y="${H - 6}" fill="var(--dim)" font-size="9" text-anchor="middle">${hhmm(p.ts)}</text>`;
+      if (i % step === 0 || i === pts.length) g += `<text x="${xs(p.ts)}" y="${H - 6}" fill="var(--dim)" font-size="${fs}" text-anchor="middle">${hhmm(p.ts)}</text>`;
+    });
+    g += `<path d="${band}" fill="var(--band)"/>`;
+    g += `<path d="${path(fc)}" fill="none" stroke="var(--fc)" stroke-width="2" stroke-dasharray="5 4"/>`;
+    // reforecasts: every one stays visible; the latest is bold with its ±5 trigger lines
+    revs.forEach((v, i) => {
+      const cur = i === revs.length - 1;
+      const line = [{ts: v.trigger_ts, v: v.trigger_actual}, ...v.points.map(q => ({ts: q.ts, v: q.forecast}))];
+      if (cur) {
+        const off = d => path(line.map(p => ({ts: p.ts, v: p.v + d})));
+        g += `<path d="${off(TRIGGER)}" fill="none" stroke="var(--rev)" stroke-width="1" stroke-dasharray="1 3"/>` +
+             `<path d="${off(-TRIGGER)}" fill="none" stroke="var(--rev)" stroke-width="1" stroke-dasharray="1 3"/>`;
+      }
+      g += `<path d="${path(line)}" fill="none" stroke="var(--rev)" stroke-width="${cur ? 2.4 : 1.4}" opacity="${cur ? 1 : .5}"${cur ? '' : ' stroke-dasharray="6 3"'}/>`;
+      const x = xs(v.trigger_ts);
+      g += `<line x1="${x}" x2="${x}" y1="${T}" y2="${H - B}" stroke="var(--rev)" stroke-dasharray="3 3" opacity=".6"/>` +
+           `<text x="${x}" y="${T - (wide ? 8 : 1)}" fill="var(--rev)" font-size="${fs}" font-weight="700" text-anchor="middle">R${v.rev}</text>` +
+           `<circle cx="${x}" cy="${ys(v.trigger_actual)}" r="${wide ? 5 : 3.5}" fill="none" stroke="var(--rev)" stroke-width="2">` +
+           `<title>R${v.rev}: ${hhmm(v.trigger_ts)} closed ${v.deviation_pts > 0 ? '+' : ''}${v.deviation_pts} pts from the ${i ? 'R' + (i) : 'original'} path · receipt ${esc(v.receipt)}</title></circle>`;
+    });
+    // candles
+    const cw = Math.max(3, (W - L - R) / pts.length * .56);
+    pts.forEach(p => {
+      const b = p.bar; if (!b) return;
+      const end = Date.parse(p.ts), cx = xm(end - 150000);
+      const closed = p.actual_source === 'closed_5m' || p.actual_source === 'closed_1m' || b.closed;
+      const col = closed ? (b.close >= b.open ? 'var(--up)' : 'var(--down)') : 'var(--flat)';
+      const dash = closed ? '' : ' stroke-dasharray="3 2"';
+      const yt = ys(Math.max(b.open, b.close)), hgt = Math.max(1.5, ys(Math.min(b.open, b.close)) - yt);
+      g += `<line x1="${cx}" x2="${cx}" y1="${ys(b.high)}" y2="${ys(b.low)}" stroke="${col}" stroke-width="1.2"${dash}/>` +
+           `<rect x="${cx - cw / 2}" y="${yt}" width="${cw}" height="${hgt}" fill="${closed ? col : 'none'}" stroke="${col}" stroke-width="1.3"${dash}/>`;
+    });
+    const act = [start, ...pts.filter(p => p.actual != null).map(p => ({ts: p.ts, v: p.actual}))];
+    if (s.live) act.push({ts: s.live.ts, v: s.live.price});
+    if (act.length > 1) g += `<path d="${path(act)}" fill="none" stroke="var(--actual)" stroke-width="${wide ? 1.4 : 2}" opacity="${pts.some(p => p.bar) ? .6 : 1}"/>`;
+    pts.filter(p => p.actual != null).forEach(p => {
+      const prov = p.actual_source === 'provisional';
+      g += `<circle cx="${xs(p.ts)}" cy="${ys(p.actual)}" r="${wide ? 3 : 2.2}" fill="${prov ? 'var(--panel)' : 'var(--actual)'}" stroke="${prov ? 'var(--flat)' : 'var(--actual)'}" stroke-width="1.4">` +
+           `<title>${hhmm(p.ts)} ${fmt(p.actual, 1)} · ${prov ? 'provisional, not scored' : 'closed candle'}</title></circle>`;
     });
     let dev = '';
     if (s.audit && s.audit.deviation_from) {
       const x = xs(s.audit.deviation_from);
       dev = `<line x1="${x}" x2="${x}" y1="${T}" y2="${H - B}" stroke="var(--flat)" stroke-width="1" stroke-dasharray="3 3"/>` +
-            `<text x="${Math.min(x + 3, W - 40)}" y="${T + 9}" fill="var(--flat)" font-size="9">deviated ${hhmm(s.audit.deviation_from)}</text>`;
+            `<text x="${Math.min(x + 3, W - R - 40)}" y="${T + 9}" fill="var(--flat)" font-size="${fs}">deviated ${hhmm(s.audit.deviation_from)}</text>`;
+    }
+    let labels = '';
+    if (wide) {
+      const last = pts[pts.length - 1], lab = [[last.forecast, 'original', 'var(--fc)']];
+      revs.forEach((v, i) => lab.push([v.points[v.points.length - 1].forecast, 'R' + v.rev + (i === revs.length - 1 ? ' latest' : ''), 'var(--rev)']));
+      lab.sort((a, b) => b[0] - a[0]);
+      let lastY = -99;
+      lab.forEach(([v, t, c]) => { let y = ys(v) + 4; if (y - lastY < 13) y = lastY + 13; lastY = y;
+        labels += `<text x="${W - R + 6}" y="${y}" font-size="${fs}" fill="${c}" font-weight="600">${t} ${fmt(v, 1)}</text>`; });
     }
     const liveDot = s.live ? `<circle cx="${xs(s.live.ts)}" cy="${ys(s.live.price)}" r="4" fill="var(--live)"><animate attributeName="r" values="3;5;3" dur="1.6s" repeatCount="indefinite"/></circle>` : '';
     return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Forecast versus actual ${s.slot} to ${s.slot_end}">
-      ${g}<path d="${band}" fill="var(--band)"/>
-      <path d="${path(fc)}" fill="none" stroke="var(--fc)" stroke-width="2" stroke-dasharray="5 4"/>
-      ${act.length > 1 ? `<path d="${path(act)}" fill="none" stroke="var(--actual)" stroke-width="2"/>` : ''}
-      ${dev}${liveDot}</svg>`;
+      ${g}${dev}${labels}${liveDot}</svg>${revs.length ? revList(revs) : ''}`;
+  }
+
+  function revList(revs) {
+    return '<div class="revs">' + revs.map((v, i) =>
+      `<span><b>R${v.rev}</b> ${hhmm(v.trigger_ts)} · ${v.deviation_pts > 0 ? '+' : ''}${fmt(v.deviation_pts, 1)} pts vs ${i ? 'R' + i : 'original'} · <code>${esc(v.receipt)}</code></span>`).join('') + '</div>';
   }
 
   function card(s) {
