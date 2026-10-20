@@ -96,3 +96,12 @@ Spot is a proxy for option prices - shadow validates on real premiums.
 **Not done here (Codex):** step 6 of the plan - 3 s cancel-and-retry-once for unfilled entry LIMIT
 orders - touches broker order handling and needs the fill reconciliation of fix/parallel-orders-retry;
 see `codex_tasks/2026-10-20_scalp_v2_follow_ups.md`.
+
+**Update 20:10 IST — v2 scalp exits follow the spec Scalp regime, refined (trader "OK"):** stop anchored in
+spot (level -/+ 1.5 x ATR) with 10% acting through lot sizing, not rejection; breakeven at +1R (spec's +6%
+was inside noise: removing it moved the replay from -0.39 to +0.47 pts/trade); +12% locks +6% and starts a
+1 x premium-ATR trail; +20% exits; the existing 5-min no-progress stop stays. These replace the 19-Oct +15%
+trail for v2 scalps only. T1/T2 in the Trade Audit are now +12% / +20%. Half-booking at +12% needs partial
+exits (not in the executor) - Codex task. Stop-and-reverse stays off: reds often resumed the original side.
+**Trader rule (20:09 IST):** no other trade may stand in the way of a Gamma Blast; open trades can be exited
+to make room. Design pending confirmation (exit order, which trades, which Gamma tier).

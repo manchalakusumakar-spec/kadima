@@ -23,3 +23,8 @@ Do not change the established architecture; every change behind a switch, shadow
 - v2 measures premium response from chain polls. Subscribing the ATM +/- 2 option tokens of an armed
   index to the WebSocket would give tick-level premium confirmation; the feed module is reviewed code,
   so this needs its own review.
+
+## 5. Partial exits (spec Scalp T1)
+- The executor closes whole positions only. Spec Scalp: book 50% at +12%, stop to +6%, trail the rest.
+  Add a partial SELL path (quantity = lots/2 rounded down, never below 1 lot left) with fill
+  reconciliation, then let `scalp_v2.managed_stop` return a PARTIAL decision at +12%.

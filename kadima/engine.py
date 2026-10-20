@@ -434,6 +434,7 @@ class Engine:
             if row['eligible']:
                 from .fast_momentum import signal_id
                 sid = signal_id(row)
+                scalp_v2.note_dispatch(row, sid)   # v2 exit plan (no-op for v1 rows)
                 trade_audit.safe_call(trade_audit.record, row, scalp_v2.audit_code(row), 'index_fast', sid)
                 result = auto_executor.EXECUTOR.evaluate_and_enter(
                     st.name,row['direction'],st.chain,st.spot,st.snap,row['days'],

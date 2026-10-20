@@ -1109,6 +1109,16 @@ class AutoExecutor:
                 elif band_base is not None:
                     structural = pos.structural_stop = band_base
                     pos.effective_stop, pos.trail_active = band_eff, bool(band_active)
+            if getattr(pos, 'kind', None) == 'fast_momentum':
+                from . import scalp_v2   # v2 scalps: +1R breakeven, +12% lock +6%, ATR trail, +20% exit
+                v2_stop = scalp_v2.managed_stop(pos, ltp)
+                if v2_stop is not None:
+                    v2_base, v2_eff, v2_active, v2_reason = v2_stop
+                    if v2_reason and not pos.exit_reason:
+                        pos.exit_reason = v2_reason
+                    else:
+                        structural = pos.structural_stop = v2_base
+                        pos.effective_stop, pos.trail_active = v2_eff, bool(v2_active)
             storage.upsert_position(pos)
             try:
                 from . import protection

@@ -182,7 +182,7 @@ try:
     check('v2 row has the executor fields', all(k in row for k in
           ('episode', 'token', 'symbol', 'exchange', 'direction', 'spot_stop', 'days', 'entry', 'stop', 't1', 't2', 'score')))
     check('v2 row keeps strategy fast_momentum for the executor', row['strategy'] == 'fast_momentum')
-    check('entry at ask, T1/T2 at 1R/2R', row['entry'] == 100.2 and row['t2'] > row['t1'] > row['entry'] > row['stop'])
+    check('entry at ask, T1 +12% and T2 +20% (spec Scalp targets)', row['entry'] == 100.2 and row['t1'] == round(100.2 * 1.12, 2) and row['t2'] == round(100.2 * 1.2, 2) and row['stop'] < row['entry'])
     trend_rules.day_trend = lambda *a, **k: 'DOWN'
     row = scalp_v2.build_row(st, trig, None, now)
     check('counter-trend scalp is blocked', 'counter_trend_scalp' in row['blocked_reasons'] and not row['eligible'])
@@ -220,6 +220,25 @@ finally:
         setattr(m, k, saved[k])
     os.environ.pop('KADIMA_SCALP_V2', None)
     scalp_v2._cfg.update(at=0.0, value=None)
+
+# ---------------------------------------------------------------- v2 exit ladder
+L = scalp_v2.ladder
+check('before +1R the stop stays at the initial stop', L(100, 104, 92, 2.0) == 92)
+check('+1R moves the stop to breakeven + costs', abs(L(100, 108.5, 92, 2.0) - 101.0) < 1e-9)
+check('+12% locks +6% (or the ATR trail if higher)', abs(L(100, 112, 92, 2.0) - 110.0) < 1e-9)
+check('trail is peak - 1 x premium ATR after +12%', abs(L(100, 118, 92, 2.0) - 116.0) < 1e-9)
+check('the ladder never moves the stop down', L(100, 104, 92, 2.0, previous=106.0) == 106.0)
+pos = types.SimpleNamespace(signal_id=990001, kind='fast_momentum', entry_price=100.0, peak_price=100.0)
+scalp_v2.note_dispatch(dict(engine='scalp_v2', entry=100.0, stop=92.0, stop_pct=8.0, prem_atr=2.0, episode='e1'), 990001)
+check('v2 position is managed: initial stop 8% below the fill', scalp_v2.managed_stop(pos, 100.0)[:3] == (92.0, 92.0, False))
+pos.peak_price = 113.0
+base, eff, active, reason = scalp_v2.managed_stop(pos, 112.0)
+check('managed stop ratchets with the peak', active and abs(eff - 111.0) < 1e-9 and reason is None)
+check('+20% target exits', scalp_v2.managed_stop(pos, 120.5)[3] == 'scalp_v2_target_20pct')
+check('a v1 scalp is not managed by v2', scalp_v2.managed_stop(types.SimpleNamespace(
+      signal_id=990002, kind='fast_momentum', entry_price=100.0, peak_price=100.0), 100.0) is None)
+check('a gamma position is not managed by v2', scalp_v2.managed_stop(types.SimpleNamespace(
+      signal_id=990001, kind='gamma_blast', entry_price=100.0, peak_price=100.0), 100.0) is None)
 
 # ---------------------------------------------------------------- index lane
 from kadima import market_session_gate as g  # noqa: E402

@@ -64,6 +64,12 @@ COOLDOWN_SEC = 300        # one trigger per index and direction per 5 minutes
 ARM_TTL_SEC = 90
 WINDOW = ((9, 25), (15, 10))
 MAX_SPREAD = 0.015
+# Exit ladder for v2 scalps (spec v1 Scalp regime, refined 2026-10-20):
+BE_AT_R = 1.0             # breakeven (+costs) once the peak reaches +1R (spec said +6%: inside noise)
+LOCK_AT = 0.12            # at +12% premium the stop goes to +6% and the ATR trail starts
+LOCK_PCT = 0.06
+TRAIL_PREM_ATR = 1.0      # trail = peak - 1 x 1-min premium ATR
+TARGET_PCT = 0.20         # +20% -> exit (half-booking at +12% needs partial exits: Codex task)
 DEFAULTS = {'mode': 'shadow', 'priority_poll': 'shadow'}
 MODES = ('off', 'shadow', 'live')
 
@@ -377,9 +383,13 @@ def build_row(st, trigger, lane=None, now=None):
             stop = max(stop, entry * (1 - trend_rules.HARD_CAP))
         if not _finite(stop) or stop >= entry:
             raise ValueError('invalid_premium_stop')
-        risk = trade_policy.risk_per_unit(entry, stop)
+        dist_atr = sign * (spot - trigger['spot_stop']) / trigger['atr']
+        row['prem_atr'] = round((entry - stop) / dist_atr, 4) if dist_atr > 0 else None
+        row['stop_pct'] = round((entry - stop) / entry * 100, 2)
+        row['breakeven_at'] = round(entry + BE_AT_R * (entry - stop), 2)
         row['score'] = score(trigger, label, move, ext)
-        row.update(entry=entry, stop=round(stop, 2), t1=round(entry + risk, 2), t2=round(entry + 2 * risk, 2),
+        row.update(entry=entry, stop=round(stop, 2), t1=round(entry * (1 + LOCK_AT), 2),
+                   t2=round(entry * (1 + TARGET_PCT), 2),
                    premium_move_pct=move, stage='SETUP_READY',
                    signal_delay_sec=round((now - datetime.fromisoformat(trigger['at'])).total_seconds(), 1))
         if trend_rules.against_trend(label, trigger['direction']):
@@ -439,6 +449,81 @@ def merge(st, v1_row, lane=None, record=True, now=None):
     except Exception as exc:  # noqa: BLE001 - never break the established lane
         audit.log('scalp_v2_merge_error', index=getattr(st, 'name', None), error=type(exc).__name__)
         return v1_row
+
+
+# ------------------------------------------------------------------ exits
+_plans: dict = {}
+
+
+def _conn():
+    from . import storage
+    c = storage.conn()
+    c.execute('CREATE TABLE IF NOT EXISTS scalp_v2_plans (signal_id INTEGER PRIMARY KEY, payload TEXT NOT NULL)')
+    return c
+
+
+def note_dispatch(row, sid):
+    """Remember a v2 row's exit plan for its signal id (survives restarts)."""
+    try:
+        if not isinstance(row, dict) or row.get('engine') != 'scalp_v2' or not row.get('entry'):
+            return
+        plan = dict(entry=row['entry'], stop=row['stop'], stop_pct=row['stop_pct'] / 100,
+                    prem_atr=row.get('prem_atr'), episode=row['episode'], active_stop=None)
+        c = _conn()
+        with c:
+            c.execute('INSERT OR IGNORE INTO scalp_v2_plans VALUES (?,?)', (int(sid), json.dumps(plan)))
+        _plans.pop(int(sid), None)
+    except Exception as exc:  # noqa: BLE001
+        audit.log('scalp_v2_plan_error', error=type(exc).__name__)
+
+
+def _plan(sid):
+    if sid in _plans:
+        return _plans[sid]
+    row = _conn().execute('SELECT payload FROM scalp_v2_plans WHERE signal_id=?', (int(sid),)).fetchone()
+    _plans[sid] = json.loads(row[0]) if row else None
+    return _plans[sid]
+
+
+def ladder(entry, peak, base, prem_atr, previous=None):
+    """Pure: the v2 scalp stop for this peak. Never moves down."""
+    from . import trade_policy
+    r = entry - base
+    stop = base
+    if peak >= entry + BE_AT_R * r - 1e-9:
+        stop = max(stop, entry * (1 + trade_policy.COST_RESERVE))
+    if peak >= entry * (1 + LOCK_AT) - 1e-9:
+        stop = max(stop, entry * (1 + LOCK_PCT))
+        if _finite(prem_atr):
+            stop = max(stop, peak - TRAIL_PREM_ATR * prem_atr)
+    return max(stop, previous or 0)
+
+
+def managed_stop(pos, ltp):
+    """(structural, effective, active, reason) for a position opened by v2, else None.
+    Replaces the generic +15% trail for v2 scalps only; never raises."""
+    try:
+        sid = getattr(pos, 'signal_id', None)
+        if sid is None or getattr(pos, 'kind', None) != 'fast_momentum':
+            return None
+        plan = _plan(int(sid))
+        entry = getattr(pos, 'entry_price', None)
+        if not plan or not _finite(entry, ltp):
+            return None
+        base = entry * (1 - plan['stop_pct'])
+        peak = max(getattr(pos, 'peak_price', None) or entry, ltp)
+        stop = ladder(entry, peak, base, plan.get('prem_atr'), plan.get('active_stop'))
+        if stop != plan.get('active_stop'):
+            plan['active_stop'] = stop
+            c = _conn()
+            with c:
+                c.execute('UPDATE scalp_v2_plans SET payload=? WHERE signal_id=?', (json.dumps(plan), int(sid)))
+            audit.log('scalp_v2_stop_moved', signal_id=sid, stop=round(stop, 2), peak=round(peak, 2))
+        reason = 'scalp_v2_target_20pct' if ltp >= entry * (1 + TARGET_PCT) - 1e-9 else None
+        return base, stop, stop > base, reason
+    except Exception as exc:  # noqa: BLE001 - fall back to the existing exit logic
+        audit.log('scalp_v2_exit_error', error=type(exc).__name__)
+        return None
 
 
 def audit_code(row):
