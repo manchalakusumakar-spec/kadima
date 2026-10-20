@@ -1,0 +1,37 @@
+name: 20-Oct forecast scoring integrity
+on:
+  push:
+    branches: [claude/forecast-scoring-integrity-20261020]
+  pull_request:
+    paths: ['kadima/hourly_forecast.py', 'tools/*forecast_scoring_20261020*', '.github/workflows/forecast-scoring-20261020.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      ORDER_PLACEMENT_ENABLED: '0'
+      KADIMA_CELESTIAL_ENABLED: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Make sure the base branch is present
+        run: git rev-parse --verify -q origin/claude/trend-band-rules-20261019 >/dev/null || git fetch --no-tags origin "+refs/heads/claude/trend-band-rules-20261019:refs/remotes/origin/claude/trend-band-rules-20261019"
+      - name: Overlay config.py (the EC2 snapshot omits it; tests only)
+        run: git show origin/main:kadima/config.py > kadima/config.py
+      - name: Compile
+        run: python -m compileall -q kadima tools
+      - name: Hourly forecast model tests
+        run: KADIMA_DATA_DIR=$(mktemp -d) python tools/test_hourly_forecast.py
+      - name: Scoring integrity tests
+        run: KADIMA_DATA_DIR=$(mktemp -d) python tools/test_forecast_scoring_20261020.py
+      - name: Installer (install, re-run, rollback, refuse unknown file)
+        run: bash tools/test_install_forecast_scoring_20261020.sh "$PWD"
+      - name: Trend and band rules still pass (they read forecast bands)
+        run: KADIMA_DATA_DIR=$(mktemp -d) python tools/test_trend_rules_20261019.py

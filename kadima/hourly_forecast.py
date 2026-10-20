@@ -37,7 +37,11 @@ HISTORY_DAYS = 90
 LOOP_SEC = 5
 ON_TIME_SEC = 120            # generated within 2 min of slot start = on time
 SPOT_FRESH_SEC = 30
-FINALIZE_GIVE_UP_SEC = 900   # finalize with whatever actuals exist after 15 min
+FINALIZE_GIVE_UP_SEC = 900   # 15 min after the slot: score it, or mark it incomplete
+# 2026-10-20 scoring integrity: only a closed candle that starts exactly at the target bar
+# may enter accuracy scoring. A provisional (unclosed) value is shown, never scored.
+VERIFIED_SOURCES = ('closed_5m', 'closed_1m')
+PROVISIONAL = 'provisional'
 CALIBRATION_DAYS = 120
 
 FORECASTER = None            # set by Engine; read by control_api
@@ -103,6 +107,9 @@ def conn(path=None):
         c = sqlite3.connect(path, timeout=30, check_same_thread=False)
         c.row_factory = sqlite3.Row
         c.executescript(SCHEMA)
+        cols = {r['name'] for r in c.execute('PRAGMA table_info(hourly_forecast_points)')}
+        if 'actual_source' not in cols:
+            c.execute('ALTER TABLE hourly_forecast_points ADD COLUMN actual_source TEXT')
         cache[path] = c
     return cache[path]
 
@@ -197,18 +204,28 @@ def candle_open(token, start):
 
 
 def actual_at(token, ts, now):
-    """Index price at a 5-minute mark: close of the 5-min bar ending there.
+    """(price, source) at a 5-minute mark: close of the bar ending exactly there.
 
-    A bar is only marked closed when the next tick arrives, which never
-    happens for 15:25-15:30 if the index stops ticking at 15:30. A minute
-    after the mark, the last stored price of that bar is final anyway.
+    source is 'closed_5m' / 'closed_1m' for a closed candle starting exactly at the
+    target bar (scorable), or PROVISIONAL for the last stored price of a bar that never
+    closed (display only: a bar closes on the next tick, which may never come).
     """
-    a = (candle_close(token, ts - timedelta(minutes=5), 5)
-         or candle_close(token, ts - timedelta(minutes=1), 1))
-    if a is None and now >= ts + timedelta(seconds=60):
+    a = candle_close(token, ts - timedelta(minutes=5), 5)
+    if a is not None:
+        return a, 'closed_5m'
+    a = candle_close(token, ts - timedelta(minutes=1), 1)
+    if a is not None:
+        return a, 'closed_1m'
+    if now >= ts + timedelta(seconds=60):
         a = (candle_close(token, ts - timedelta(minutes=5), 5, closed_only=False)
              or candle_close(token, ts - timedelta(minutes=1), 1, closed_only=False))
-    return a
+        if a is not None:
+            return a, PROVISIONAL
+    return None, None
+
+
+def verified(p):
+    return p['actual'] is not None and p['actual_source'] in VERIFIED_SOURCES
 
 
 # ---------------------------------------------------------------- params
@@ -467,13 +484,13 @@ class HourlyForecaster:
             changed = False
             for p in pts:
                 ts = _dt(p['ts'])
-                if p['actual'] is None and now >= ts + timedelta(seconds=5):
-                    a = actual_at(token, ts, now)
-                    if a is not None:
+                if not verified(p) and now >= ts + timedelta(seconds=5):
+                    a, source = actual_at(token, ts, now)
+                    if a is not None and (a, source) != (p['actual'], p['actual_source']):
                         with c:
-                            c.execute('UPDATE hourly_forecast_points SET actual=? WHERE day=? AND '
-                                      'index_name=? AND slot=? AND k=?',
-                                      (a, r['day'], name, r['slot'], p['k']))
+                            c.execute('UPDATE hourly_forecast_points SET actual=?, actual_source=? '
+                                      'WHERE day=? AND index_name=? AND slot=? AND k=?',
+                                      (a, source, r['day'], name, r['slot'], p['k']))
                         changed = True
             end_ts = _dt(pts[-1]['ts']) if pts else None
             if end_ts is None:
@@ -481,12 +498,28 @@ class HourlyForecaster:
             if changed:
                 pts = c.execute('SELECT * FROM hourly_forecast_points WHERE day=? AND index_name=? AND slot=? '
                                 'ORDER BY k', (r['day'], name, r['slot'])).fetchall()
-            done = all(p['actual'] is not None for p in pts)
+            done = all(verified(p) for p in pts)
             age = (now - end_ts).total_seconds()
-            if (done and age >= 0) or age >= FINALIZE_GIVE_UP_SEC or (give_up and age >= 0):
+            if done and age >= 0:
                 self.finalize(r, pts)
+            elif age >= FINALIZE_GIVE_UP_SEC or (give_up and age >= 0):
+                self.mark_incomplete(r, pts)
+
+    def mark_incomplete(self, r, pts):
+        """Give-up with a required actual missing or unverified: keep the slot unscored and out
+        of calibration. The original forecast rows are left exactly as issued."""
+        c = conn(self.db)
+        missing = [p['k'] for p in pts if not verified(p)]
+        with c:
+            c.execute("UPDATE hourly_forecasts SET status='incomplete', finalized_at=? WHERE day=? AND "
+                      "index_name=? AND slot=? AND status='live'",
+                      (now_ist().isoformat(), r['day'], r['index_name'], r['slot']))
+        audit.log('hourly_forecast_incomplete', index=r['index_name'], day=r['day'], slot=r['slot'],
+                  unverified_k=missing)
 
     def finalize(self, r, pts):
+        if not pts or not all(verified(p) for p in pts):
+            return self.mark_incomplete(r, pts)
         c = conn(self.db)
         points = [(p['k'], p['forecast'], p['upper'], p['lower']) for p in pts]
         actual = [p['actual'] for p in pts]
@@ -645,7 +678,7 @@ def view(name, day=None, engine=None, now=None, db=None):
             base['status'] = 'pending' if now < t0 + timedelta(seconds=ON_TIME_SEC) and day == now.date() else 'missed'
             slots.append(base)
             continue
-        pts = c.execute('SELECT k, ts, forecast, upper, lower, actual FROM hourly_forecast_points '
+        pts = c.execute('SELECT k, ts, forecast, upper, lower, actual, actual_source FROM hourly_forecast_points '
                         'WHERE day=? AND index_name=? AND slot=? ORDER BY k',
                         (day.isoformat(), name, label)).fetchall()
         p_up = r['prob_up']
