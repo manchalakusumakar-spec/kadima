@@ -1,0 +1,41 @@
+name: 20-Oct scalp v2 + lane/threshold/audit fixes
+on:
+  push:
+    branches: [claude/scalp-v2-early-entry-20261020]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 15
+    env:
+      ORDER_PLACEMENT_ENABLED: '0'
+      KADIMA_CELESTIAL_ENABLED: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # the installer tests use live snapshot branches
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Make sure the snapshot branches are present
+        run: |
+          for b in main codex/ec2-release-source-20261014 live/2026-10-11 claude/forecast-v21 codex/trade-audit-dashboard; do
+            git rev-parse --verify -q "origin/$b" >/dev/null || git fetch --no-tags origin "+refs/heads/$b:refs/remotes/origin/$b"
+          done
+      - name: Overlay config.py (the EC2 snapshot omits it; tests only)
+        run: git show origin/main:kadima/config.py > kadima/config.py
+      - name: Compile
+        run: python -m compileall -q kadima tools
+      - name: Imports
+        run: KADIMA_DATA_DIR=$(mktemp -d) python -c "import kadima.auto_executor, kadima.scalp_v2, kadima.trade_audit, kadima.market_session_gate, kadima.cas_executor, kadima.trend_rules; print('imports ok')"
+      - name: Scalp v2, index lane, threshold 60, Blocked-by column
+        run: KADIMA_DATA_DIR=$(mktemp -d) python tools/test_scalp_v2_20261020.py
+      - name: 19-Oct suites still pass
+        run: |
+          for t in test_exit_fix_20261019 test_trend_rules_20261019 test_protection_20261019; do
+            KADIMA_DATA_DIR=$(mktemp -d) python tools/$t.py
+          done
+      - name: Installer on live snapshots (19-Oct prerequisites, install, re-run, --live, rollback)
+        run: bash tools/test_installers_20261020.sh "$PWD" "$(mktemp -d)"

@@ -22,7 +22,7 @@ from .utils import now_ist
 IST = timezone(timedelta(hours=5, minutes=30))
 STRATEGIES = {
     'INTRADAY': 'Intraday / Shield', 'GAMMA': 'Gamma Blast', 'CAS': 'CAS',
-    'SCALP': 'Scalping', 'MOVE_CAPTURE': 'Move Capture', 'GAP_AND_GO': 'Gap-and-Go',
+    'SCALP': 'Scalping', 'SCALP_V2': 'Scalping v2', 'MOVE_CAPTURE': 'Move Capture', 'GAP_AND_GO': 'Gap-and-Go',
     'MCX': 'MCX', 'MANUAL': 'Manual', 'UNKNOWN': 'Unknown',
 }
 ALIASES = {'bull_shield': 'INTRADAY', 'bear_shield': 'INTRADAY',
@@ -467,6 +467,7 @@ CSV_COLUMNS = (
     ('SL observed IST', 'sl_at'), ('Time to observed result seconds', 'time_to_result_seconds'),
     ('Time to T1 seconds', 'time_to_t1_seconds'), ('Time to T2 seconds', 'time_to_t2_seconds'),
     ('Time to stop seconds', 'time_to_sl_seconds'),
+    ('Stage', 'stage'), ('Blocked by', 'blocked_reasons'),   # 2026-10-20
 )
 
 
@@ -474,6 +475,8 @@ def csv_value(row, key):
     value = row
     for part in key.split('.'):
         value = value.get(part) if isinstance(value, dict) else None
+    if isinstance(value, list):   # blocked reasons: one readable cell
+        value = ' | '.join(str(x) for x in value)
     # Keep numbers numeric; neutralize untrusted spreadsheet formula strings.
     if isinstance(value, str) and (re.match(r'^[\s\x00-\x1f]*[=+@-]', value) or value.startswith(('\t', '\r', '\n'))):
         value = "'"+value

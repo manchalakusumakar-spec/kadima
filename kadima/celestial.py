@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from . import storage
 from .utils import now_ist
 
-THRESHOLDS = (65, 70, 75, 80, 85, 90)
+THRESHOLDS = (60, 65, 70, 75, 80, 85, 90)   # 60 added 2026-10-20 (trader decision of 10-Oct)
 DEFAULTS = dict(auto_trade_enabled=False, score_threshold=65, dashboard_limit=20,
                 mode="AUTONOMOUS_GAMMA_BLAST", kill_latched=False,
                 adopt_external_positions=True, revision=0)

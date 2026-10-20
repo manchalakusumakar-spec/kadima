@@ -616,7 +616,7 @@ class AutoExecutor:
         Only called from evaluate_and_enter(), which holds the execution lock."""
         # KADIMA SESSION AUTO ENTRY GUARD v1
         from . import market_session_gate
-        session_block = market_session_gate.entry_block(chain.index.opt_exchange)
+        session_block = market_session_gate.entry_block(chain.index.opt_exchange, underlying=index_name)
         if session_block:
             return self._reject(session_block, index_name, direction)
         if not getattr(chain, '_entry_guard', lambda: True)():
@@ -902,7 +902,7 @@ class AutoExecutor:
                 return self._reject('shield_invalidated_before_submission', index_name, direction)
         # KADIMA SESSION AUTO ENTRY GUARD v1
         from . import market_session_gate
-        session_block = market_session_gate.entry_block(chain.index.opt_exchange)
+        session_block = market_session_gate.entry_block(chain.index.opt_exchange, underlying=index_name)
         if session_block:
             return self._reject(session_block, index_name, direction)
         pos = Position(
@@ -1261,7 +1261,7 @@ def _hf_forecast_manual_buy(self, index_name: str, direction: str, strike: float
     max_lots = getattr(config, 'FORECAST_MANUAL_MAX_LOTS', MAX_LOTS_PER_SIGNAL)
     if isinstance(lots, bool) or not isinstance(lots, int) or not 1 <= lots <= max_lots:
         return self._reject(f'lots_must_be_1_to_{max_lots}', index_name, direction)
-    session_block = market_session_gate.entry_block(chain.index.opt_exchange)
+    session_block = market_session_gate.entry_block(chain.index.opt_exchange, underlying=index_name)
     if session_block:
         return self._reject(session_block, index_name, direction)
     if self._reconcile_blocked:
@@ -1332,7 +1332,7 @@ def _hf_forecast_manual_buy(self, index_name: str, direction: str, strike: float
                             index_name, direction)
     if killswitch.engaged() or not in_market_hours() or past_signal_cutoff():
         return self._reject('entry_gate_changed_before_submission', index_name, direction)
-    session_block = market_session_gate.entry_block(chain.index.opt_exchange)
+    session_block = market_session_gate.entry_block(chain.index.opt_exchange, underlying=index_name)
     if session_block:
         return self._reject(session_block, index_name, direction)
 

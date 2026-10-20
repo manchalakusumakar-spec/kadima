@@ -22,6 +22,7 @@ from . import alerts, audit, indicators, killswitch, last_known, storage, strike
 from . import auto_executor
 from . import shield_v9
 from .fast_momentum import Lane as FastLane
+from . import scalp_v2  # 2026-10-20 early-entry index scalps
 from .cas_engine import Lane as CASLane
 from .shield_confirmation import (SHIELD_MIN_SCORE, BANK_NAMES, ShieldEvidence,
     alignment, fresh, confirmation_checks, is_shield_confirmed)
@@ -112,6 +113,8 @@ class Engine:
             self.scan_indices, missing = discover_indices(self.scrips, now_ist().date())
             celestial.health('index_universe',dict(active=list(self.scan_indices),unresolved=missing))
         auto_executor.EXECUTOR.celestial_master = self.scrips
+        from . import market_session_gate
+        market_session_gate.register_indices(self.scan_indices)   # index lane (2026-10-20)
         self.states: dict[str, IndexState] = {}
         self.token_to_index: dict[str, str] = {}
         self.feed = TickFeed(self._on_tick)
@@ -300,6 +303,7 @@ class Engine:
         st.is_live_tick = True
         self._invalidate_shield(st)
         st.builder.add_tick(tick["ts"], tick["ltp"], tick["volume"])
+        scalp_v2.on_tick(name, tick["token"], tick["ts"], tick["ltp"])   # 15 s bars; never raises
         # Keep the reviewed socket/feed implementation untouched. Its callback
         # supplies receipt time only; broker opening references come separately
         # from the exchange-timestamped Move Capture feed.
@@ -419,9 +423,9 @@ class Engine:
     def _scan_fast(self, st):
         """Optional lane failure must not suppress the established scanners."""
         try:
-            row = self.fast_lane.scan(st)
+            row = scalp_v2.merge(st, self.fast_lane.scan(st), self.fast_lane)
             from . import trade_audit
-            trade_audit.safe_call(trade_audit.record, row, 'SCALP', 'index_fast')
+            trade_audit.safe_call(trade_audit.record, row, scalp_v2.audit_code(row), 'index_fast')
             auto_executor.EXECUTOR.fast_rows[st.name] = row
             signature = (row.get('episode'),row['stage'],tuple(row['blocked_reasons']))
             if self._fast_reported.get(st.name) != signature:
@@ -430,11 +434,12 @@ class Engine:
             if row['eligible']:
                 from .fast_momentum import signal_id
                 sid = signal_id(row)
-                trade_audit.safe_call(trade_audit.record, row, 'SCALP', 'index_fast', sid)
+                trade_audit.safe_call(trade_audit.record, row, scalp_v2.audit_code(row), 'index_fast', sid)
                 result = auto_executor.EXECUTOR.evaluate_and_enter(
                     st.name,row['direction'],st.chain,st.spot,st.snap,row['days'],
                     'fast_momentum',sid,'EXPERIMENTAL',row['score'],
-                    fast_context=lambda state=st: self.fast_lane.scan(state,record=False))
+                    fast_context=lambda state=st: scalp_v2.merge(state, self.fast_lane.scan(state,record=False),
+                                                                 self.fast_lane, record=False))
                 row.update(signal_id=sid,dispatch=result)
                 audit.log('FAST_DISPATCH_RESULT', signal_id=sid,index=st.name,**result)
         except Exception as exc:  # isolation boundary; never retry an order here
@@ -447,7 +452,7 @@ class Engine:
         while not self._stop.is_set():
             if in_market_hours() and not killswitch.engaged():
                 self._warm_bank_history()
-                for st in self.states.values():
+                for st in scalp_v2.order(self.states):   # triggered/armed first when live
                     from . import celestial
                     if not celestial.enabled() and st.name in GAMMA_EXPIRY_ONLY and self._dte(st) > 1.0:
                         continue  # monthly-only index -- scan only on its own expiry day
@@ -481,7 +486,7 @@ class Engine:
                             audit.log("oi_loop_error", index=st.name,
                                       error=str(exc))
                     time.sleep(1)                       # spread REST load
-            time.sleep(OI_POLL_SEC)
+            scalp_v2.wait(OI_POLL_SEC, self._stop)   # = time.sleep unless priority_poll is live
 
     # -------------------------------------------------------- gamma scanner
     def _score_gamma(self, st: IndexState) -> None:

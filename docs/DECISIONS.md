@@ -69,3 +69,30 @@ max 2/signal/day, 5-min cooldown, requires trend rules live), F (rejection alert
 shadow only; every feature has its own switch in `trend_rules.json`. Broker-stop live placement
 deliberately not built: an SL fill KADIMA does not reconcile could leave a phantom open position
 or trigger a second sell. Left for Codex with the reconciliation design and a 1-lot test.
+
+## 2026-10-20 — Early-entry index scalps (scalp v2), index lane, threshold 60, Blocked-by column
+
+**Trigger:** 5-13 Oct Trade Audit review. Every Scalping suggestion stayed SUGGESTED; 90+ scores hit
+their stop 87% of the time. NIFTY replay: v1 signals fired 1.3-2.9 min after the first cross, after a
+10-38 point 3-minute run, 1-10 points below the burst high, with a 7-13 point stop (inside 1-min noise).
+The fast lane is also evaluated only when that index's chain is polled (~every 20-25 s).
+
+**Decisions (trader, "ok" 20-Oct 19:36 IST):**
+- Scalp v2 (`kadima/scalp_v2.py`, branch `claude/scalp-v2-early-entry-20261020`): 15 s trigger from index
+  ticks (2 closes beyond the 5-min base, skip if > 1 base-width past); stop = level -/+ 1.5 x 1-min ATR
+  with the 35% cap; trend_rules day trend applied to scalps; score rewards early/clean/with-trend and
+  penalises extension and > 3 ATR run-ups; one trigger per index+direction per 5 min; priority chain poll
+  after a trigger. Index scalps only - Gamma, CAS, stock lanes unchanged.
+- Shadow first (3 sessions): v2 rows land in the Trade Audit as "Scalping v2" beside v1, then `--live`.
+- Celestial threshold 60 allowed (10-Oct decision was blocked by THRESHOLDS = 65..90).
+- Index entries use a new "index" lane from the session issuer, so a stock-scalp problem no longer
+  closes index trading; the gate falls back to "equity" until the issuer publishes "index".
+- Trade Audit CSV adds "Stage" and "Blocked by".
+
+**Evidence:** NIFTY spot backtest 1-19 Oct, 2-point cost: current rules -0.46R/breakout (n=1062);
+v2 +0.06R (n=367); better in both halves (-0.20 vs -0.59, +0.23 vs -0.36); fires a median 90 s earlier.
+Spot is a proxy for option prices - shadow validates on real premiums.
+
+**Not done here (Codex):** step 6 of the plan - 3 s cancel-and-retry-once for unfilled entry LIMIT
+orders - touches broker order handling and needs the fill reconciliation of fix/parallel-orders-retry;
+see `codex_tasks/2026-10-20_scalp_v2_follow_ups.md`.

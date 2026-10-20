@@ -14,6 +14,27 @@ POLICY = Path('/etc/kadima-session-auto/policy.json')
 LEASE = Path('/run/kadima-session-auto/lease.json')
 BOOT = Path('/proc/sys/kernel/random/boot_id')
 MAX_LEASE_SECONDS = 150
+# 2026-10-20: index entries use the issuer's "index" lane when it publishes one, so a
+# stock-scalp problem no longer closes index trading. Older issuers: "equity" as before.
+INDEX_UNDERLYINGS = set()
+
+
+def register_indices(names):
+    INDEX_UNDERLYINGS.update(str(n) for n in names)
+
+
+def lane_for(exchange, underlying=None):
+    if exchange == 'MCX':
+        return 'mcx'
+    if underlying is not None:
+        try:
+            from .config import GAMMA_INDICES
+            known = INDEX_UNDERLYINGS | set(GAMMA_INDICES)
+        except Exception:  # noqa: BLE001
+            known = INDEX_UNDERLYINGS
+        if str(underlying) in known:
+            return 'index'
+    return 'equity'
 
 
 def read_json(path, limit=65536, require_root=True):
@@ -86,7 +107,7 @@ def permit_reason(permit, now, mono, boot_id):
     return None
 
 
-def entry_block(exchange, now=None, product='INTRADAY'):
+def entry_block(exchange, now=None, product='INTRADAY', underlying=None):
     """Called twice on the shared entry path, never from position exit logic.
     product='CARRYFORWARD' (CAS only) skips just the broker's 15:15 INTRADAY
     entry window; the calendar, policy schedule and lane permit still apply."""
@@ -103,7 +124,11 @@ def entry_block(exchange, now=None, product='INTRADAY'):
                 reason = calendar_reason(read_json(POLICY), now, entries=True)
                 if reason: return reason
             permit = read_json(LEASE)
-            if (permit.get('lanes') or {}).get('mcx' if exchange == 'MCX' else 'equity') is not True:
+            lanes = permit.get('lanes') or {}
+            lane = lane_for(exchange, underlying)
+            if lane == 'index' and 'index' not in lanes:
+                lane = 'equity'   # issuer not upgraded yet: unchanged behaviour
+            if lanes.get(lane) is not True:
                 return 'lane_permit_not_granted'
             return permit_reason(permit, now, time.monotonic(), BOOT.read_text().strip())
         except (OSError, ValueError, TypeError, KeyError, OverflowError):

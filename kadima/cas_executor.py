@@ -221,7 +221,8 @@ def gate(candidate, executor, now: datetime) -> Optional[str]:
     # CAS is CARRYFORWARD: the broker's 15:15 INTRADAY entry window does not
     # apply (CAS enforces its own 15:15-15:35 window above); every other
     # session, calendar and permit check still does.
-    return market_session_gate.entry_block(candidate.exchange, product=CAS_PRODUCT_TYPE)
+    return market_session_gate.entry_block(candidate.exchange, product=CAS_PRODUCT_TYPE,
+                                        underlying=candidate.index)
 
 
 def enter(candidate) -> dict:
