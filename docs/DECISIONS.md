@@ -111,3 +111,10 @@ Exitable: KADIMA's own trades including CAS, and manual trades ("even manual nee
 hindrance"). Order: Scalp -> Intraday/other -> CAS -> Manual, weakest P&L first; one exit per attempt, so
 only what is needed. Never another Gamma, never past the daily loss limit, never on kill switch or pending
 order. `kadima/gamma_priority.py`, hook in `evaluate_and_enter`; shadow first (`gamma_priority_would_exit`).
+**Update 20:50 IST — v2 scalp half-booking and thesis exits (trader picked; CAS keeps its live design):**
+at +12% sell half the lots once (2+ lots; 1 lot keeps the +6% lock only), via execution_ledger.submit,
+never touching exit_reason. Thesis exits for v2 scalps: two lower-high 1-min premium bars closing below the
+prior low; two 1-min index closes the wrong side of VWAP within 3 min of entry; spread > 2x entry on two
+quote snapshots. Switches `partial` and `thesis_exits` in scalp_v2.json (shadow); `--live` sets all live.
+Not built (trader deferred): Gamma thesis exits, Intraday regime stops, fast-entry cancel/retry, narrowing
+the manual same-index block.

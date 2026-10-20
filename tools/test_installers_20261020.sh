@@ -21,7 +21,7 @@ for B in origin/codex/ec2-release-source-20261014 origin/live/2026-10-11; do
    && grep -q "scalp_v2.wait(OI_POLL_SEC" $T/kadima/engine.py && [ "$(grep -c 'underlying=index_name' $T/kadima/auto_executor.py)" = 4 ] \
    && grep -q "THRESHOLDS = (60," $T/kadima/celestial.py && grep -q "'Blocked by'" $T/kadima/trade_audit.py \
    && grep -q "index=gate.calendar_reason" $T/ext/runner.py && grep -q "<option>60</option>" $T/ext/dashboard.html \
-   && grep -q "trend_rules.managed_stop" $T/kadima/auto_executor.py && grep -q "gamma_priority.make_room" $T/kadima/auto_executor.py && grep -q "v2_stop = scalp_v2.managed_stop" $T/kadima/auto_executor.py && echo "hooks present" || { echo "FAIL hooks missing"; FAIL=1; }
+   && grep -q "trend_rules.managed_stop" $T/kadima/auto_executor.py && grep -q "gamma_priority.make_room" $T/kadima/auto_executor.py && grep -q "v2_stop = scalp_v2.managed_stop" $T/kadima/auto_executor.py && grep -q "scalp_v2.maybe_partial" $T/kadima/auto_executor.py && echo "hooks present" || { echo "FAIL hooks missing"; FAIL=1; }
   python3 tools/install_scalp_v2_20261020.py $T --live | grep modes
   python3 tools/install_scalp_v2_20261020.py $T --rollback $EXT >/dev/null
   for f in $FILES; do cmp -s $T/kadima/$f.pre $T/kadima/$f.py || { echo "FAIL rollback $f"; FAIL=1; }; done

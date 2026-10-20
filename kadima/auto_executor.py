@@ -1123,6 +1123,8 @@ class AutoExecutor:
                     else:
                         structural = pos.structural_stop = v2_base
                         pos.effective_stop, pos.trail_active = v2_eff, bool(v2_active)
+                if not pos.exit_reason:
+                    scalp_v2.maybe_partial(self, pos, ltp)   # spec Scalp T1: book half at +12%
             storage.upsert_position(pos)
             try:
                 from . import protection

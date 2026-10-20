@@ -70,7 +70,7 @@ LOCK_AT = 0.12            # at +12% premium the stop goes to +6% and the ATR tra
 LOCK_PCT = 0.06
 TRAIL_PREM_ATR = 1.0      # trail = peak - 1 x 1-min premium ATR
 TARGET_PCT = 0.20         # +20% -> exit (half-booking at +12% needs partial exits: Codex task)
-DEFAULTS = {'mode': 'shadow', 'priority_poll': 'shadow'}
+DEFAULTS = {'mode': 'shadow', 'priority_poll': 'shadow', 'partial': 'shadow', 'thesis_exits': 'shadow'}
 MODES = ('off', 'shadow', 'live')
 
 _cfg = {'at': 0.0, 'value': None}
@@ -92,6 +92,8 @@ def config():
             pass
         value['mode'] = os.environ.get('KADIMA_SCALP_V2', value['mode'])
         value['priority_poll'] = os.environ.get('KADIMA_SCALP_V2_POLL', value['priority_poll'])
+        value['partial'] = os.environ.get('KADIMA_SCALP_V2_PARTIAL', value['partial'])
+        value['thesis_exits'] = os.environ.get('KADIMA_SCALP_V2_THESIS', value['thesis_exits'])
         for k, d in DEFAULTS.items():
             if value[k] not in MODES:
                 value[k] = d
@@ -386,6 +388,7 @@ def build_row(st, trigger, lane=None, now=None):
         dist_atr = sign * (spot - trigger['spot_stop']) / trigger['atr']
         row['prem_atr'] = round((entry - stop) / dist_atr, 4) if dist_atr > 0 else None
         row['stop_pct'] = round((entry - stop) / entry * 100, 2)
+        row['spread_pct'] = round((q.ask - q.bid) / q.ask * 100, 3) if q.ask else None
         row['breakeven_at'] = round(entry + BE_AT_R * (entry - stop), 2)
         row['score'] = score(trigger, label, move, ext)
         row.update(entry=entry, stop=round(stop, 2), t1=round(entry * (1 + LOCK_AT), 2),
@@ -468,7 +471,8 @@ def note_dispatch(row, sid):
         if not isinstance(row, dict) or row.get('engine') != 'scalp_v2' or not row.get('entry'):
             return
         plan = dict(entry=row['entry'], stop=row['stop'], stop_pct=row['stop_pct'] / 100,
-                    prem_atr=row.get('prem_atr'), episode=row['episode'], active_stop=None)
+                    prem_atr=row.get('prem_atr'), episode=row['episode'], active_stop=None,
+                    spread_pct=row.get('spread_pct'), direction=row.get('direction'))
         c = _conn()
         with c:
             c.execute('INSERT OR IGNORE INTO scalp_v2_plans VALUES (?,?)', (int(sid), json.dumps(plan)))
@@ -520,9 +524,149 @@ def managed_stop(pos, ltp):
                 c.execute('UPDATE scalp_v2_plans SET payload=? WHERE signal_id=?', (json.dumps(plan), int(sid)))
             audit.log('scalp_v2_stop_moved', signal_id=sid, stop=round(stop, 2), peak=round(peak, 2))
         reason = 'scalp_v2_target_20pct' if ltp >= entry * (1 + TARGET_PCT) - 1e-9 else None
+        reason = reason or thesis_exit(pos, ltp)
         return base, stop, stop > base, reason
     except Exception as exc:  # noqa: BLE001 - fall back to the existing exit logic
         audit.log('scalp_v2_exit_error', error=type(exc).__name__)
+        return None
+
+
+def _save(sid, plan):
+    c = _conn()
+    with c:
+        c.execute('UPDATE scalp_v2_plans SET payload=? WHERE signal_id=?', (json.dumps(plan), int(sid)))
+
+
+def half_quantity(remaining_qty, lot_size):
+    """Quantity for booking half: whole lots only, at least 1 lot left. 0 = no partial."""
+    try:
+        lots = int(remaining_qty) // int(lot_size)
+    except (TypeError, ValueError, ZeroDivisionError):
+        return 0
+    return (lots // 2) * int(lot_size) if lots >= 2 else 0
+
+
+def maybe_partial(executor, pos, ltp):
+    """Spec Scalp T1: at +12% sell half the lots once (the ladder already moves the
+    stop to +6%). shadow logs only. Never raises; never touches exit_reason."""
+    try:
+        sw = config()['partial']
+        sid = getattr(pos, 'signal_id', None)
+        if sw == 'off' or sid is None or getattr(pos, 'kind', None) != 'fast_momentum':
+            return None
+        plan = _plan(int(sid))
+        entry = getattr(pos, 'entry_price', None)
+        if not plan or plan.get('partial_done') or not _finite(entry, ltp) or getattr(pos, 'status', None) != 'open':
+            return None
+        if ltp < entry * (1 + LOCK_AT) - 1e-9:
+            return None
+        qty = half_quantity(pos.remaining_qty, pos.lot_size)
+        info = dict(signal_id=sid, symbol=getattr(pos, 'symbol', None), ltp=round(ltp, 2), quantity=qty, mode=sw)
+        if qty <= 0:
+            plan['partial_done'] = 'one_lot_no_partial'
+            _save(sid, plan); audit.log('scalp_v2_partial_skipped', **info)
+            return None
+        if sw == 'shadow':
+            plan['partial_done'] = 'shadow'
+            _save(sid, plan); audit.log('scalp_v2_partial_would_book', **info)
+            return None
+        from . import execution_ledger
+        if execution_ledger.pending(sid):
+            return None
+        from .auto_executor import LIMIT_ORDER_BUFFER_PCT
+        limit = max(0.05, round(ltp * (1 - LIMIT_ORDER_BUFFER_PCT / 100.0), 1))
+        result = execution_ledger.submit(pos, 'SELL', qty, limit)
+        plan['partial_attempts'] = plan.get('partial_attempts', 0) + 1
+        if (result or {}).get('ok') or (result or {}).get('pending'):
+            plan['partial_done'] = 'submitted'
+        elif plan['partial_attempts'] >= 2:
+            plan['partial_done'] = 'failed'
+        _save(sid, plan)
+        audit.log('scalp_v2_partial_booked', ok=bool((result or {}).get('ok')),
+                  reason=(result or {}).get('reason'), limit=limit, **info)
+        return result
+    except Exception as exc:  # noqa: BLE001
+        audit.log('scalp_v2_partial_error', error=type(exc).__name__)
+        return None
+
+
+_thesis: dict = {}
+
+
+def thesis_reasons(bars, entry_minute, vwap=None, index_closes=(), direction='CE',
+                   spread_now=None, spread_entry=None, spread_strikes=0):
+    """Pure. bars: completed 1-min premium bars after entry [(h, l, c)], oldest first.
+    index_closes: completed 1-min index closes in the first 3 minutes after entry."""
+    out = []
+    if len(bars) >= 2:
+        (h1, l1, _), (h2, _, c2) = bars[-2], bars[-1]
+        if h2 < h1 and c2 < l1:
+            out.append('scalp_v2_premium_lower_high')
+    if _finite(vwap) and len(index_closes) >= 2:
+        sign = 1 if direction == 'CE' else -1
+        if all(sign * (c - vwap) < 0 for c in index_closes[-2:]):
+            out.append('scalp_v2_vwap_flip')
+    if _finite(spread_now, spread_entry) and spread_now > 2 * spread_entry and spread_strikes >= 2:
+        out.append('scalp_v2_spread_widened')
+    return out
+
+
+def thesis_exit(pos, ltp, now=None):
+    """Spec Scalp thesis exits for v2 positions. live: returns the reason to exit;
+    shadow: logs scalp_v2_thesis_would_exit once per reason and returns None."""
+    try:
+        sw = config()['thesis_exits']
+        sid = getattr(pos, 'signal_id', None)
+        if sw == 'off' or sid is None or getattr(pos, 'kind', None) != 'fast_momentum':
+            return None
+        plan = _plan(int(sid))
+        entry_ts = getattr(pos, 'entry_ts', None)
+        if not plan or not _finite(ltp) or entry_ts is None:
+            return None
+        now = now or now_ist()
+        st = _thesis.setdefault(int(sid), dict(bars={}, strikes=0, quote_ts=None, logged=set()))
+        minute = now.replace(second=0, microsecond=0)
+        b = st['bars'].get(minute)
+        st['bars'][minute] = (max(b[0], ltp), min(b[1], ltp), ltp) if b else (ltp, ltp, ltp)
+        entry_minute = entry_ts.replace(second=0, microsecond=0)
+        done = [st['bars'][k] for k in sorted(st['bars']) if entry_minute < k < minute]
+        closes = []
+        with _lock:
+            ib = _states.get(getattr(pos, 'index', None))
+            if ib is not None and (now - entry_ts).total_seconds() <= 180:
+                closes = [x.c for x in ib.bars1 if x.start >= entry_minute + timedelta(minutes=1)
+                          and x.start + timedelta(minutes=1) <= now]
+        vwap = None
+        try:
+            from . import trend_rules
+            vwap = trend_rules.vwap_for(pos.index, now)
+        except Exception:  # noqa: BLE001
+            pass
+        spread_now = None
+        try:
+            from . import celestial
+            qh = celestial.health('quote:' + str(pos.exchange) + ':' + str(pos.token))
+            if qh and qh.get('ts') != st['quote_ts'] and _finite(qh.get('bid'), qh.get('ask')):
+                st['quote_ts'] = qh['ts']
+                spread_now = (qh['ask'] - qh['bid']) / qh['ask'] * 100
+                wide = _finite(plan.get('spread_pct')) and spread_now > 2 * plan['spread_pct']
+                st['strikes'] = st['strikes'] + 1 if wide else 0
+        except Exception:  # noqa: BLE001
+            pass
+        reasons = thesis_reasons(done, entry_minute, vwap, closes, plan.get('direction') or 'CE',
+                                 spread_now, plan.get('spread_pct'), st['strikes'])
+        if not reasons:
+            return None
+        if sw == 'shadow':
+            for r in reasons:
+                if r not in st['logged']:
+                    st['logged'].add(r)
+                    audit.log('scalp_v2_thesis_would_exit', signal_id=sid, reason=r, ltp=round(ltp, 2))
+            return None
+        audit.log('scalp_v2_thesis_exit', signal_id=sid, reason=reasons[0], ltp=round(ltp, 2))
+        return reasons[0]
+    except Exception as exc:  # noqa: BLE001
+        audit.log('scalp_v2_thesis_error', error=type(exc).__name__)
         return None
 
 

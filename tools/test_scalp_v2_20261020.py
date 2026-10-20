@@ -240,6 +240,45 @@ check('a v1 scalp is not managed by v2', scalp_v2.managed_stop(types.SimpleNames
 check('a gamma position is not managed by v2', scalp_v2.managed_stop(types.SimpleNamespace(
       signal_id=990001, kind='gamma_blast', entry_price=100.0, peak_price=100.0), 100.0) is None)
 
+# ---------------------------------------------------------------- half-booking + thesis exits
+check('half of 4 lots = 2 lots', scalp_v2.half_quantity(260, 65) == 130)
+check('half of 3 lots = 1 lot (2 stay)', scalp_v2.half_quantity(195, 65) == 65)
+check('1 lot: no partial', scalp_v2.half_quantity(65, 65) == 0)
+import kadima.execution_ledger as _el  # noqa: E402
+sold = []
+_el.pending = lambda sid=None: []
+_el.submit = lambda pos, side, qty, price: sold.append((side, qty, price)) or {'ok': True, 'pending': True}
+pp = types.SimpleNamespace(signal_id=990010, kind='fast_momentum', entry_price=100.0, peak_price=113.0,
+                           remaining_qty=260, lot_size=65, status='open', symbol='X', index='NIFTY',
+                           entry_ts=datetime(2026, 10, 21, 10, 0, tzinfo=IST), exchange='NFO', token='1')
+scalp_v2.note_dispatch(dict(engine='scalp_v2', entry=100.0, stop=92.0, stop_pct=8.0, prem_atr=2.0,
+                            episode='e2', spread_pct=0.4, direction='CE'), 990010)
+os.environ['KADIMA_SCALP_V2_PARTIAL'] = 'shadow'; scalp_v2._cfg.update(at=0.0, value=None)
+scalp_v2.maybe_partial(None, pp, 112.5)
+check('shadow: no partial order sent', sold == [] and any(e == 'scalp_v2_partial_would_book' for e, _ in LOGS))
+c = scalp_v2._conn()
+with c:
+    c.execute('DELETE FROM scalp_v2_plans WHERE signal_id=990010')
+scalp_v2._plans.clear()
+scalp_v2.note_dispatch(dict(engine='scalp_v2', entry=100.0, stop=92.0, stop_pct=8.0, prem_atr=2.0,
+                            episode='e2', spread_pct=0.4, direction='CE'), 990010)
+os.environ['KADIMA_SCALP_V2_PARTIAL'] = 'live'; scalp_v2._cfg.update(at=0.0, value=None)
+scalp_v2.maybe_partial(None, pp, 111.0)
+check('no partial below +12%', sold == [])
+scalp_v2.maybe_partial(None, pp, 112.5)
+check('live: sells half the lots once at +12%', sold == [('SELL', 130, round(112.5 * 0.975, 1))])
+scalp_v2.maybe_partial(None, pp, 115.0)
+check('half is booked only once', len(sold) == 1)
+os.environ.pop('KADIMA_SCALP_V2_PARTIAL'); scalp_v2._cfg.update(at=0.0, value=None)
+T = scalp_v2.thesis_reasons
+check('premium lower high below prior low exits', T([(110, 105, 108), (107, 101, 103)], None) == ['scalp_v2_premium_lower_high'])
+check('a higher high does not exit', T([(110, 105, 108), (112, 104, 109)], None) == [])
+check('two closes below VWAP after a CE entry exits', T([], None, 22600, [22598, 22595], 'CE') == ['scalp_v2_vwap_flip'])
+check('one close below VWAP does not', T([], None, 22600, [22605, 22595], 'CE') == [])
+check('PE flips on closes above VWAP', T([], None, 22600, [22603, 22605], 'PE') == ['scalp_v2_vwap_flip'])
+check('spread doubling twice exits', T([], None, spread_now=1.0, spread_entry=0.4, spread_strikes=2) == ['scalp_v2_spread_widened'])
+check('spread doubling once does not', T([], None, spread_now=1.0, spread_entry=0.4, spread_strikes=1) == [])
+
 # ---------------------------------------------------------------- index lane
 from kadima import market_session_gate as g  # noqa: E402
 check('index underlying uses the index lane', g.lane_for('NFO', 'NIFTY') == 'index')
