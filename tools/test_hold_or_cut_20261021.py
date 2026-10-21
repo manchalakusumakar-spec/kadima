@@ -94,6 +94,35 @@ def test_oi_variant_tightens_at_the_wall_and_releases_once_through():
     assert s2['through'] >= H.CONFIRM
 
 
+def test_pcr_variant_holds_while_writers_back_the_trade_and_tightens_when_they_turn():
+    def run(pcr_path):
+        s = H.new_state(23000.0)
+        H.step(s, 'PE', 185, 192, 22990, ATR, 'DOWN', variant='pcr', wall=22900, pcr=pcr_path[0])
+        H.step(s, 'PE', 185, 240, 22900, ATR, 'DOWN', variant='pcr', wall=22900, pcr=pcr_path[1])
+        H.step(s, 'PE', 185, 225, 22945, ATR, 'DOWN', variant='pcr', wall=22900, pcr=pcr_path[2])
+        return H.step(s, 'PE', 185, 225, 22945, ATR, 'DOWN', variant='pcr', wall=22900, pcr=pcr_path[3])[0]
+    # 45 pts back from a 100-pt best: more than 38.2%, less than 61.8%.
+    assert run((1.0, 0.85, 0.85, 0.85)) == 'hold'     # PCR fell 15% and stays down: PE backed
+    assert run((1.0, 0.85, 0.95, 0.95)) == 'exit'     # PCR bounced 10 pts off its low: tighten
+
+
+def test_pcr_against_a_loser_halves_the_cut_distance():
+    s = H.new_state(1000.0)
+    for spot in (997, 996):                           # 0.3-0.4 ATR against a counter-trend CE
+        out = H.step(s, 'CE', 100, 97, spot, ATR, 'DOWN', variant='pcr', pcr=1.0 if spot == 997 else 0.9)
+    assert out == ('none', 'undecided')               # first close beyond 0.25 ATR
+    assert H.step(s, 'CE', 100, 96, 996, ATR, 'DOWN', variant='pcr', pcr=0.9) == ('exit', 'cut_counter_trend')
+    s = H.new_state(1000.0)
+    H.step(s, 'CE', 100, 97, 997, ATR, 'DOWN', variant='base')
+    H.step(s, 'CE', 100, 97, 996, ATR, 'DOWN', variant='base')
+    assert H.step(s, 'CE', 100, 96, 996, ATR, 'DOWN', variant='base')[0] == 'none'
+
+
+def test_pcr_from():
+    assert H.pcr_from([(1, 'PE', 300), (2, 'CE', 200), (3, 'CE', 100)]) == 1.0
+    assert H.pcr_from([(1, 'PE', 300)]) is None
+
+
 def test_wall_from_picks_the_favourable_side():
     rows = [(22900, 'PE', 900), (22800, 'PE', 1500), (23000, 'PE', 3000),
             (23000, 'CE', 2000), (23100, 'CE', 2500), (22800, 'CE', 9000)]
@@ -122,7 +151,7 @@ def test_shadow_logs_a_veto_and_never_trades():
         out = H.shadow(pos, 192.0, 'premium_below_completed_1m_ema9', now + timedelta(minutes=1))
     assert out['base'] == ('hold', H.SOFT_HOLD)
     verdicts = {(k['variant'], k['verdict']) for e, k in logged if e == 'hold_or_cut_shadow'}
-    assert ('base', 'would_hold') in verdicts and ('oi', 'would_hold') in verdicts
+    assert {('base', 'would_hold'), ('oi', 'would_hold'), ('pcr', 'would_hold')} <= verdicts
 
 
 # ---------------------------------------------------------------- replay
@@ -193,10 +222,10 @@ def test_replay_holds_the_pe_and_cuts_the_ce_without_writing():
     i1 = next(i for i, l in enumerate(lines) if l.startswith('1 '))
     i2 = next(i for i, l in enumerate(lines) if l.startswith('2 '))
     pnl = lambda l: int(l.split(' P&L ')[1].split()[0])
-    for v, line in zip(('base', 'fib', 'oi'), lines[i1 + 1:i1 + 4]):
+    for v, line in zip(H.VARIANTS, lines[i1 + 1:i1 + 1 + len(H.VARIANTS)]):
         assert line.split()[0] == v, line
         assert pnl(line) > (192.4 - 185) * 65 * 5      # held the winner well past +4%
-    for v, line in zip(('base', 'fib', 'oi'), lines[i2 + 1:i2 + 4]):
+    for v, line in zip(H.VARIANTS, lines[i2 + 1:i2 + 1 + len(H.VARIANTS)]):
         assert 'cut_counter_trend' in line, line
         assert pnl(line) > (126 - 144) * 65             # cut sooner than the actual exit
     assert lines[-1].startswith('TOTAL')

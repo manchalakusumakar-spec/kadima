@@ -111,13 +111,21 @@ class Data:
             self._five[key] = sorted((ts(k), v) for k, v in snaps.items())
         return self._five[key]
 
-    def wall(self, name, t, spot, direction):
+    def snapshot(self, name, t):
         rows = None
         for st, v in self.chain(name):
             if st > t:
                 break
             rows = v
+        return rows
+
+    def wall(self, name, t, spot, direction):
+        rows = self.snapshot(name, t)
         return H.wall_from(rows, spot, direction) if rows else None
+
+    def pcr(self, name, t):
+        rows = self.snapshot(name, t)
+        return H.pcr_from(rows) if rows else None
 
 
 def atr(rows):
@@ -173,9 +181,10 @@ def replay(data, pos, variant='base'):
             continue
         a = T._rows(idx.token, t)
         trend = T.day_trend(name, idx.token, spot, None, t)
-        wall = data.wall(name, t, spot, pos['direction']) if variant == 'oi' else None
+        wall = data.wall(name, t, spot, pos['direction']) if variant in ('oi', 'pcr') else None
+        pcr = data.pcr(name, t) if variant == 'pcr' else None
         action, reason = H.step(state, pos['direction'], entry, ltp, spot, atr(a), trend,
-                                variant=variant, wall=wall)
+                                variant=variant, wall=wall, pcr=pcr)
         if action == 'exit':
             return dict(time=t, price=ltp, reason=reason, best_after=best_after, phase=state['phase'])
         if actual_t and t >= actual_t and not held_past_actual:

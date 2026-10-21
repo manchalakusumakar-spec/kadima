@@ -84,7 +84,10 @@ Winner: in profit, not counter-trend, and the day trend agrees or the index is 0
 -> soft exits (EMA9, VWAP, no-expansion timers, premium trail) are ignored; exit only on the
 breakeven lock, the day trend turning, or the index giving back max(1 ATR, retracement x best
 move). Three variants are logged side by side: base (50%), fib (61.8% while the trend agrees),
-oi (fib, tightened to 38.2% at the favourable option-chain OI wall until it breaks).
+oi (fib, tightened to 38.2% at the favourable option-chain OI wall until it breaks),
+pcr (oi, plus the put/call OI ratio since entry: falling PCR backs a PE, rising backs a CE;
+while it backs the trade by 5% the winner keeps 61.8% room, once it turns 5% off its best the
+room tightens to 38.2%, and a loser with PCR 5% against it is cut at half the distance).
 Shadow hook via `tools/install_hold_or_cut_20261021.py` (one guarded call in check_exits, logs
 `hold_or_cut_shadow`); outcomes measured with `tools/replay_hold_or_cut.py <day>` (read-only).
 Chart patterns and liquidity traps are not rule-coded: no stored definition is testable yet.

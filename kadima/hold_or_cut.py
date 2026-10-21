@@ -32,6 +32,7 @@ GIVEBACK = 1.0      # minimum ATR give-back that ends a winner
 RETRACE = 0.5        # share of the best index move a winner may give back
 RETRACE_TREND = 0.618  # 'fib' / 'oi' variants while the day trend agrees
 RETRACE_WALL = 0.382   # 'oi' variant while the index sits at the favourable OI wall
+PCR_TURN = 0.05       # 'pcr' variant: a 5% PCR move counts as writers changing sides
 CONFIRM = 2         # consecutive completed 1-min index closes for any index-based exit
 HARD_CAP = 0.35
 COST = 0.01
@@ -53,7 +54,8 @@ def new_state(entry_spot):
     return dict(entry_spot=entry_spot, best=0.0, phase='open', adverse=0, giveback=0)
 
 
-def step(state, direction, entry, ltp, spot, atr, trend, closed=True, variant='base', wall=None):
+def step(state, direction, entry, ltp, spot, atr, trend, closed=True, variant='base', wall=None,
+         pcr=None):
     """One decision. `spot` is a completed 1-min index close when closed=True
     (counters only move on completed closes). Returns (action, reason) where
     action is 'exit', 'hold' (winner: ignore soft exits) or 'none' (existing
@@ -64,7 +66,12 @@ def step(state, direction, entry, ltp, spot, atr, trend, closed=True, variant='b
     variant 'oi':   'fib', but tightened to 38.2% while the index sits at the option-
                     chain wall in the trade's favour (`wall`: the biggest put-OI strike
                     below spot for a PE, call-OI strike above spot for a CE), and back to
-                    'fib' once the index has closed CONFIRM times 0.5 ATR through it."""
+                    'fib' once the index has closed CONFIRM times 0.5 ATR through it.
+    variant 'pcr':  'oi' plus the chain's put/call OI ratio (`pcr`) since entry. Falling PCR
+                    (call writers adding) backs a PE, rising PCR backs a CE. While PCR backs
+                    the trade by PCR_TURN, a winner keeps 61.8% room even at the wall; once
+                    PCR has turned PCR_TURN off its best, room tightens to 38.2%; a loser
+                    whose PCR has moved PCR_TURN against it is cut at half the usual distance."""
     if not _ok(entry, ltp):
         return 'none', 'no_premium'
     if ltp <= entry * (1 - HARD_CAP):
@@ -78,6 +85,13 @@ def step(state, direction, entry, ltp, spot, atr, trend, closed=True, variant='b
     state['fav'] = round(fav, 2)
     counter = against(trend, direction)
     floor = entry * (1 + COST)
+    pcr_fav = pcr_turn = None
+    if variant == 'pcr' and _ok(pcr):
+        state.setdefault('pcr_entry', pcr)
+        pcr_fav = (pcr / state['pcr_entry'] - 1) * side      # > 0: PCR backs the trade
+        state['pcr_best'] = max(state.get('pcr_best', 0.0), pcr_fav)
+        pcr_turn = state['pcr_best'] - pcr_fav
+        state['pcr'] = round(pcr, 3)
 
     agrees = (trend == 'UP' and direction == 'CE') or (trend == 'DOWN' and direction == 'PE')
     if (state['phase'] != 'winner' and ltp > floor and not counter
@@ -90,14 +104,19 @@ def step(state, direction, entry, ltp, spot, atr, trend, closed=True, variant='b
         if ltp <= floor:
             return 'exit', 'winner_breakeven_lock'
         retrace = RETRACE
-        if variant in ('fib', 'oi') and agrees:
+        if variant in ('fib', 'oi', 'pcr') and agrees:
             retrace = RETRACE_TREND
-        if variant == 'oi' and _ok(wall):
+        if variant in ('oi', 'pcr') and _ok(wall):
             beyond = (spot - wall) * side          # > 0: index has gone through the wall
             if closed:
                 state['through'] = state.get('through', 0) + 1 if beyond >= 0.5 * atr else 0
             if state.get('through', 0) < CONFIRM and abs(spot - wall) <= 0.5 * atr:
                 retrace = RETRACE_WALL
+        if pcr_fav is not None:
+            if pcr_turn >= PCR_TURN:
+                retrace = RETRACE_WALL
+            elif pcr_fav >= PCR_TURN:
+                retrace = max(retrace, RETRACE_TREND)
         give = max(GIVEBACK * atr, state['best'] * retrace)
         if closed:
             state['giveback'] = state['giveback'] + 1 if fav <= state['best'] - give else 0
@@ -107,6 +126,8 @@ def step(state, direction, entry, ltp, spot, atr, trend, closed=True, variant='b
 
     if ltp < floor:
         limit = CUT_COUNTER if counter else CUT_ANY
+        if pcr_fav is not None and pcr_fav <= -PCR_TURN:
+            limit /= 2
         if closed:
             state['adverse'] = state['adverse'] + 1 if fav <= -limit * atr else 0
         if state['adverse'] >= CONFIRM:
@@ -135,7 +156,7 @@ def _conn():
     return c
 
 
-VARIANTS = ('base', 'fib', 'oi')
+VARIANTS = ('base', 'fib', 'oi', 'pcr')
 
 
 def wall_from(rows, spot, direction):
@@ -146,15 +167,22 @@ def wall_from(rows, spot, direction):
     return max(want)[1] if want else None
 
 
-def _live_wall(pos, spot):
+def pcr_from(rows):
+    """Put/call open-interest ratio of one chain snapshot."""
+    puts = sum(oi or 0 for k, t, oi in rows if t == 'PE')
+    calls = sum(oi or 0 for k, t, oi in rows if t == 'CE')
+    return puts / calls if puts > 0 and calls > 0 else None
+
+
+def _live_chain(pos, spot):
     from . import storage
     c = storage.conn()
     last = c.execute('SELECT MAX(ts) FROM oi_snapshots WHERE index_name=?', (pos.index,)).fetchone()[0]
     if not last:
-        return None
-    rows = c.execute('SELECT strike, opt_type, oi FROM oi_snapshots WHERE index_name=? AND ts=?',
-                     (pos.index, last)).fetchall()
-    return wall_from([tuple(r) for r in rows], spot, pos.direction)
+        return None, None
+    rows = [tuple(r) for r in c.execute('SELECT strike, opt_type, oi FROM oi_snapshots '
+                                        'WHERE index_name=? AND ts=?', (pos.index, last))]
+    return wall_from(rows, spot, pos.direction), pcr_from(rows)
 
 
 def _index_inputs(pos, now):
@@ -191,16 +219,16 @@ def shadow(pos, ltp, kadima_reason, now):
     if saved.get('minute') is None or closed:
         saved['minute'] = minute
     try:
-        wall = _live_wall(pos, spot) if _ok(spot) else None
-    except Exception:  # noqa: BLE001 - the wall is optional evidence
-        wall = None
+        wall, pcr = _live_chain(pos, spot) if _ok(spot) else (None, None)
+    except Exception:  # noqa: BLE001 - chain evidence is optional
+        wall, pcr = None, None
     out = {}
     for v in VARIANTS:
         if v in saved['done']:          # this variant already exited in shadow
             continue
         state = saved['states'][v]
         action, reason = step(state, pos.direction, pos.entry_price, ltp, spot, atr, trend,
-                              closed=closed, variant=v, wall=wall)
+                              closed=closed, variant=v, wall=wall, pcr=pcr)
         out[v] = (action, reason)
         if kadima_reason:
             verdict = ('agree' if action in ('exit', 'none') or kadima_reason in HARD_REASONS
@@ -216,7 +244,7 @@ def shadow(pos, ltp, kadima_reason, now):
                       variant=v, verdict=verdict, kadima_reason=kadima_reason, rule=reason,
                       phase=state['phase'], ltp=ltp, entry=pos.entry_price, spot=spot,
                       entry_spot=state['entry_spot'], fav_pts=state.get('fav'),
-                      best_pts=round(state['best'], 2), wall=wall,
+                      best_pts=round(state['best'], 2), wall=wall, pcr=state.get('pcr'),
                       atr=None if atr is None else round(atr, 2), trend=trend)
     with c:
         c.execute('INSERT OR REPLACE INTO hold_or_cut_state VALUES (?,?)', (pos.signal_id, json.dumps(saved)))
