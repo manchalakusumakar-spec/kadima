@@ -69,3 +69,23 @@ max 2/signal/day, 5-min cooldown, requires trend rules live), F (rejection alert
 shadow only; every feature has its own switch in `trend_rules.json`. Broker-stop live placement
 deliberately not built: an SL fill KADIMA does not reconcile could leave a phantom open position
 or trigger a second sell. Left for Codex with the reconciliation design and a 1-lot test.
+
+## 2026-10-21 — Hold winners, cut losers (SHADOW, not live)
+
+**Trigger:** 21-Oct, NIFTY -0.6%. With-trend PEs (NIFTY 23100/23050/22950/22900, BANKNIFTY
+55100/55200) were sold between -1.2% and +7.2%, then ran to +20..+75%; the MIDCPNIFTY 13600 CE,
+bought against the falling market, went from 144 to 39. Trader ask: hold the profitable trades,
+exit the loss trades.
+
+**Built (branch `claude/hold-winners-cut-losers-20261021`, `kadima/hold_or_cut.py`):** the trade
+is judged by the index, not by premium ticks. Loser: premium below entry + 1% and the index
+0.5 ATR (counter-trend) / 1 ATR (otherwise) against entry for 2 completed 1-min closes -> exit.
+Winner: in profit, not counter-trend, and the day trend agrees or the index is 0.5 ATR in favour
+-> soft exits (EMA9, VWAP, no-expansion timers, premium trail) are ignored; exit only on the
+breakeven lock, the day trend turning, or the index giving back max(1 ATR, retracement x best
+move). Three variants are logged side by side: base (50%), fib (61.8% while the trend agrees),
+oi (fib, tightened to 38.2% at the favourable option-chain OI wall until it breaks).
+Shadow hook via `tools/install_hold_or_cut_20261021.py` (one guarded call in check_exits, logs
+`hold_or_cut_shadow`); outcomes measured with `tools/replay_hold_or_cut.py <day>` (read-only).
+Chart patterns and liquidity traps are not rule-coded: no stored definition is testable yet.
+**Not live.** Going live needs the replay on several days and the trader's approval.
