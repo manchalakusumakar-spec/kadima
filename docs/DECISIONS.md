@@ -83,3 +83,28 @@ close or day open, e.g. a GAMMA_EXTRA index) takes the NIFTY day trend instead o
 (`trend_source` in the trend_rules_entry audit line). `mode=live` still switches all four rules.
 Deploy: `deploy/deploy_trend_rule2_live_20261021.sh` (hash-guarded on the 19-Oct trend_rules.py
 a33bb6dc, market-hours refusal, backup, auto-rollback on failed health; `--shadow` flips back in 30 s).
+
+## 2026-10-22 — Gamma red-reduction: R2 opening blackout, R3 exhaustion block, threshold 50
+
+**Trigger:** 21-Oct audit — 44 Gamma Blast suggestions: 11 green, 13 red, 20 neither; none auto-traded.
+Reds were counter-trend (7), a late chase right after earlier PEs hit +100% (3), and midday no-follow-through (3).
+Every green scored 51–58.6, so `below_threshold` (setting 60) blocked all of them. Analysis doc:
+"Gamma Blast Red-Reduction & Auto-Qualify Approach" (Claude doc).
+
+**Trader decisions (01:19 IST 22-Oct):** live straight away (no shadow phase); R2 cut-off 09:45; R3 window
+30 min after +50%; Celestial threshold 50; `volume_unconfirmed` a note, not a blocker; after 30 resolved
+outcomes, roll back any rule that loses more than 10% of greens.
+
+**Found on live EC2 (read-only, SSM):** `trend_rules.json` mode=live, so R1 (counter-trend gamma) was already
+live. `celestial.THRESHOLDS` accepted 60 (added 20-Oct) but `trade_policy.eligible` only accepted 65–90, so with
+threshold 60 no Celestial gamma could ever pass eligibility — fixed here (both now accept 50–90). Live config
+had auto_trade_enabled=false at night (session scheduler arms it). On 21-Oct no gamma reached the executor;
+capital_guard also failed closed 29× (broker margin unreadable) and equity read as unavailable 1,746×.
+
+**Change (branch `claude/gamma-red-reduction-20261022`):** `trend_rules.py` gains switches `open_blackout`
+and `exhaustion` (off|shadow|live, independent of `mode`), checked first in `entry_gate`; R3 reads
+`trade_audit_plans` (strategy GAMMA, same underlying+side, T1/T2 observed in the last 30 min) and fails open
+on error. `celestial.py`: THRESHOLDS 50–90, volume → `row['notes']`. `trade_policy.py`: minimum set matches.
+Applies to manual Celestial buys too (they share `entry_gate`). Deploy: `deploy/deploy_gamma_red_reduction_20261022.sh`
+(hash-guarded on live celestial f70ae5fc / trade_policy bf3c3201 / trend_rules a33bb6dc or rule2 8481cb3a,
+market-hours refusal, backups, auto-rollback; `--shadow`, `--rollback` restores threshold 60). 10 tests.

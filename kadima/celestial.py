@@ -11,7 +11,7 @@ from datetime import datetime, timedelta
 from . import storage
 from .utils import now_ist
 
-THRESHOLDS = (65, 70, 75, 80, 85, 90)
+THRESHOLDS = (50, 55, 60, 65, 70, 75, 80, 85, 90)   # 60 added 2026-10-20; 50/55 added 2026-10-22 (gamma red-reduction)
 DEFAULTS = dict(auto_trade_enabled=False, score_threshold=65, dashboard_limit=20,
                 mode="AUTONOMOUS_GAMMA_BLAST", kill_latched=False,
                 adopt_external_positions=True, revision=0)
@@ -82,7 +82,7 @@ def update_config(patch, *, expected_revision=None, reset_kill=False):
             raise ValueError('Config changed; refresh before updating')
         if 'score_threshold' in patch and (type(patch['score_threshold']) is not int
                                             or patch['score_threshold'] not in THRESHOLDS):
-            raise ValueError('Threshold must be one of 65,70,75,80,85,90')
+            raise ValueError('Threshold must be one of ' + ','.join(map(str, THRESHOLDS)))
         if any(type(v) is not bool for k, v in patch.items() if k != 'score_threshold'):
             raise ValueError('Boolean settings require true or false')
         if cfg['kill_latched'] and patch.get('auto_trade_enabled'):
@@ -195,7 +195,8 @@ def ranked_candidates(now=None, *, manual=False, candidates=None):
         if not cfg['auto_trade_enabled'] and not manual: reasons.append('auto_paused')
         if cfg['kill_latched']: reasons.append('kill_latched')
         if row['final_score'] < cfg['score_threshold']: reasons.append('below_threshold')
-        if row.get('volume_spike') is not True: reasons.append('volume_unconfirmed')
+        # 2026-10-22: volume is a note, not a blocker (blocked 9 greens and 9 reds on 21-Oct).
+        notes = [] if row.get('volume_spike') is True else ['volume_unconfirmed']
         if row.get('oi_support') is not True: reasons.append('oi_unconfirmed')
         if row.get('spread_status') != 'CLEAN': reasons.append('spread_not_clean')
         if row.get('tradeable') is not True: reasons.append('contract_not_tradeable')
@@ -210,6 +211,7 @@ def ranked_candidates(now=None, *, manual=False, candidates=None):
         if not fresh(row.get('spot_at'), now): reasons.append('underlying_stale')
         row['eligible'] = not reasons
         row['blocked_reasons'] = reasons
+        row['notes'] = notes
         row['action'] = 'READY' if row['eligible'] else 'RADAR'
         row['tier'] = ('BLAST' if score >= 90 else 'CONFIRMED' if score >= 85 else
                        'ACTIVE' if score >= 70 else 'WATCH' if score >= 40 else 'RADAR')

@@ -41,7 +41,8 @@ GAMMA_KINDS = ('gamma_blast',)
 # starts live. broker_stop is shadow-only in this build (live is refused in code).
 FEATURE_DEFAULTS = {'mode': 'shadow', 'entry': 'half', 'cf_protect': 'shadow',
                     'reentry': 'shadow', 'monitor': 'shadow', 'watchdog': 'live',
-                    'broker_stop': 'shadow', 'rule2': 'shadow'}
+                    'broker_stop': 'shadow', 'rule2': 'shadow',
+                    'open_blackout': 'shadow', 'exhaustion': 'shadow'}
 # rule2 (2026-10-21, trader): "gamma only with the day trend" can go live on its own,
 # while the band stop and min-risk entry (rules 3-4) stay in shadow. mode=live still
 # switches all four rules on together.
@@ -321,11 +322,61 @@ def bound_stop(stop, entry, ltp, noise, previous=None):
     return stop if stop > 0 else None
 
 
+# ------------------------------------------------------------------ gamma timing rules
+# Trader decision 2026-10-22 (from the 21-Oct Gamma Blast audit: 10 of 13 reds were
+# counter-trend, pre-trend or late-chase entries). Each rule has its own off|shadow|live
+# switch in trend_rules.json, independent of `mode`, so one can be rolled back alone.
+#   R2 open_blackout: no gamma entry before OPEN_BLACKOUT (day trend not yet set).
+#   R3 exhaustion:    no new same-side gamma entry on an index for EXHAUST_WINDOW_MIN
+#                     after an earlier gamma suggestion there was observed at +50% (T1).
+OPEN_BLACKOUT = (9, 45)
+EXHAUST_WINDOW_MIN = 30
+
+
+def _exhausted_at(index_name, direction, now):
+    """Latest T1/T2 observation (+50%/+100%) of a same-side GAMMA plan today, or None."""
+    c = storage.conn()
+    rows = c.execute(
+        "SELECT t1_at, t2_at FROM trade_audit_plans WHERE day=? AND strategy='GAMMA' "
+        "AND underlying=? AND direction=? AND (t1_at IS NOT NULL OR t2_at IS NOT NULL)",
+        (now.date().isoformat(), index_name, direction)).fetchall()
+    latest = None
+    for row in rows:
+        for value in row:
+            try:
+                at = datetime.fromisoformat(value) if value else None
+            except (TypeError, ValueError):
+                at = None
+            if at is not None and at.tzinfo is not None and at <= now and (latest is None or at > latest):
+                latest = at
+    return latest
+
+
+def _timing_block(index_name, direction, now):
+    """(rule, reason) for the first gamma timing rule that would block, else (None, None)."""
+    if (now.hour, now.minute) < OPEN_BLACKOUT:
+        return 'open_blackout', 'gamma_before_%02d%02d_trend_unset' % OPEN_BLACKOUT
+    try:
+        hit = _exhausted_at(index_name, direction, now)
+    except Exception as exc:  # noqa: BLE001 - no data never blocks
+        audit.log('trend_rules_error', where='exhausted_at', error=str(exc)[:200])
+        hit = None
+    if hit is not None and now - hit <= timedelta(minutes=EXHAUST_WINDOW_MIN):
+        return 'exhaustion', f'gamma_move_exhausted_{direction.lower()}_{hit.strftime("%H%M")}'
+    return None, None
+
+
 # ------------------------------------------------------------------ rule 4 + entry
 def _entry_gate_impl(index_name, token, direction, spot, vwap, now=None):
     """Called for gamma entries. Returns {'block': reason|None, 'stop_level': x|None}.
     In shadow mode it logs what it would have done and never blocks."""
     now = now or now_ist()
+    rule, reason = _timing_block(index_name, direction, now)
+    if rule is not None and feature(rule) != 'off':
+        audit.log('gamma_timing_rule', index=index_name, direction=direction, rule=rule,
+                  would_block=reason, mode=feature(rule))
+        if feature(rule) == 'live':
+            return {'block': reason}
     if mode() == 'off':
         return {}
     label = day_trend(index_name, token, spot, vwap, now)

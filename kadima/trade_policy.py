@@ -30,7 +30,7 @@ def eligible(kind, tier, score, direction, snap, spot, minimum=None, shield_evid
     threshold = {'bull_shield': SHIELD_MIN_SCORE, 'bear_shield': SHIELD_MIN_SCORE,
                  'gamma_blast': GAMMA_MIN_SCORE}.get(kind)
     if minimum is not None:
-        if type(minimum) is not int or minimum not in (65,70,75,80,85,90):
+        if type(minimum) is not int or minimum not in (50,55,60,65,70,75,80,85,90):  # must match celestial.THRESHOLDS
             return False
         threshold = minimum if threshold is not None else None
     valid_tier = tier in ('ACTIVE','CONFIRMED') if minimum is not None else tier == 'CONFIRMED'
