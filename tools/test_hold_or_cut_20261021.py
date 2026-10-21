@@ -154,12 +154,51 @@ def test_shadow_logs_a_veto_and_never_trades():
     assert {('base', 'would_hold'), ('oi', 'would_hold'), ('pcr', 'would_hold')} <= verdicts
 
 
+def test_trend_pullback_enters_on_the_turn_inside_the_fib_zone():
+    from kadima import trend_pullback as P
+    from datetime import datetime as D
+    at = D(2026, 10, 21, 10, 30, tzinfo=IST)
+    s = P.new_state()
+    sig = None
+    # DOWN leg 23000 -> 22950 (5 ATR), pullback to 22975 (50%), turn down 3+ pts.
+    for close in (23000, 22990, 22970, 22950, 22960, 22975, 22971):
+        sig = P.step(s, close, ATR / 2, 'DOWN', at=at) or sig
+    assert sig and sig['direction'] == 'PE' and 0.38 <= sig['retrace'] <= 0.62
+    assert P.step(s, 22965, ATR / 2, 'DOWN', at=at) is None          # one entry per leg
+
+
+def test_trend_pullback_skips_shallow_failed_and_sideways():
+    from kadima import trend_pullback as P
+    from datetime import datetime as D
+    at = D(2026, 10, 21, 10, 30, tzinfo=IST)
+    s = P.new_state()
+    for close in (23000, 22950, 22960, 22955):                         # 20% pullback: too shallow
+        assert P.step(s, close, ATR / 2, 'DOWN', at=at) is None
+    s = P.new_state()
+    for close in (23000, 22950, 22995, 22985):                         # 90%: leg failed
+        assert P.step(s, close, ATR / 2, 'DOWN', at=at) is None
+    s = P.new_state()
+    for close in (23000, 22950, 22975, 22970):
+        assert P.step(s, close, ATR / 2, 'SIDEWAYS', at=at) is None
+    s = P.new_state()
+    late = D(2026, 10, 21, 15, 0, tzinfo=IST)
+    for close in (23000, 22950, 22975, 22970):
+        assert P.step(s, close, ATR / 2, 'DOWN', at=late) is None      # outside the window
+    s = P.new_state()
+    for close in (23000, 22950, 22975, 22970):
+        assert P.step(s, close, ATR / 2, 'DOWN', at=at, side_allowed=False) is None
+
+
 # ---------------------------------------------------------------- replay
 TOKEN = '99926000'
 DAY = datetime(2026, 10, 21, tzinfo=IST).date()
 
 
 def spot_at(m):
+    if 160 <= m < 200:                       # a 61.8%-ish bounce in the afternoon, then a new low
+        return 22780 + (m - 160) * 2.5 if m < 180 else 22830 - (m - 180) * 4
+    if m >= 200:
+        return 22750 + (4 if m % 6 < 3 else -4)
     return 22900 - 0.8 * m if m <= 150 else 22780 + (4 if m % 6 < 3 else -4)
 
 
@@ -224,11 +263,16 @@ def test_replay_holds_the_pe_and_cuts_the_ce_without_writing():
     pnl = lambda l: int(l.split(' P&L ')[1].split()[0])
     for v, line in zip(H.VARIANTS, lines[i1 + 1:i1 + 1 + len(H.VARIANTS)]):
         assert line.split()[0] == v, line
-        assert pnl(line) > (192.4 - 185) * 65 * 5      # held the winner well past +4%
+        # Every variant beats the +4% exit; the trend-aware ones (61.8% room) also ride
+        # through the afternoon bounce that the plain 50% rule gives back on.
+        assert pnl(line) > (192.4 - 185) * 65 * (5 if v != 'base' else 2), line
     for v, line in zip(H.VARIANTS, lines[i2 + 1:i2 + 1 + len(H.VARIANTS)]):
         assert 'cut_counter_trend' in line, line
         assert pnl(line) > (126 - 144) * 65             # cut sooner than the actual exit
-    assert lines[-1].startswith('TOTAL')
+    assert any(l.startswith('TOTAL') for l in lines)
+    early = [l for l in lines if l.startswith('  NIFTY ')]
+    assert early and all('PE entry' in l for l in early), early   # with the DOWN trend only
+    assert lines[-1].startswith('EARLY ENTRY TOTAL')
     assert (os.path.getmtime(db), os.path.getsize(db)) == before
     assert not os.path.exists(os.path.join(DATA, 'audit', '2026-10-21.jsonl'))
 

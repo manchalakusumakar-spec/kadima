@@ -233,6 +233,82 @@ def main():
                 tot[v] += results[v]
     print('TOTAL (gross, before charges) actual %.0f | ' % tot_a +
           ' | '.join('%s %.0f (%+.0f)' % (v, tot[v], tot[v] - tot_a) for v in variants))
+    lots = {r['index_name']: r['lot_size'] for r in rows if r['lot_size']}
+    early_entries(data, variants, lots)
+
+
+def manage(data, name, direction, entry_t, entry, entry_spot, prem, variant):
+    """Hold/cut management of one simulated entry; returns (time, price, reason)."""
+    idx = config.GAMMA_INDICES[name]
+    state = H.new_state(entry_spot)
+    cutoff = datetime.combine(data.day, CUTOFF, IST)
+    for t, spot in data.ones(idx.token):
+        if t <= entry_t:
+            continue
+        ltp = at_or_before(prem, t)
+        if t >= cutoff:
+            return t, ltp, 'eod_1520'
+        if ltp is None:
+            continue
+        trend = T.day_trend(name, idx.token, spot, None, t)
+        rows = data.snapshot(name, t) if variant in ('oi', 'pcr') else None
+        action, reason = H.step(state, direction, entry, ltp, spot, atr(T._rows(idx.token, t)), trend,
+                                variant=variant,
+                                wall=H.wall_from(rows, spot, direction) if rows else None,
+                                pcr=H.pcr_from(rows) if rows and variant == 'pcr' else None)
+        if action == 'exit':
+            return t, ltp, reason
+    return (prem[-1][0], prem[-1][1], 'end_of_data') if prem else (None, None, 'no_data')
+
+
+def early_entries(data, variants, lots):
+    """Trend-pullback entries (kadima/trend_pullback.py) on every index with candles,
+    priced at the nearest stored strike and managed by each hold/cut variant."""
+    from kadima import trend_pullback as P
+    print('EARLY ENTRY (trend pullback %.3f-%.3f, leg >= %.1f ATR, turn %.1f ATR; ATM strike from the chain)'
+          % (P.ZONE_LO, P.ZONE_HI, P.LEG_MIN_ATR, P.TURN_ATR))
+    tot = {v: 0.0 for v in variants}
+    for name, idx in config.GAMMA_INDICES.items():
+        spots = data.ones(idx.token)
+        if not spots:
+            continue
+        T._rows = lambda token, now: data.rows_before(token, now)
+        T._inputs_cache.clear(); T._trend.clear()
+        st = P.new_state()
+        for t, spot in spots:
+            trend = T.day_trend(name, idx.token, spot, None, t)
+            sig = P.step(st, spot, atr(T._rows(idx.token, t)), trend, at=t)
+            if not sig:
+                continue
+            rows = data.snapshot(name, t) or []
+            strikes = [k for k, typ, _ in rows if typ == sig['direction'] and k]
+            if not strikes:
+                print('  %s %s %s SKIPPED no chain snapshot' % (name, t.strftime('%H:%M'), sig['direction']))
+                continue
+            strike = min(strikes, key=lambda k: abs(k - spot))
+            prem = [(ts(r[0]), float(r[1])) for r in data.db.execute(
+                'SELECT ts, ltp FROM oi_snapshots WHERE index_name=? AND strike=? AND opt_type=? '
+                'AND ts>=? AND ltp>0 ORDER BY ts', (name, strike, sig['direction'],
+                                                   (t - timedelta(minutes=3)).isoformat()))]
+            entry = at_or_before(prem, t)
+            if entry is None:
+                print('  %s %s %s %s SKIPPED no premium' % (name, t.strftime('%H:%M'), strike, sig['direction']))
+                continue
+            qty = lots.get(name) or 1
+            line = '  %s %s %g%s entry %.2f spot %.2f retrace %.2f leg %.0f qty %s' % (
+                name, t.strftime('%H:%M'), strike, sig['direction'], entry, spot, sig['retrace'], sig['leg'],
+                qty if name in lots else '1 (lot unknown)')
+            parts = []
+            saved = dict(T._trend.get(name) or {})
+            for v in variants:
+                xt, xp, why = manage(data, name, sig['direction'], t, entry, spot, prem, v)
+                T._trend[name] = dict(saved)       # each variant replays from the same trend state
+                pnl = (xp - entry) * qty if xp else 0.0
+                tot[v] += pnl
+                parts.append('%s %s@%s %s %+.0f' % (v, None if xp is None else round(xp, 2),
+                                                   xt.strftime('%H:%M') if xt else '-', why, pnl))
+            print(line + ' | ' + ' | '.join(parts))
+    print('EARLY ENTRY TOTAL (gross) ' + ' | '.join('%s %.0f' % (v, tot[v]) for v in variants))
 
 
 if __name__ == '__main__':
