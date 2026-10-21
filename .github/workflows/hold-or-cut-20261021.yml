@@ -1,0 +1,41 @@
+name: Hold winners / cut losers (shadow)
+on:
+  push:
+    branches: [claude/hold-winners-cut-losers-20261021]
+  pull_request:
+    paths: ['kadima/hold_or_cut.py', 'tools/*hold_or_cut*']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      ORDER_PLACEMENT_ENABLED: '0'
+      KADIMA_CELESTIAL_ENABLED: '0'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Overlay config.py (the EC2 snapshot omits it; tests only)
+        run: |
+          git rev-parse --verify -q origin/main >/dev/null || git fetch --no-tags origin +refs/heads/main:refs/remotes/origin/main
+          git show origin/main:kadima/config.py > kadima/config.py
+      - name: Compile
+        run: python -m compileall -q kadima/hold_or_cut.py tools/replay_hold_or_cut.py tools/install_hold_or_cut_20261021.py
+      - name: Rule, shadow and read-only replay tests
+        run: KADIMA_DATA_DIR=$(mktemp -d) python tools/test_hold_or_cut_20261021.py
+      - name: Installer on this branch's executor (install, re-run, rollback)
+        run: |
+          T=$(mktemp -d); mkdir -p $T/kadima; cp kadima/auto_executor.py $T/kadima/
+          python tools/install_hold_or_cut_20261021.py $T
+          python tools/install_hold_or_cut_20261021.py $T | grep -q "OK (shadow only)"
+          test "$(grep -c "hold_or_cut.shadow(pos, ltp, reason, now)" $T/kadima/auto_executor.py)" = 2
+          python -m py_compile $T/kadima/auto_executor.py
+          python tools/install_hold_or_cut_20261021.py $T --rollback
+          cmp $T/kadima/auto_executor.py kadima/auto_executor.py
+          test ! -e $T/kadima/hold_or_cut.py
