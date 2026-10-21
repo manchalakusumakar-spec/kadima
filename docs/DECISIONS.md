@@ -108,3 +108,12 @@ on error. `celestial.py`: THRESHOLDS 50–90, volume → `row['notes']`. `trade_
 Applies to manual Celestial buys too (they share `entry_gate`). Deploy: `deploy/deploy_gamma_red_reduction_20261022.sh`
 (hash-guarded on live celestial f70ae5fc / trade_policy bf3c3201 / trend_rules a33bb6dc or rule2 8481cb3a,
 market-hours refusal, backups, auto-rollback; `--shadow`, `--rollback` restores threshold 60). 10 tests.
+
+## 2026-10-22 — Index scalping disabled (gamma-first)
+
+**Trader (01:50 IST):** disable scalping. Scalping netted ≈ +₹480 over 16 trades 14–21 Oct; gamma is the focus.
+The shared `KADIMA_FAST_MOMENTUM_LIVE` flag also gates move capture, gap-and-go, stock fast and MCX, so the
+trader chose a scalp-only switch: `scalp_v2.json` `"entries": "off|shadow|live"` (non-live adds blocker
+`scalp_entries_off`; scalp_v2 stays mode=live so v1 rows stay undispatched; signals still audited).
+`scalp_v2.py` is not in the repo; `deploy/disable_scalping_20261022.sh` patches the live file in place,
+hash-guarded on bc0ed647, with `--enable` / `--disable` (no restart) and `--rollback`.
