@@ -265,6 +265,8 @@ class AnalogResult:
     used: int
     reg_end: float = 0.0       # ridge-regression end move, sigma units
     pool: int = 0
+    best: list = None          # forward path of the closest past match, sigma units
+    best_from: str = None      # that match's day and bar time, e.g. '2026-10-08 11:15'
 
 
 def solve(a, b):
@@ -312,7 +314,7 @@ def analogs(days, di, i, n, feat, tod, as_of):
                 continue
             dist = math.sqrt(sum(w * (a - b) ** 2 for w, a, b in zip(FEATURE_WEIGHTS, f, feat)))
             age = max(0, (as_of - dk.day).days)
-            cands.append((dist, abs(j - i), age, p, f))
+            cands.append((dist, abs(j - i), age, p, f, dk.day, j))
     if len(cands) < 10:
         return None
     # Pooled ridge regression of the end move on all features: statistically
@@ -325,7 +327,7 @@ def analogs(days, di, i, n, feat, tod, as_of):
     near = cands[:ANALOG_K]
     h = max(near[len(near) // 2][0], 1e-6)
     ws = [math.exp(-0.5 * (dist / h) ** 2) * math.exp(-dj / 6.0)
-          * 0.5 ** (age / RECENCY_HALFLIFE_DAYS) for dist, dj, age, _, _ in near]
+          * 0.5 ** (age / RECENCY_HALFLIFE_DAYS) for dist, dj, age, *_ in near]
     tw = sum(ws)
     if tw <= 0:
         return None
@@ -333,7 +335,10 @@ def analogs(days, di, i, n, feat, tod, as_of):
     sd = [math.sqrt(sum(w * (c[3][k] - mean[k]) ** 2 for w, c in zip(ws, near)) / tw) for k in range(n)]
     up = sum(w for w, c in zip(ws, near) if c[3][-1] > 0) / tw
     neff = tw * tw / sum(w * w for w in ws)
-    return AnalogResult(mean, sd, up, neff, len(near), clip(reg_end, -3, 3), len(cands))
+    b = near[0]
+    hm = 9 * 60 + 15 + STEP_MIN * b[6]
+    return AnalogResult(mean, sd, up, neff, len(near), clip(reg_end, -3, 3), len(cands),
+                        best=list(b[3]), best_from=f'{b[5].isoformat()} {hm // 60:02d}:{hm % 60:02d}')
 
 
 # ---------------------------------------------------------------- technical tilt
@@ -443,6 +448,7 @@ class Forecast:
     band_pts: float         # half-width at slot end
     n_eff: float
     inputs: dict = field(default_factory=dict)   # raw regressors for later refitting
+    swing: list = field(default_factory=list)    # expected 5-minute ups and downs, prices, k = 1..steps
 
 
 def iv_sigma(iv_pct):
@@ -495,6 +501,13 @@ def make_forecast(days, di, i, n, anchor, *, as_of, tod=None, params=None,
                anchor * math.exp((mean[k] + z * sd[k]) * sigma),
                anchor * math.exp((mean[k] - z * sd[k]) * sigma)) for k in range(n)]
 
+    # Expected swings: the closest past match's 5-minute ups and downs, detrended so it starts
+    # and ends on the average path, laid over that path. Display only; the average path above
+    # is what is scored and calibrated.
+    best = an.best if an is not None and an.best and len(an.best) == n else None
+    wig = [best[k] - best[-1] * (k + 1) / n for k in range(n)] if best else [0.0] * n
+    swing = [round(anchor * math.exp((mean[k] + wig[k]) * sigma), 2) for k in range(n)]
+
     p_model = norm_cdf(mean[-1] / sd[-1]) if sd[-1] > 0 else 0.5
     p_raw = 0.5 * p_model + 0.5 * an.up_frac if use_an else p_model
     p = 0.5 if params.get('band_only') else clip(0.5 + params['prob_c'] * (p_raw - 0.5), 0.05, 0.95)
@@ -505,7 +518,8 @@ def make_forecast(days, di, i, n, anchor, *, as_of, tod=None, params=None,
         direction=direction, projected_pct=round((end / anchor - 1) * 100, 3),
         projected_pts=round(end - anchor, 2),
         band_pts=round((points[-1][2] - points[-1][3]) / 2, 2), n_eff=round(an.n_eff, 1) if an else 0.0,
-        inputs=dict(x, p_raw=p_raw, sd=sd, mean=mean, sd_end=sd[-1], p_model=p_model,
+        swing=swing,
+        inputs=dict(x, p_raw=p_raw, swing_from=an.best_from if best else None, sd=sd, mean=mean, sd_end=sd[-1], p_model=p_model,
                     sigma=sigma, sigma_real=s_real, sigma_iv=s_iv, tech=m, tech_parts=parts,
                     trend=trend, oi=oit, oi_parts=oi_parts, oi_features=dict(oi or {}), band_only=bool(params.get('band_only')),
                     analog_used=bool(use_an), analog_up=an.up_frac if an else None,

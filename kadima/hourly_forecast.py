@@ -121,6 +121,8 @@ def conn(path=None):
         cols = {r['name'] for r in c.execute('PRAGMA table_info(hourly_forecast_points)')}
         if 'actual_source' not in cols:
             c.execute('ALTER TABLE hourly_forecast_points ADD COLUMN actual_source TEXT')
+        if 'swing' not in cols:
+            c.execute('ALTER TABLE hourly_forecast_points ADD COLUMN swing REAL')
         cache[path] = c
     return cache[path]
 
@@ -247,6 +249,13 @@ def actual_at(token, ts, now):
 
 def verified(p):
     return p['actual'] is not None and p['actual_source'] in VERIFIED_SOURCES
+
+
+def _swing(p):
+    try:
+        return p['swing']
+    except (IndexError, KeyError):
+        return None
 
 
 def revisions(day, name, slot, db=None):
@@ -497,11 +506,14 @@ class HourlyForecaster:
                       (day.isoformat(), name, label, M.slot_label(end), n, now.isoformat(), late,
                        f.anchor, f.sigma, f.direction, f.prob_up, f.projected_pct, f.projected_pts,
                        f.band_pts, f.n_eff, M.MODEL_VERSION, json.dumps(f.inputs, default=str), 'live'))
-            c.executemany('INSERT OR IGNORE INTO hourly_forecast_points VALUES (?,?,?,?,?,?,?,?,?)',
+            # Named columns: the table gains columns over time (actual_source, swing).
+            swing = f.swing if len(f.swing) == len(f.points) else [None] * len(f.points)
+            c.executemany('INSERT OR IGNORE INTO hourly_forecast_points (day,index_name,slot,k,ts,forecast,'
+                          'upper,lower,swing) VALUES (?,?,?,?,?,?,?,?,?)',
                           [(day.isoformat(), name, label, k,
                             (t0 + timedelta(minutes=M.STEP_MIN * k)).isoformat(),
-                            round(mean, 2), round(up, 2), round(lo, 2), None)
-                           for k, mean, up, lo in f.points])
+                            round(mean, 2), round(up, 2), round(lo, 2), sw)
+                           for (k, mean, up, lo), sw in zip(f.points, swing)])
         audit.log('hourly_forecast_made', index=name, slot=label, late=late, anchor=f.anchor,
                   direction=f.direction, prob_up=f.prob_up, projected_pct=f.projected_pct,
                   band_pts=f.band_pts, n_eff=f.n_eff)
@@ -567,7 +579,8 @@ class HourlyForecaster:
                 continue
             shift = p['actual'] - p['forecast']
             path = [dict(k=q['k'], ts=q['ts'], forecast=round(q['forecast'] + shift, 2),
-                         upper=round(q['upper'] + shift, 2), lower=round(q['lower'] + shift, 2))
+                         upper=round(q['upper'] + shift, 2), lower=round(q['lower'] + shift, 2),
+                         **({'swing': round(q['swing'] + shift, 2)} if _swing(q) is not None else {}))
                     for q in pts if q['k'] > p['k']]
             rev += 1
             rc = receipt(day, name, slot, rev, p['k'], path)
@@ -758,7 +771,7 @@ def view(name, day=None, engine=None, now=None, db=None):
             base['status'] = 'pending' if now < t0 + timedelta(seconds=ON_TIME_SEC) and day == now.date() else 'missed'
             slots.append(base)
             continue
-        pts = c.execute('SELECT k, ts, forecast, upper, lower, actual, actual_source FROM hourly_forecast_points '
+        pts = c.execute('SELECT k, ts, forecast, upper, lower, swing, actual, actual_source FROM hourly_forecast_points '
                         'WHERE day=? AND index_name=? AND slot=? ORDER BY k',
                         (day.isoformat(), name, label)).fetchall()
         p_up = r['prob_up']
@@ -782,7 +795,9 @@ def view(name, day=None, engine=None, now=None, db=None):
                 dir_hit=None if r['dir_hit'] is None else bool(r['dir_hit']), mae_pts=r['mae_pts'],
                 coverage=r['coverage'], end_error_pts=r['end_error_pts'], actual_pct=r['actual_pct']),
             live=live_price if (r['status'] == 'live' and t0 <= now < t1 + timedelta(seconds=60)) else None)
-        base['inputs'] = {'oi_features': json.loads(r['inputs'] or '{}').get('oi_features', {})}
+        inp = json.loads(r['inputs'] or '{}')
+        base['inputs'] = {'oi_features': inp.get('oi_features', {})}
+        base['swing_from'] = inp.get('swing_from')
         a = c.execute('SELECT * FROM hourly_forecast_audit WHERE day=? AND index_name=? AND slot=?',
                       (day.isoformat(), name, label)).fetchone()
         if a:
