@@ -117,3 +117,20 @@ trader chose a scalp-only switch: `scalp_v2.json` `"entries": "off|shadow|live"`
 `scalp_entries_off`; scalp_v2 stays mode=live so v1 rows stay undispatched; signals still audited).
 `scalp_v2.py` is not in the repo; `deploy/disable_scalping_20261022.sh` patches the live file in place,
 hash-guarded on bc0ed647, with `--enable` / `--disable` (no restart) and `--rollback`.
+
+## 2026-10-22 — Step 0: capital_guard rate-limit cache and single-count headroom
+
+**Trigger:** 21-Oct audit — 29 entries refused `broker_margin_unreadable_failing_closed` (Angel One
+"Access denied because of exceeding access rate"; each entry called rmsLimit 3–4 times, no cache), and
+`capital_ceiling_reached_deployed_12275_equity_8478`: available cash is already net of open premium but
+`max_affordable_lots` subtracted deployed capital again. Trader approved install before the 22-Oct open.
+
+**Change:** `broker_available_funds()` is one cached reader (fresh 5 s; on failure last-good ≤60 s minus
+`reserve_funds()` reservations; else one retry after 1 s; else None). Headroom = buffered cash. Each allowed
+entry reserves its cost until the next fresh read. 9 tests. Deploy: `deploy/deploy_capital_guard_step0_20261022.sh`
+(hash-guarded 5141f361 → a6b23bcf, auto-rollback, `--rollback`).
+
+**Also decided 02:01–02:03 (core-hold build, not yet coded):** 09:30 entry for a core trade on a 4-of-4 early
+trend (09:45 otherwise); core re-entries exempt from R3; ₹10,000 daily loss limit kept; core hold goes live
+straight away; a profitable open trade is exited for a new gamma only if the new trade's projected profit is
+higher than the open trade's remaining projected profit.

@@ -62,6 +62,7 @@ import json
 import math
 import os
 import threading
+import time
 
 from . import audit
 from . import config
@@ -208,18 +209,23 @@ def deployed_capital(positions: dict) -> float:
 
 
 # --------------------------------------------------------------------- broker
-def broker_available_funds() -> float | None:
-    """
-    Available cash/margin from Angel One RMS. Returns None if it cannot
-    be read — caller must treat None as "do not trade", not "unlimited".
+# 2026-10-22 (trader-approved Step 0): one shared, cached balance reader. Every entry used
+# to call rmsLimit() 3-4 times; Angel One answered "Access denied because of exceeding
+# access rate" and the guard failed closed (29 refused entries on 21-Oct).
+RMS_FRESH_SEC = 5.0        # a read this recent is reused, no API call
+RMS_STALE_MAX_SEC = 60.0   # on a failed read, a last-good value this old may be used
+RMS_RETRY_DELAY_SEC = 1.0  # one retry after this pause when no usable cache exists
+_rms_lock = threading.RLock()
+_rms = {'value': None, 'at': 0.0, 'reserved': 0.0}
 
-    >>> Field names in the RMS response vary by broker/API version.
-    >>> Verify against an actual rmsLimit() response before relying on it.
-    """
+
+def _read_rms_once() -> float | None:
     try:
         SESSION.ensure()
         resp = SESSION.api.rmsLimit()
         if not isinstance(resp, dict) or resp.get("status") is not True:
+            audit.log("capital_guard_rms_bad_response",
+                      message=str((resp or {}).get("message") if isinstance(resp, dict) else resp)[:120])
             return None
         data = resp.get("data") or {}
         for key in ("availablecash", "availableCash", "net", "availablemargin"):
@@ -232,7 +238,42 @@ def broker_available_funds() -> float | None:
         audit.log("capital_guard_rms_unparsed", response_keys=list(data.keys()))
         return None
     except Exception as exc:  # noqa: BLE001
-        audit.log("capital_guard_rms_exception", error=str(exc))
+        audit.log("capital_guard_rms_exception", error=str(exc)[:200])
+        return None
+
+
+def reserve_funds(amount: float) -> None:
+    """Deduct cash promised to an entry from a cached balance until the next fresh read."""
+    with _rms_lock:
+        if _rms['value'] is not None and amount and amount > 0:
+            _rms['reserved'] += float(amount)
+
+
+def broker_available_funds() -> float | None:
+    """
+    Available cash/margin from Angel One RMS. Returns None if it cannot
+    be read — caller must treat None as "do not trade", not "unlimited".
+    Cached: fresh for RMS_FRESH_SEC; on a failed read the last good value
+    (minus cash reserved since) is used for up to RMS_STALE_MAX_SEC; with no
+    usable cache, one retry after RMS_RETRY_DELAY_SEC, then None.
+    """
+    with _rms_lock:
+        now = time.monotonic()
+        age = now - _rms['at']
+        if _rms['value'] is not None and age <= RMS_FRESH_SEC:
+            return max(0.0, _rms['value'] - _rms['reserved'])
+        funds = _read_rms_once()
+        if funds is None and not (_rms['value'] is not None and age <= RMS_STALE_MAX_SEC):
+            time.sleep(RMS_RETRY_DELAY_SEC)
+            funds = _read_rms_once()
+        if funds is not None:
+            _rms.update(value=funds, at=time.monotonic(), reserved=0.0)
+            return funds
+        if _rms['value'] is not None and time.monotonic() - _rms['at'] <= RMS_STALE_MAX_SEC:
+            value = max(0.0, _rms['value'] - _rms['reserved'])
+            audit.log("capital_guard_rms_cached_fallback", age_sec=round(time.monotonic() - _rms['at'], 1),
+                      funds=round(value, 2))
+            return value
         return None
 
 
@@ -266,7 +307,10 @@ def max_affordable_lots(
     if already == float("inf"):
         return 0, "existing_position_unvaluable"
 
-    headroom = _buffered_ceiling() - already
+    # 2026-10-22: Angel One's available cash is already net of premium paid for open
+    # positions; subtracting `already` again counted every open trade twice (21-Oct 09:52:
+    # Rs 8,478 free was read as below zero). Headroom is the buffered cash itself.
+    headroom = _buffered_ceiling()
     if headroom <= 0:
         return 0, f"capital_ceiling_reached_deployed_{int(already)}_equity_{int(available_equity())}"
 
@@ -288,6 +332,7 @@ def max_affordable_lots(
         if allowed == 0:
             return 0, f"insufficient_broker_funds_{int(funds)}_need_{int(cost_per_lot)}"
 
+    reserve_funds(allowed * cost_per_lot)
     if allowed < requested_lots:
         return allowed, f"sized_down_from_{requested_lots}_to_{allowed}"
 
