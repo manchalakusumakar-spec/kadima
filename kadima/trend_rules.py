@@ -41,7 +41,11 @@ GAMMA_KINDS = ('gamma_blast',)
 # starts live. broker_stop is shadow-only in this build (live is refused in code).
 FEATURE_DEFAULTS = {'mode': 'shadow', 'entry': 'half', 'cf_protect': 'shadow',
                     'reentry': 'shadow', 'monitor': 'shadow', 'watchdog': 'live',
-                    'broker_stop': 'shadow'}
+                    'broker_stop': 'shadow', 'rule2': 'shadow'}
+# rule2 (2026-10-21, trader): "gamma only with the day trend" can go live on its own,
+# while the band stop and min-risk entry (rules 3-4) stay in shadow. mode=live still
+# switches all four rules on together.
+PROXY_INDEX = 'NIFTY'      # trend source for an index without enough candle history
 
 _cfg = {'at': 0.0, 'value': None}
 _lock = threading.Lock()
@@ -221,6 +225,29 @@ def day_trend(name, token, spot, vwap, now=None):
     return label
 
 
+def _trend_or_proxy(index_name, token, label, now):
+    """An index whose own history cannot vote (no previous close or no day open, e.g. a
+    GAMMA_EXTRA index the engine only recently started recording) takes the NIFTY day
+    trend, so rule 2 never fails open on missing data. Returns (label, source)."""
+    data = inputs(token, now)
+    if index_name == PROXY_INDEX or (_finite(data.get('prev_close')) and _finite(data.get('day_open'))):
+        return label, 'own'
+    try:
+        from .config import GAMMA_INDICES
+        proxy = GAMMA_INDICES[PROXY_INDEX]
+        with _lock:
+            st = _trend.get(PROXY_INDEX)
+        if st and st.get('day') == now.date().isoformat():
+            return st['label'], 'proxy_' + PROXY_INDEX
+        pdata = inputs(proxy.token, now)
+        bars = pdata.get('bars15') or []
+        if bars:
+            return raw_trend(bars[-1]['c'], vwap_for(PROXY_INDEX, now), pdata), 'proxy_' + PROXY_INDEX
+    except Exception:  # noqa: BLE001 - fall back to the index's own label
+        pass
+    return label, 'own_incomplete'
+
+
 def against_trend(label, direction):
     return (label == 'DOWN' and direction == 'CE') or (label == 'UP' and direction == 'PE')
 
@@ -302,6 +329,7 @@ def _entry_gate_impl(index_name, token, direction, spot, vwap, now=None):
     if mode() == 'off':
         return {}
     label = day_trend(index_name, token, spot, vwap, now)
+    label, source = _trend_or_proxy(index_name, token, label, now)
     b = band(index_name, token, spot, vwap, now)
     block = None
     if against_trend(label, direction):
@@ -318,8 +346,12 @@ def _entry_gate_impl(index_name, token, direction, spot, vwap, now=None):
     audit.log('trend_rules_entry', index=index_name, direction=direction, trend=label,
               band=None if b is None else {k: round(v, 2) if isinstance(v, float) else v
                                            for k, v in b.items()},
-              spot=spot, would_block=block, mode=mode())
+              spot=spot, would_block=block, mode=mode(), trend_source=source,
+              rule2=feature('rule2'))
     if not live():
+        if feature('rule2') == 'live' and against_trend(label, direction):
+            return {'trend': label, 'block': block if block and block.startswith('counter_trend')
+                    else f'counter_trend_{label.lower()}_day'}
         return {'trend': label}
     return {'trend': label, 'block': block,
             'stop_level': stop_level(direction, b) if b is not None and block is None else None}

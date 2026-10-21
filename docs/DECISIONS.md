@@ -69,3 +69,17 @@ max 2/signal/day, 5-min cooldown, requires trend rules live), F (rejection alert
 shadow only; every feature has its own switch in `trend_rules.json`. Broker-stop live placement
 deliberately not built: an SL fill KADIMA does not reconcile could leave a phantom open position
 or trigger a second sell. Left for Codex with the reconciliation design and a 1-lot test.
+
+## 2026-10-21 — Rule 2 (gamma only with the day trend) live on its own
+
+**Trigger:** 21-Oct a MIDCPNIFTY 13600 CE Gamma Blast went in against a falling market (144 -> 39)
+because rule 2 was shadow. Trader (01:04 IST 22-Oct): switch it to live.
+
+**Change (branch `claude/trend-rule2-live-20261021`):** new switch `rule2` in trend_rules.json. With
+`rule2=live` and `mode=shadow`, a Gamma Blast against its index's day trend is refused
+(`counter_trend_<up|down>_day`); SIDEWAYS allows both sides; band stop and min-risk entry (rules 3-4),
+re-entry, monitor and broker stop stay shadow. An index whose own candles cannot vote (no previous
+close or day open, e.g. a GAMMA_EXTRA index) takes the NIFTY day trend instead of failing open
+(`trend_source` in the trend_rules_entry audit line). `mode=live` still switches all four rules.
+Deploy: `deploy/deploy_trend_rule2_live_20261021.sh` (hash-guarded on the 19-Oct trend_rules.py
+a33bb6dc, market-hours refusal, backup, auto-rollback on failed health; `--shadow` flips back in 30 s).
