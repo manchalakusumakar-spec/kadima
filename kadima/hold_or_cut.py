@@ -172,7 +172,9 @@ def _index_inputs(pos, now):
 
 
 def shadow(pos, ltp, kadima_reason, now):
-    if getattr(pos, 'kind', None) == 'cas' or getattr(pos, 'status', 'open') != 'open':
+    # CAS and fast-momentum positions are included: their own timers
+    # (no expansion in 2/5 min, option VWAP lost) are prime early-exit suspects.
+    if getattr(pos, 'status', 'open') != 'open':
         return None
     from . import audit
     spot, atr, trend = _index_inputs(pos, now)

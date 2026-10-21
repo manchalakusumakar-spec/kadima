@@ -18,6 +18,15 @@ TARGET = 'kadima/auto_executor.py'
 MODULE = 'kadima/hold_or_cut.py'
 SUFFIX = '.bak-holdcut-20261021'
 MARKER = '# 2026-10-21 shadow: hold winners, cut losers'
+CAS_ANCHOR = ('                reason = cas_executor.exit_reason(pos, ltp, daily_loss_breached, force_close)\n'
+              '                if reason:\n')
+CAS_PATCH = ('                reason = cas_executor.exit_reason(pos, ltp, daily_loss_breached, force_close)\n'
+             '                try:\n'
+             '                    from . import hold_or_cut  ' + MARKER + ' (CAS)\n'
+             '                    hold_or_cut.shadow(pos, ltp, reason, now)\n'
+             '                except Exception as exc:  # noqa: BLE001 - shadow logging only\n'
+             "                    audit.log('hold_or_cut_shadow_error', error=str(exc)[:200])\n"
+             '                if reason:\n')
 ANCHOR = ('\n            if reason:\n                self._close_position(pos, ltp, reason)\n\n'
           '    def _exit_fallback_price')
 PATCH = ('\n            try:\n'
@@ -45,6 +54,10 @@ def main():
         if text.count(ANCHOR) != 1:
             sys.exit('ABORT: anchor not found exactly once in %s; nothing written' % TARGET)
         text = text.replace(ANCHOR, PATCH, 1)
+        if text.count(CAS_ANCHOR) == 1:      # CAS positions leave check_exits early
+            text = text.replace(CAS_ANCHOR, CAS_PATCH, 1)
+        else:
+            print('note: CAS exit anchor not found; CAS positions are not shadowed')
     for body in (text, module):
         fd, tmp = tempfile.mkstemp(suffix='.py'); os.close(fd)
         Path(tmp).write_text(body); py_compile.compile(tmp, doraise=True); os.unlink(tmp)

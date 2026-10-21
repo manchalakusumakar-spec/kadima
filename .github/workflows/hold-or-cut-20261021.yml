@@ -34,7 +34,7 @@ jobs:
           T=$(mktemp -d); mkdir -p $T/kadima; cp kadima/auto_executor.py $T/kadima/
           python tools/install_hold_or_cut_20261021.py $T
           python tools/install_hold_or_cut_20261021.py $T | grep -q "OK (shadow only)"
-          grep -q "hold_or_cut.shadow(pos, ltp, reason, now)" $T/kadima/auto_executor.py
+          test "$(grep -c "hold_or_cut.shadow(pos, ltp, reason, now)" $T/kadima/auto_executor.py)" = 2
           python -m py_compile $T/kadima/auto_executor.py
           python tools/install_hold_or_cut_20261021.py $T --rollback
           cmp $T/kadima/auto_executor.py kadima/auto_executor.py
