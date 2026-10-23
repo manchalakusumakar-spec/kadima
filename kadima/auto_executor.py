@@ -717,6 +717,15 @@ class AutoExecutor:
             from . import trend_rules
             gate = trend_rules.entry_gate(index_name, chain.index.token, direction, spot,
                                           snap.vwap if snap is not None else None, now_ist())
+            # SNIPER v1 (2026-10-24): few, early, with-trend, confirmed gamma entries only.
+            from . import sniper
+            _sn = sniper.gate(index_name, chain.index.token, direction, spot,
+                              snap.vwap if snap is not None else None, now_ist(),
+                              gate=gate, selected=selected, manual=manual_request)
+            if _sn.get('block'):
+                return self._reject(_sn['block'], index_name, direction)
+            if _sn.get('override'):
+                gate = {'trend': gate.get('trend'), 'stop_level': _sn.get('stop_level')}
             if gate.get('block'):
                 return self._reject(gate['block'], index_name, direction)
             if gate.get('stop_level') is not None:
@@ -869,6 +878,12 @@ class AutoExecutor:
                 or not 0 <= clock - chain._spot_received_at <= 30
                 or (fast is None and gap is None and not 0 <= clock - chain._alignment_at <= 240)):
             return self._reject('entry_data_expired_before_submission', index_name, direction)
+        # SNIPER v1: 1 lot, skip when stop risk > 15% of available cash.
+        from . import sniper
+        allowed_lots, _sn_block = sniper.size(kind, manual_request, limit_price, stop, lot_size,
+                                              allowed_lots, capital_guard.broker_available_funds())
+        if _sn_block or allowed_lots < 1:
+            return self._reject(_sn_block or 'sniper_no_lots', index_name, direction)
         quantity = allowed_lots * lot_size
 
         if killswitch.engaged() or not in_market_hours() or past_signal_cutoff():
@@ -915,6 +930,9 @@ class AutoExecutor:
         with self._lock:
             self.state.positions[str(source_signal_id)] = pos
         result = execution_ledger.submit(pos, 'BUY', quantity, limit_price)
+        # SNIPER v1
+        from . import sniper
+        sniper.after_submit(kind, manual_request, pos)
         self._last_reconcile = 0.0
         if pos.status == 'closed':
             self.state.positions.pop(str(source_signal_id), None)
@@ -1127,6 +1145,8 @@ class AutoExecutor:
                 reason = cas_engine.exit_reason(pos, ltp, cas_row, now)
             elif getattr(pos,'kind',None)=='fast_momentum' and fast_momentum.timeout_reason(pos,now):
                 reason = fast_momentum.timeout_reason(pos,now)
+            elif getattr(pos, 'kind', None) == 'gamma_blast' and _sniper_no_progress(pos, now):  # SNIPER v1
+                reason = 'sniper_no_progress'
             elif ltp <= structural:
                 reason = 'structural_stop_breached'
             elif (pos.trail_active or celestial.enabled()) and ltp <= pos.effective_stop:
@@ -1379,3 +1399,8 @@ def _bounded_entry_stop(kind, stop, quote, tracker):
     from . import trend_rules
     return trend_rules.entry_stop(stop, quote.ltp,
                                   trend_rules.tracker_samples(tracker, quote.token))
+
+
+def _sniper_no_progress(pos, now):  # SNIPER v1
+    from . import sniper
+    return sniper.no_progress(pos, now)

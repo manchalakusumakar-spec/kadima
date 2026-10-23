@@ -209,6 +209,9 @@ def ranked_candidates(now=None, *, manual=False, candidates=None):
         elif not row['news_available']: reasons.append('news_coverage_unavailable')
         if row['news_blocked']: reasons.append('news_risk_block')
         if not fresh(row.get('spot_at'), now): reasons.append('underlying_stale')
+        # SNIPER v1: OI/direction flags are notes while Sniper is live.
+        from . import sniper
+        reasons = sniper.relax_reasons(reasons, notes)
         row['eligible'] = not reasons
         row['blocked_reasons'] = reasons
         row['notes'] = notes

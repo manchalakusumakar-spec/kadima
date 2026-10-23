@@ -134,3 +134,31 @@ entry reserves its cost until the next fresh read. 9 tests. Deploy: `deploy/depl
 trend (09:45 otherwise); core re-entries exempt from R3; ₹10,000 daily loss limit kept; core hold goes live
 straight away; a profitable open trade is exited for a new gamma only if the new trade's projected profit is
 higher than the open trade's remaining projected profit.
+
+## 2026-10-24 — Sniper mode: few, early, with-trend, confirmed Gamma Blasts (live, 1 lot)
+
+**Trigger:** 23-Oct audit + trader (22:42 IST): "only few but highly profit making and less risky
+trades". 21–23 Oct replay: all Gamma T2s came before 10:30, 86% with the day trend, none on the first
+signal of its index/side; 81% of scalp stops followed an earlier stop on the same side; after 10:30
+with-trend PE scalps stopped 30 of 34. All gamma suggestions: 47 trades −₹16,228.
+
+**Trader decisions (01:33 IST 24-Oct):** sideways day = no Sniper trade; a 2nd trade is allowed after
+a loss (other index/side); sizing: skip when 1-lot stop risk > 15% of available cash, more capital to
+be tried, keep the level-based (band) stop; go live directly (no shadow phase).
+
+**Rules (kadima/sniper.py, DATA_DIR/sniper.json mode off|shadow|live):** auto Gamma Blast only;
+09:45–10:30; trend UP/DOWN and side agrees; another contract on the same index+side suggested ≥60 s
+earlier; premium ≤ +15% over this contract's first suggestion; no observed stop on the side today;
+max 2 entries/day, next after a loss on another index/side, one open per index+side; 1 lot; stop risk
+≤ 15% of broker cash (unreadable cash = no trade); no-progress exit if not +10% within 20 min. Band
+stop with 35% hard cap and the existing trail unchanged. OI/direction flags become notes while live
+(tradeable + clean spread still required). Manual Celestial buys untouched. Live errors fail closed.
+
+**Deviation flagged to the trader:** Sniper trades are exempt from R3 (30-min exhaustion) and from the
+band-half pullback wait (`exempt_r3`, `exempt_pullback` switches). With R3 kept, the replay took 1 trade
+(+₹4,091) instead of 3 (+₹7,783 at ₹22k cash; 5 trades +₹20,629 at ₹1 lakh). spot_beyond_band_stop
+still blocks.
+
+**Deploy:** `deploy/deploy_sniper_20261024.sh` (outside market hours; git-fetched, hash-verified,
+anchor-based installer `tools/install_sniper_20261024.py`, backups, auto-rollback; `--shadow`, `--off`
+flip within 30 s, `--rollback`). 13 tests (`tools/test_sniper_20261024.py`).
