@@ -51,6 +51,7 @@ DEFAULT_PARAMS = dict(
     beta_shield=0.10,   # live Bull Shield direction x score
     beta_trend=0.05,    # day move so far / opening gap (new: starts small, earns weight)
     beta_oi=0.05,       # option-chain PCR change and OI wall shifts (new: starts small)
+    beta_day=0.05,      # day path's expected move over this slot (23 Oct: starts small, earns weight)
     band_only=False,    # set by the self-audit when no part shows skill: show the range only
     band_z=1.0,         # band half-width in model sds (1.0 ~ 68%)
     prob_c=0.7,         # probability sharpness around 0.5 (cautious until calibrated)
@@ -458,8 +459,11 @@ def iv_sigma(iv_pct):
 
 
 def make_forecast(days, di, i, n, anchor, *, as_of, tod=None, params=None,
-                  atm_iv=None, shield_dir=None, shield_score=None, oi=None):
-    """Forecast n 5-minute points from bar i of days[di], using nothing at or after bar i."""
+                  atm_iv=None, shield_dir=None, shield_score=None, oi=None, day_move=None):
+    """Forecast n 5-minute points from bar i of days[di], using nothing at or after bar i.
+
+    day_move: the day forecast's expected log move over these n bars (known at bar i), or None.
+    """
     params = {**DEFAULT_PARAMS, **(params or {})}
     tod = tod or tod_profile(days[:di])
     s_real = sigma_at(days, di, i, tod)
@@ -488,10 +492,11 @@ def make_forecast(days, di, i, n, anchor, *, as_of, tod=None, params=None,
           if use_an else model_sd)
     root = math.sqrt(n)
     x = dict(x_reg=reg_end, x_analog=a_mean[-1], x_tech=m * root, x_shield=shield * root,
-             x_trend=trend * root, x_oi=oit * root)
+             x_trend=trend * root, x_oi=oit * root,
+             x_day=clip(day_move / sigma, -3, 3) if finite(day_move) else 0.0)
     ramp = (x['x_reg'] * params['beta_reg'] + x['x_tech'] * params['beta_tech']
             + x['x_shield'] * params['beta_shield'] + x['x_trend'] * params['beta_trend']
-            + x['x_oi'] * params['beta_oi'])
+            + x['x_oi'] * params['beta_oi'] + x['x_day'] * params['beta_day'])
     mean = [ramp * (k + 1) / n + params['beta_analog'] * a_mean[k] for k in range(n)]
     if params.get('band_only'):
         mean = [0.0] * n
@@ -550,7 +555,8 @@ def score(points, anchor, actual, direction, sigma, sd_end):
 # ---------------------------------------------------------------- calibration
 BETAS = (('beta_reg', 'x_reg', -0.5, 1.5), ('beta_analog', 'x_analog', -0.5, 1.5),
          ('beta_tech', 'x_tech', -0.5, 0.5), ('beta_shield', 'x_shield', -0.5, 0.5),
-         ('beta_trend', 'x_trend', -0.5, 0.5), ('beta_oi', 'x_oi', -0.5, 0.5))
+         ('beta_trend', 'x_trend', -0.5, 0.5), ('beta_oi', 'x_oi', -0.5, 0.5),
+         ('beta_day', 'x_day', -0.5, 1.0))
 COMPONENTS = tuple(b[1] for b in BETAS)
 
 

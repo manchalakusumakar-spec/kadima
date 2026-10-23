@@ -339,7 +339,7 @@ def save_params(index_name, params, reason, db=None):
 
 def describe_change(old, new):
     names = dict(beta_reg='pattern', beta_analog='similar-days', beta_tech='technicals',
-                 beta_shield='Bull Shield', beta_trend='trend-day', beta_oi='option chain',
+                 beta_shield='Bull Shield', beta_trend='trend-day', beta_oi='option chain', beta_day='day path',
                  band_z='band width', prob_c='confidence')
     parts = [f"{label} {old.get(k, 0):.2f}\u2192{new.get(k, 0):.2f}" for k, label in names.items()
              if abs((new.get(k) or 0) - (old.get(k) or 0)) >= 0.005]
@@ -379,6 +379,8 @@ class HourlyForecaster:
         self._stop = threading.Event()
         self._tod_cache = {}
         self._chain_collector = FCD.Collector(engine, FORECAST_INDICES, db)
+        from . import day_forecast                       # day path (23 Oct), driven from this loop
+        self.day = day_forecast.DayForecaster(self)
 
     def start(self):
         self._chain_collector.start()
@@ -393,6 +395,10 @@ class HourlyForecaster:
             now = now_ist()
             for name in FORECAST_INDICES:
                 self.update_actuals(name, now, give_up=True)
+                try:
+                    self.day.stop(name, now)
+                except Exception as exc:                # noqa: BLE001 - display only
+                    audit.log('day_forecast_error', error=str(exc)[:300])
         except Exception as exc:                        # noqa: BLE001
             audit.log('hourly_forecast_stop_error', error=str(exc)[:300])
 
@@ -413,6 +419,10 @@ class HourlyForecaster:
             st = self.engine.states.get(name) if self.engine else None
             if st is None:
                 continue
+            try:                                        # day path first: a milestone reforecast feeds the new hour
+                self.day.tick(name, st, now)
+            except Exception as exc:                    # noqa: BLE001 - display only, never block the hourly slots
+                audit.log('day_forecast_error', error_type=type(exc).__name__, error=str(exc)[:300])
             if slot:
                 self.ensure_forecast(name, st, slot, now)
             self.update_actuals(name, now)
@@ -469,10 +479,19 @@ class HourlyForecaster:
             if anchor is None:
                 return None
         return self.generate(name, token, day, slot, anchor, late, now,
-                             atm_iv=iv, shield_dir=shield_dir, shield_score=shield_score)
+                             atm_iv=iv, shield_dir=shield_dir, shield_score=shield_score,
+                             day_move=None if late else self._day_move(name, day, slot, anchor))
+
+    def _day_move(self, name, day, slot, anchor):
+        """Expected move of the day path in force over this slot (None if there is no day path)."""
+        try:
+            from . import day_forecast
+            return day_forecast.path_move(name, day, M.bar_index(slot[0]), M.bar_index(slot[1]), anchor, self.db)
+        except Exception:                               # noqa: BLE001 - optional input
+            return None
 
     def generate(self, name, token, day, slot, anchor, late, now, *, atm_iv=None,
-                 shield_dir=None, shield_score=None, rows=None):
+                 shield_dir=None, shield_score=None, rows=None, day_move=None):
         start, end = slot
         t0 = _slot_dt(day, start)
         rows = rows if rows is not None else history_rows(token, t0)
@@ -491,7 +510,7 @@ class HourlyForecaster:
         oi = oi_features(name, t0, step)
         f = M.make_forecast(days, di, i, n, anchor, as_of=day, tod=self._tod_cache[key],
                             params=params, atm_iv=atm_iv, shield_dir=shield_dir,
-                            shield_score=shield_score, oi=oi)
+                            shield_score=shield_score, oi=oi, day_move=day_move)
         if f is None:
             audit.log('hourly_forecast_skipped', index=name, slot=M.slot_label(start),
                       reason='insufficient_history_or_volatility')
@@ -815,13 +834,18 @@ def view(name, day=None, engine=None, now=None, db=None):
                        "AND status='final' AND late=0 AND day>=? AND day<=?",
                        (name, since, day.isoformat())).fetchall()
     params = load_params(name, db)
-    return dict(index=name, day=day.isoformat(), now=now.isoformat(), live=live_price, slots=slots,
+    try:
+        from . import day_forecast
+        day_view = day_forecast.view(name, day, now, live=live_price, db=db)
+    except Exception as exc:                            # noqa: BLE001 - the hourly slots must still render
+        day_view = dict(slot='Day', status='error', error=type(exc).__name__)
+    return dict(index=name, day=day.isoformat(), now=now.isoformat(), live=live_price, slots=slots, day_path=day_view,
                 scorecard=dict(today=_scorecard([r for r in rows.values() if not r['late']]),
                                last_30_days=_scorecard(recent)),
                 model=dict(version=M.MODEL_VERSION, calibrated_on=params.get('n_samples', 0),
                            min_samples=M.MIN_SAMPLES, band_only=bool(params.get('band_only')),
                            params={k: params[k] for k in ('beta_reg', 'beta_analog', 'beta_tech', 'beta_shield',
-                                                          'beta_trend', 'beta_oi', 'band_z', 'prob_c')},
+                                                          'beta_trend', 'beta_oi', 'beta_day', 'band_z', 'prob_c')},
                            changes=[dict(ts=h['ts'], reason=h['reason']) for h in c.execute(
                                'SELECT ts, reason FROM hourly_forecast_model_history WHERE index_name=? '
                                'ORDER BY ts DESC LIMIT 5', (name,))],

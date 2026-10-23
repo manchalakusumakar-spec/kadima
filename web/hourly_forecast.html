@@ -4,7 +4,7 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="color-scheme" content="dark">
-<title>KADIMA Celestial · Hourly Forecast</title>
+<title>KADIMA Celestial · Day & Hourly Forecast</title>
 <style>
   :root { color-scheme: dark;
     --bg: #0b0f17; --panel: #121826; --panel2: #182033; --line: #253049;
@@ -45,6 +45,8 @@
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(360px, 1fr)); gap: 12px; }
   .card { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
   .card.live { border-color: var(--live); grid-column: 1 / -1; }
+  .card.day { margin-bottom: 12px; border-color: var(--accent); }
+  .card.day .slot::after { content: ' · whole session'; color: var(--muted); font-weight: 500; font-size: 12px; }
   .revs { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 11.5px; color: var(--muted); margin-top: 4px; }
   .revs b { color: var(--rev); }
   .revs code { font: 11px ui-monospace, Menlo, monospace; color: var(--dim); }
@@ -138,8 +140,10 @@
     <span><i style="border-color:var(--live);border-top-width:6px;width:6px;border-radius:50%"></i>Live price</span>
     <span><i style="border-color:var(--rev)"></i>Reforecast (each ≥5 pt miss on a closed candle)</span>
     <span><i style="border-color:var(--flat);border-top-style:dashed"></i>Provisional bar (not scored)</span>
+    <span><i style="border-color:var(--rev)"></i>Day: D = reforecast at each hourly checkpoint, or when a closed candle is 10–20 pts off (one typical candle)</span>
   </div>
 
+  <div id="daycard"></div>
   <div class="grid" id="grid"></div>
   <div class="tuning" id="tuning"></div>
   <div class="note" id="note"></div>
@@ -201,8 +205,9 @@
   const TRIGGER = 5;
   function chart(s) {
     const pts = s.points || [];
-    if (!pts.length) return `<div class="empty">${s.status === 'missed' ? 'No forecast was made for this slot' : 'Forecast at ' + s.slot}</div>`;
-    const wide = s.status === 'live';
+    const isDay = s.slot === 'Day', RL = isDay ? 'D' : 'R', TRIG = s.trigger_pts || TRIGGER;
+    if (!pts.length) return `<div class="empty">${s.status === 'missed' ? 'No forecast was made for this ' + (isDay ? 'day' : 'slot') : 'Forecast at ' + (isDay ? '09:15' : s.slot)}</div>`;
+    const wide = s.status === 'live' || isDay;
     const W = wide ? 1000 : 340, H = wide ? 300 : 170, L = wide ? 58 : 50, R = wide ? 110 : 18, T = wide ? 26 : 10, B = 22;
     const fs = wide ? 11 : 9;
     const t0 = Date.parse(s.start_ts), t1 = Date.parse(s.end_ts);
@@ -217,7 +222,7 @@
       if (p.bar) all.push(p.bar.high, p.bar.low);
     });
     revs.forEach(v => v.points.forEach(q => all.push(q.swing ?? q.forecast)));
-    if (revs.length) revs[revs.length - 1].points.forEach(q => all.push(q.forecast + TRIGGER, q.forecast - TRIGGER));
+    if (revs.length && !isDay) revs[revs.length - 1].points.forEach(q => all.push(q.forecast + TRIG, q.forecast - TRIG));
     if (s.live) all.push(s.live.price);
     let lo = Math.min(...all), hi = Math.max(...all); const pad = (hi - lo) * .08 || 5; lo -= pad; hi += pad;
     const ys = v => T + (hi - v) / (hi - lo) * (H - T - B);
@@ -238,32 +243,39 @@
     }
     const step = !wide && pts.length > 6 ? 3 : 1;
     [start, ...pts.map(p => ({ts: p.ts}))].forEach((p, i) => {
-      if (i % step === 0 || i === pts.length) g += `<text x="${xs(p.ts)}" y="${H - 6}" fill="var(--dim)" font-size="${fs}" text-anchor="middle">${hhmm(p.ts)}</text>`;
+      const show = isDay ? (p.ts.slice(14, 16) === '15' || i === pts.length) : (i % step === 0 || i === pts.length);
+      if (show) g += `<text x="${xs(p.ts)}" y="${H - 6}" fill="var(--dim)" font-size="${fs}" text-anchor="middle">${hhmm(p.ts)}</text>`;
     });
+    if (isDay) (s.milestones || []).forEach(m => { const x = xs(m);
+      g += `<line x1="${x}" x2="${x}" y1="${T}" y2="${H - B}" stroke="var(--line)" stroke-width="1" stroke-dasharray="2 4"/>`; });
     g += `<path d="${band}" fill="var(--band)"/>`;
     if (hasSwing) g += `<path d="${path(avg)}" fill="none" stroke="var(--fc)" stroke-width="1" opacity=".45"/>`;
     g += `<path d="${path(fc)}" fill="none" stroke="var(--fc)" stroke-width="2" stroke-dasharray="5 4"/>`;
     // expected ups and downs: mark each turn of the original path with its time and price
-    swingTurns(s).forEach(t => {
+    const turns = swingTurns(s);
+    const dayHi = isDay && turns.length ? Math.max(...turns.map(t => t.v)) : null, dayLo = isDay && turns.length ? Math.min(...turns.map(t => t.v)) : null;
+    turns.forEach(t => {
       const x = xs(t.ts), y = ys(t.v), upT = t.kind === 'high';
-      g += `<circle cx="${x}" cy="${y}" r="${wide ? 3.5 : 2.5}" fill="var(--fc)"><title>${upT ? 'Expected high' : 'Expected low'} ${hhmm(t.ts)} ${fmt(t.v, 1)}</title></circle>`;
-      if (wide) g += `<text x="${x}" y="${upT ? y - 8 : y + 15}" fill="var(--fc)" font-size="${fs - 1}" text-anchor="middle">${upT ? '▲' : '▼'} ${hhmm(t.ts)} ${fmt(t.v, 0)}</text>`;
+      g += `<circle cx="${x}" cy="${y}" r="${wide && !isDay ? 3.5 : 2.5}" fill="var(--fc)"><title>${upT ? 'Expected high' : 'Expected low'} ${hhmm(t.ts)} ${fmt(t.v, 1)}</title></circle>`;
+      if (wide && (!isDay || t.v === dayHi || t.v === dayLo)) g += `<text x="${x}" y="${upT ? y - 8 : y + 15}" fill="var(--fc)" font-size="${fs - 1}" text-anchor="middle">${upT ? '▲' : '▼'} ${hhmm(t.ts)} ${fmt(t.v, 0)}</text>`;
     });
     // reforecasts: every one stays visible; the latest is bold with its ±5 trigger lines
     revs.forEach((v, i) => {
       const cur = i === revs.length - 1;
-      const line = [{ts: v.trigger_ts, v: v.trigger_actual}, ...v.points.map(q => ({ts: q.ts, v: q.swing ?? q.forecast}))];
+      let line = [{ts: v.trigger_ts, v: v.trigger_actual}, ...v.points.map(q => ({ts: q.ts, v: q.swing ?? q.forecast}))];
+      // Day: an older reforecast is drawn only while it was in force (up to the next one), so the chart stays readable.
+      if (isDay && !cur) { const until = Date.parse(revs[i + 1].trigger_ts); line = line.filter(p => Date.parse(p.ts) <= until); }
       if (cur) {
         const off = d => path(line.map(p => ({ts: p.ts, v: p.v + d})));
-        g += `<path d="${off(TRIGGER)}" fill="none" stroke="var(--rev)" stroke-width="1" stroke-dasharray="1 3"/>` +
-             `<path d="${off(-TRIGGER)}" fill="none" stroke="var(--rev)" stroke-width="1" stroke-dasharray="1 3"/>`;
+        g += `<path d="${off(TRIG)}" fill="none" stroke="var(--rev)" stroke-width="1" stroke-dasharray="1 3"/>` +
+             `<path d="${off(-TRIG)}" fill="none" stroke="var(--rev)" stroke-width="1" stroke-dasharray="1 3"/>`;
       }
       g += `<path d="${path(line)}" fill="none" stroke="var(--rev)" stroke-width="${cur ? 2.4 : 1.4}" opacity="${cur ? 1 : .5}"${cur ? '' : ' stroke-dasharray="6 3"'}/>`;
       const x = xs(v.trigger_ts);
       g += `<line x1="${x}" x2="${x}" y1="${T}" y2="${H - B}" stroke="var(--rev)" stroke-dasharray="3 3" opacity=".6"/>` +
-           `<text x="${x}" y="${T - (wide ? 8 : 1)}" fill="var(--rev)" font-size="${fs}" font-weight="700" text-anchor="middle">R${v.rev}</text>` +
+           `<text x="${x}" y="${T - (wide ? 8 : 1) + (isDay && i % 2 ? 11 : 0)}" fill="var(--rev)" font-size="${fs}" font-weight="700" text-anchor="middle">${RL}${v.rev}</text>` +
            `<circle cx="${x}" cy="${ys(v.trigger_actual)}" r="${wide ? 5 : 3.5}" fill="none" stroke="var(--rev)" stroke-width="2">` +
-           `<title>R${v.rev}: ${hhmm(v.trigger_ts)} closed ${v.deviation_pts > 0 ? '+' : ''}${v.deviation_pts} pts from the ${i ? 'R' + (i) : 'original'} path · receipt ${esc(v.receipt)}</title></circle>`;
+           `<title>${RL}${v.rev}: ${hhmm(v.trigger_ts)} ${revWhy(v, i, RL)} · receipt ${esc(v.receipt)}</title></circle>`;
     });
     // candles
     const cw = Math.max(3, (W - L - R) / pts.length * .56);
@@ -294,7 +306,8 @@
     let labels = '';
     if (wide) {
       const last = pts[pts.length - 1], lab = [[last.swing ?? last.forecast, 'original', 'var(--fc)']];
-      revs.forEach((v, i) => lab.push([v.points[v.points.length - 1].swing ?? v.points[v.points.length - 1].forecast, 'R' + v.rev + (i === revs.length - 1 ? ' latest' : ''), 'var(--rev)']));
+      revs.forEach((v, i) => { if (isDay && i < revs.length - 1) return;
+        lab.push([v.points[v.points.length - 1].swing ?? v.points[v.points.length - 1].forecast, RL + v.rev + (i === revs.length - 1 ? ' latest' : ''), 'var(--rev)']); });
       lab.sort((a, b) => b[0] - a[0]);
       let lastY = -99;
       lab.forEach(([v, t, c]) => { let y = ys(v) + 4; if (y - lastY < 13) y = lastY + 13; lastY = y;
@@ -302,7 +315,7 @@
     }
     const liveDot = s.live ? `<circle cx="${xs(s.live.ts)}" cy="${ys(s.live.price)}" r="4" fill="var(--live)"><animate attributeName="r" values="3;5;3" dur="1.6s" repeatCount="indefinite"/></circle>` : '';
     return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Forecast versus actual ${s.slot} to ${s.slot_end}">
-      ${g}${dev}${labels}${liveDot}</svg>${swingList(s)}${revs.length ? revList(revs) : ''}`;
+      ${g}${dev}${labels}${liveDot}</svg>${swingList(s)}${revs.length ? revList(revs, RL) : ''}`;
   }
 
   // Turning points of the original path (anchor first): a high where it stops rising, a low where it stops falling.
@@ -319,7 +332,11 @@
   }
 
   function swingList(s) {
-    const t = swingTurns(s);
+    let t = swingTurns(s);
+    if (s.slot === 'Day' && t.length > 8) {      // keep the list short: the day's biggest turns
+      const hi = Math.max(...t.map(x => x.v)), lo = Math.min(...t.map(x => x.v));
+      t = t.filter(x => x.v === hi || x.v === lo);
+    }
     if (!t.length) return '';
     const from = s.swing_from ? ` · shape from the closest past match, ${esc(s.swing_from)}` : '';
     return '<div class="revs"><span><b style="color:var(--fc)">Expected swings</b></span>' +
@@ -327,9 +344,15 @@
       `<span>· thin line = average path (scored)${from}</span></div>`;
   }
 
-  function revList(revs) {
+  function revWhy(v, i, RL) {
+    const vs = i ? RL + i : 'original', d = v.deviation_pts == null ? '' : `${v.deviation_pts > 0 ? '+' : ''}${fmt(v.deviation_pts, 1)} pts vs ${vs}`;
+    if (v.kind === 'milestone') return 'hourly checkpoint' + (d ? ' · ' + d : '');
+    if (v.kind === 'deviation') return `${d} (limit ${fmt(v.threshold_pts, 1)})`;
+    return 'closed ' + d;
+  }
+  function revList(revs, RL = 'R') {
     return '<div class="revs">' + revs.map((v, i) =>
-      `<span><b>R${v.rev}</b> ${hhmm(v.trigger_ts)} · ${v.deviation_pts > 0 ? '+' : ''}${fmt(v.deviation_pts, 1)} pts vs ${i ? 'R' + i : 'original'} · <code>${esc(v.receipt)}</code></span>`).join('') + '</div>';
+      `<span><b>${RL}${v.rev}</b> ${hhmm(v.trigger_ts)} · ${revWhy(v, i, RL)} · <code>${esc(v.receipt)}</code></span>`).join('') + '</div>';
   }
 
   function card(s) {
@@ -377,6 +400,12 @@
   function esc(t) { return String(t).replace(/[&<>]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;'})[c]); }
 
   function auditBlock(s) {
+    if (s.slot === 'Day') {
+      const sc = s.score;
+      if (!sc) return `<div class="audit"><b>AUDIT</b>${s.status === 'live' ? 'Scored at the close (15:30) against the 09:15 path. Reforecasts are shown, never scored.' : esc(s.status || '')}</div>`;
+      const r = (sc.reasons || []).length ? '<ul>' + sc.reasons.map(x => `<li>${esc(x)}</li>`).join('') + '</ul>' : (sc.dir_hit ? 'Day direction held.' : 'No rule matched.');
+      return `<div class="audit"><b>DAY RESULT</b>${r}</div>`;
+    }
     const a = s.audit;
     if (!a) return s.status === 'live' ? '<div class="audit"><b>AUDIT</b>Runs when this hour\'s actual is complete.</div>' : '';
     const hit = s.score && s.score.dir_hit;
@@ -394,7 +423,8 @@
   function tuning(d) {
     const m = d.model, p = m.params || {}, sc = m.scorecard || {};
     const rows = [['Pattern', 'beta_reg', 'reg'], ['Similar days', 'beta_analog', 'analog'], ['Technicals', 'beta_tech', 'tech'],
-                  ['Bull Shield', 'beta_shield', 'shield'], ['Trend day', 'beta_trend', 'trend'], ['Option chain', 'beta_oi', 'oi']];
+                  ['Bull Shield', 'beta_shield', 'shield'], ['Trend day', 'beta_trend', 'trend'], ['Option chain', 'beta_oi', 'oi'],
+                  ['Day path', 'beta_day', 'day']];
     const bar = v => { const w = Math.min(50, Math.abs(v) / 1.5 * 50); return v >= 0
         ? `<i style="left:50%;width:${w}%"></i>` : `<i style="left:${50 - w}%;width:${w}%;background:var(--down)"></i>`; };
     const body = rows.map(([label, k, c]) => {
@@ -491,6 +521,7 @@
       $('spot').textContent = data.live ? fmt(data.live.price) : '—';
       $('dot').classList.toggle('on', !!data.live);
       strip(data); trade(data); tuning(data);
+      $('daycard').innerHTML = data.day_path && data.day_path.status !== 'error' ? card(data.day_path).replace('class="card ', 'class="card day ') : '';
       $('grid').innerHTML = data.slots.map(card).join('');
       $('note').textContent = data.note + ` Model ${data.model.version}.`;
     } catch (e) {
