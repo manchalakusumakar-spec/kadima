@@ -50,6 +50,13 @@
   .revs { display: flex; flex-wrap: wrap; gap: 4px 14px; font-size: 11.5px; color: var(--muted); margin-top: 4px; }
   .revs b { color: var(--rev); }
   .revs code { font: 11px ui-monospace, Menlo, monospace; color: var(--dim); }
+  .hours { width: 100%; border-collapse: collapse; margin-top: 10px; font-size: 12.5px; }
+  .hours th { color: var(--muted); font-weight: 600; text-align: right; padding: 5px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  .hours td { font: 12.5px ui-monospace, Menlo, monospace; text-align: right; padding: 5px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  .hours th:first-child, .hours td:first-child { text-align: left; }
+  .hours tr.now td { background: rgba(255,209,102,.08); }
+  .hours .pos { color: var(--up); } .hours .neg { color: var(--down); } .hours .dim { color: var(--dim); }
+  .hwrap { overflow-x: auto; }
   .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
   .slot { font-weight: 700; font-size: 15px; }
   .chip { font-size: 11px; font-weight: 700; padding: 2px 7px; border-radius: 999px; background: var(--panel2); color: var(--muted); letter-spacing: .4px; }
@@ -313,12 +320,45 @@
       lab.forEach(([v, t, c]) => { let y = ys(v) + 4; if (y - lastY < 13) y = lastY + 13; lastY = y;
         labels += `<text x="${W - R + 6}" y="${y}" font-size="${fs}" fill="${c}" font-weight="600">${t} ${fmt(v, 1)}</text>`; });
     }
+    // Day: forecast price at every hourly checkpoint on the 09:15 path
+    if (isDay) hourRows(s).forEach(h => { if (h.orig == null || h.ts === s.end_ts) return;
+      const x = xs(h.ts), y = ys(h.orig);
+      g += `<circle cx="${x}" cy="${y}" r="4" fill="var(--bg)" stroke="var(--fc)" stroke-width="2"><title>${hhmm(h.ts)} forecast ${fmt(h.orig, 1)}</title></circle>` +
+           `<text x="${x}" y="${y - 9}" fill="var(--fc)" font-size="${fs}" font-weight="700" text-anchor="middle">${fmt(h.orig, 0)}</text>`; });
     const liveDot = s.live ? `<circle cx="${xs(s.live.ts)}" cy="${ys(s.live.price)}" r="4" fill="var(--live)"><animate attributeName="r" values="3;5;3" dur="1.6s" repeatCount="indefinite"/></circle>` : '';
     return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="Forecast versus actual ${s.slot} to ${s.slot_end}">
-      ${g}${dev}${labels}${liveDot}</svg>${swingList(s)}${revs.length ? revList(revs, RL) : ''}`;
+      ${g}${dev}${labels}${liveDot}</svg>${isDay ? hourTable(s) : ''}${swingList(s)}${revs.length ? revList(revs, RL) : ''}`;
   }
 
   // Turning points of the original path (anchor first): a high where it stops rising, a low where it stops falling.
+  // Hourly checkpoints of the day forecast: 09:15 path, latest reforecast, actual.
+  function hourRows(s) {
+    const pts = s.points || [], revs = s.revisions || [];
+    const marks = [...(s.milestones || []), s.end_ts];
+    const val = q => q ? (q.swing ?? q.forecast) : null;
+    const now = s.live ? Date.parse(s.live.ts) : null;
+    return marks.map(ts => {
+      const t = Date.parse(ts), p = pts.find(q => Date.parse(q.ts) === t);
+      let latest = null, lab = '';
+      revs.forEach(v => { if (Date.parse(v.trigger_ts) >= t) return;
+        const q = v.points.find(q => Date.parse(q.ts) === t); if (q) { latest = val(q); lab = 'D' + v.rev; } });
+      const closed = p && p.actual != null && p.actual_source !== 'provisional';
+      return {ts, orig: val(p), latest, lab, actual: closed ? p.actual : null,
+              current: now != null && now < t && now >= t - 3600000};
+    });
+  }
+  function hourTable(s) {
+    const rows = hourRows(s); if (!rows.length) return '';
+    const d = v => v == null ? '<span class="dim">—</span>' : `<span class="${v > 0 ? 'pos' : v < 0 ? 'neg' : ''}">${v > 0 ? '+' : ''}${fmt(v, 0)}</span>`;
+    const body = rows.map(h => `<tr class="${h.current ? 'now' : ''}"><td>${hhmm(h.ts)}${h.current ? ' ◂ next' : ''}</td>
+      <td>${fmt(h.orig, 1)}</td><td>${h.latest == null ? '<span class="dim">same</span>' : fmt(h.latest, 1) + ` <span class="dim">${h.lab}</span>`}</td>
+      <td>${h.actual == null ? '<span class="dim">—</span>' : fmt(h.actual, 1)}</td>
+      <td>${d(h.actual == null || h.orig == null ? null : h.actual - h.orig)}</td>
+      <td>${d(h.actual == null ? null : h.actual - (h.latest ?? h.orig))}</td></tr>`).join('');
+    return `<div class="hwrap"><table class="hours"><thead><tr><th>Hour</th><th>09:15 forecast</th><th>Latest forecast</th><th>Actual</th>
+      <th>Actual − 09:15</th><th>Actual − latest</th></tr></thead><tbody>${body}</tbody></table></div>`;
+  }
+
   function swingTurns(s) {
     const pts = s.points || [];
     if (!pts.length || !pts.every(p => p.swing != null)) return [];
