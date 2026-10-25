@@ -234,3 +234,10 @@ Files: `tools/install_dashboard_rules_20261025.py`, `deploy/deploy_dashboard_rul
 - Exits unchanged: wider trails (30% / 50% / stop-or-EOD) were worse on the full set.
 - Caveat: 3 trading days, all falling markets (every gamma pick was a PE). Review after 5 sessions.
 - Install: deploy/deploy_confirm_v2_20261025.sh (rollback: --rollback).
+
+## 2026-10-25 (night) — GIFT NIFTY v1: GIFT Nifty beside crude oil (display only)
+- Broker contract master has no NSE IX instruments; source = nseindia.com marketStatus "giftnifty".
+- Stand-alone worker kadima-gift-nifty (stdlib, 64 MB cap) -> state/gift_nifty.json; 1 call/min in
+  GIFT hours (Mon 06:25 - Sat 02:50 IST), every 30 min otherwise, back-off on failures.
+- control_api /macro_snapshot adds gift_nifty; dashboard panel "Crude Oil & GIFT Nifty".
+- Not used by any score, gate or trade. Install: deploy/deploy_gift_nifty_20261025.sh (--rollback).
