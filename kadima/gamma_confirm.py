@@ -158,3 +158,17 @@ def entry_block(selected, now, threshold):
     except Exception:  # noqa: BLE001
         pass
     return why[0] if (why and m == 'live') else None
+
+
+def is_confirmed(selected, now, threshold=None):
+    """BOTTLENECK FIX v1 (2026-10-25): True only when live and the Celestial row passes the
+    CONFIRMED rule. Any error or missing data -> False (no bypass)."""
+    try:
+        if mode() != 'live' or not selected:
+            return False
+        if threshold is None:
+            from . import celestial
+            threshold = celestial.read_config()['score_threshold']
+        return not reasons(selected, now, threshold)
+    except Exception:  # noqa: BLE001
+        return False

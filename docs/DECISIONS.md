@@ -250,3 +250,12 @@ Files: `tools/install_dashboard_rules_20261025.py`, `deploy/deploy_dashboard_rul
 - Broker credentials moved from the old unit's Environment= lines to /etc/kadima/market-context.env
   (root 600); old unit keeps EnvironmentFile and stays disabled. Backup /root/...bak-20261025.
 - Install: deploy/deploy_market_context_20261025.sh (--rollback).
+
+## 2026-10-25 22:12 IST — BOTTLENECK FIX v1 (trader: "fix them immediately")
+- Replay 21-23 Oct: 42 CONFIRMED v2 gamma rows; Sniper (day trend, A+B, second signal) and the old
+  VWAP+EMA+RSI alignment check refused all of 21 and 22 Oct (incl. SENSEX +75%).
+- CONFIRMED auto trades now skip: trade_policy.eligible, Sniper day-trend / A+B / second-signal,
+  trend_rules counter-trend-day block; CONFIRMED scalps skip counter_trend_scalp.
+- Kept: stops, trail, daily loss limit, Sniper stop-after-loss / side-stopped / max 2 / 1 lot /
+  30% cash risk / 15% chase, spot_beyond_band_stop, clean spread, tradeable, capital checks.
+- Switch: sniper.json "confirmed_bypass": false. Install: deploy/deploy_bottleneck_fix_20261025.sh
