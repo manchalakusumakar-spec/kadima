@@ -241,3 +241,12 @@ Files: `tools/install_dashboard_rules_20261025.py`, `deploy/deploy_dashboard_rul
   GIFT hours (Mon 06:25 - Sat 02:50 IST), every 30 min otherwise, back-off on failures.
 - control_api /macro_snapshot adds gift_nifty; dashboard panel "Crude Oil & GIFT Nifty".
 - Not used by any score, gate or trade. Install: deploy/deploy_gift_nifty_20261025.sh (--rollback).
+
+## 2026-10-25 (night) — MARKET CONTEXT v1: crude / VIX / FII-DII / news back, light
+- kadima-macro-watch was disabled 2026-10-20 18:16 during a kernel OOM event (220 MB peak:
+  full contract-master parse). Replaced by kadima-market-context: scans the cached master in
+  1 MB pieces for CRUDEOIL MCX + India VIX rows only; same macro_snapshot.json output.
+- Hard cap MemoryMax=128M (MemoryHigh 96M), Nice 10. Display only.
+- Broker credentials moved from the old unit's Environment= lines to /etc/kadima/market-context.env
+  (root 600); old unit keeps EnvironmentFile and stays disabled. Backup /root/...bak-20261025.
+- Install: deploy/deploy_market_context_20261025.sh (--rollback).
