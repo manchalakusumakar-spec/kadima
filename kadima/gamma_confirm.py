@@ -1,14 +1,18 @@
-"""Gamma Blast CONFIRMED rule (trader decision 2026-10-25).
+"""Gamma Blast CONFIRMED rule (trader decision 2026-10-25, v2 2026-10-25 night).
 
 A Celestial gamma strike is CONFIRMED only when ALL of these hold:
   1. final score >= the Celestial score threshold (currently 50)
-  2. strike concentration (HHI of chain OI) >= MIN_HHI (0.09)
-  3. time 09:45 <= now < 10:00 IST
+  2. the index direction (Bull Shield) agrees with the option side:
+     PE needs a bearish shield reading, CE a bullish one (row bear/bull_shield_score)
+  3. time 09:45 <= now < 10:10 IST
+  4. strike concentration (HHI) >= min_hhi - v2 default 0 = not checked
 Only CONFIRMED strikes may auto-trade (manual Celestial buys are not touched).
-21-23 Oct replay: 18 such suggestions, 14 T1 (+50%) / 0 SL / 4 no result.
+v2 replay on minute prices with live exits, 21-23 Oct: 9 trades, 9 wins, avg +27%
+(v1 HHI rule: 5 trades, 4 wins, avg +23%). HHI did not separate winners from losers.
 
 Config: DATA_DIR/gamma_confirm.json, re-read every 30 s:
-  {"mode": "off|shadow|live", "min_hhi": 0.09, "window_start": "09:45", "window_end": "10:00"}
+  {"mode": "off|shadow|live", "min_hhi": 0, "require_direction": true,
+   "window_start": "09:45", "window_end": "10:10"}
   off    - old tiers, no gate
   shadow - CONFIRMED tier shown and audited, auto entries not blocked
   live   - tier shown and auto entries blocked unless CONFIRMED (fails closed on error)
@@ -22,7 +26,8 @@ import time
 
 from .config import DATA_DIR
 
-DEFAULTS = {'mode': 'live', 'min_hhi': 0.09, 'window_start': '09:45', 'window_end': '10:00',
+DEFAULTS = {'mode': 'live', 'min_hhi': 0.0, 'require_direction': True,   # CONFIRM v2 2026-10-25
+            'window_start': '09:45', 'window_end': '10:10',
             'risk_fraction': 0.30}   # trader 2026-10-25: auto gamma may risk up to 30% of cash
 _cfg = {'at': 0.0, 'value': None}
 _logged: dict = {}
@@ -38,8 +43,10 @@ def config():
             if raw.get('mode') in ('off', 'shadow', 'live'):
                 value['mode'] = raw['mode']
             v = raw.get('min_hhi')
-            if isinstance(v, (int, float)) and not isinstance(v, bool) and 0 < v < 1:
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and 0 <= v < 1:
                 value['min_hhi'] = float(v)
+            if isinstance(raw.get('require_direction'), bool):
+                value['require_direction'] = raw['require_direction']
             v = raw.get('risk_fraction')
             if isinstance(v, (int, float)) and not isinstance(v, bool) and 0 < v <= 0.5:
                 value['risk_fraction'] = float(v)
@@ -75,15 +82,32 @@ def reasons(row, now, threshold):
             out.append('gamma_not_confirmed_score')
     except (TypeError, ValueError):
         out.append('gamma_not_confirmed_score')
-    try:
-        hhi = float(row.get('strike_concentration_hhi'))
-        if not (math.isfinite(hhi) and hhi >= cfg['min_hhi']):
+    if cfg['require_direction'] and not direction_agrees(row):
+        out.append('gamma_not_confirmed_direction')
+    if cfg['min_hhi'] > 0:
+        try:
+            hhi = float(row.get('strike_concentration_hhi'))
+            if not (math.isfinite(hhi) and hhi >= cfg['min_hhi']):
+                out.append('gamma_not_confirmed_concentration')
+        except (TypeError, ValueError):
             out.append('gamma_not_confirmed_concentration')
-    except (TypeError, ValueError):
-        out.append('gamma_not_confirmed_concentration')
     if not _hm(cfg['window_start']) <= (now.hour, now.minute) < _hm(cfg['window_end']):
         out.append('gamma_not_confirmed_window')
     return out
+
+
+def direction_agrees(row):
+    """True when the index's Bull Shield direction matches the option side.
+    The scanner fills bear_shield_score only for a PE shield reading and
+    bull_shield_score only for a CE reading; a missing reading never agrees."""
+    side = row.get('direction')
+    key = 'bear_shield_score' if side == 'PE' else 'bull_shield_score' if side == 'CE' else None
+    if key is None:
+        return False
+    try:
+        return math.isfinite(float(row.get(key)))
+    except (TypeError, ValueError):
+        return False
 
 
 def tier(row, now, threshold, old_tier):

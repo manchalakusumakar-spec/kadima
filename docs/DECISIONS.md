@@ -221,3 +221,16 @@ read-only rules strip above the Gamma Blast table (Gamma CONFIRMED / Sniper / Sc
 limit, realised P&L, room left, auto-trade armed/paused), strike concentration under each tier, and a green
 outline on CONFIRMED rows. Data: `risk_controls` in the Celestial top-20 response (`control_api.py`).
 Files: `tools/install_dashboard_rules_20261025.py`, `deploy/deploy_dashboard_rules_20261025.sh`.
+
+## 2026-10-25 (night) — CONFIRM v2: tighter CONFIRMED rules (trader confirmed 21:10 IST)
+- Evidence: every gamma / Scalp v2 suggestion replayed on minute prices (21-23 Oct, the only
+  days the price history still holds) through the live exits (stop, 15% trail ladder, Sniper
+  20-min no-progress, EOD). Unfiltered: gamma 60 trades avg +1%, scalp 123 trades avg -0.5%.
+- Gamma CONFIRMED v2: score >= threshold, index direction (Bull Shield) agrees with the option
+  side, 09:45-10:10 IST. HHI no longer required (did not separate winners; it blocked the
+  21-Oct SENSEX +75% run). Replay 9 trades, 9 wins, avg +27% (v1: 5 trades, avg +23%).
+- Scalp v2 CONFIRMED: score 80-90 (was 70-90), 09:45-10:30. Replay 9 trades, 89% win, avg +18%
+  (70-90: 11 trades, 73%, +13%).
+- Exits unchanged: wider trails (30% / 50% / stop-or-EOD) were worse on the full set.
+- Caveat: 3 trading days, all falling markets (every gamma pick was a PE). Review after 5 sessions.
+- Install: deploy/deploy_confirm_v2_20261025.sh (rollback: --rollback).
