@@ -213,3 +213,11 @@ remaining daily room, so a ₹3,300 limit would block every MIDCPNIFTY/BANKEX ga
 CAS/MCX keep the fixed ₹10,000 (the new limit is never higher). Files: `kadima/daily_limit.py`,
 `tools/install_loss_controls_20261025.py`, `deploy/deploy_loss_controls_20261025.sh`. Switch: `daily_limit.json`
 mode off.
+
+## 2026-10-25 — Dashboard shows the new rules; workbook marks CONFIRMED
+
+**Trader (20:38 IST):** summary doc, workbook update, dashboard update — build and deploy. Celestial now shows a
+read-only rules strip above the Gamma Blast table (Gamma CONFIRMED / Sniper / Scalp v2 settings, daily loss
+limit, realised P&L, room left, auto-trade armed/paused), strike concentration under each tier, and a green
+outline on CONFIRMED rows. Data: `risk_controls` in the Celestial top-20 response (`control_api.py`).
+Files: `tools/install_dashboard_rules_20261025.py`, `deploy/deploy_dashboard_rules_20261025.sh`.
