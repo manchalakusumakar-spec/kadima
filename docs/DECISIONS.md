@@ -191,9 +191,12 @@ MIDCPNIFTY / BANKEX / BANKNIFTY (NIFTY and SENSEX sit near 0.07).
 strike OTM (Celestial allowed OTM only at score >= 90) — fixed: one strike OTM is tradeable. (2) no confirmed
 5-min swing on a clean one-way fall (`fresh_structure_or_valid_expiry_unavailable`) — fixed: gamma uses the
 trend band stop level, 35% cap kept. (3) band-half pullback wait and R3 — waived for Sniper trades (Sniper).
-(4) NOT changed, trader to decide: risk per trade <= 15% of min(cash, 62,000) (`risk_budget` and Sniper
-rule 7). At ~₹22k cash, 1-lot MIDCPNIFTY/BANKEX risk (₹4.5–8.8k) is refused; replay takes 1 trade at ₹22k,
-4 (all T1, +₹29.4k) at ₹50k.
+(4) risk per trade capped at 15% of min(cash, 62,000) (`risk_budget`, Sniper rule 7): at ~₹22k cash every
+1-lot MIDCPNIFTY/BANKEX trade (risk ₹4.5–8.8k) was refused. Trader 20:10 IST chose 30% for auto gamma only:
+`gamma_confirm.json` risk_fraction 0.30 scales the gamma allocation; Sniper `max_risk_cash_pct` 30 checks it on
+real broker cash; capital_guard 1-lot headroom unchanged. Other kinds stay at 15%.
+**Also decided 20:10 IST:** Sniper LIVE from 26-Oct (overrides the same day's shadow-first choice) and
+Sniper `indices` = NIFTY,BANKNIFTY,SENSEX,MIDCPNIFTY,BANKEX (the CONFIRMED winners are mostly MIDCPNIFTY/BANKEX).
 
 **Change (branch `claude/gamma-confirm-20261025`, on top of Sniper):** `kadima/gamma_confirm.py` +
 `tools/install_gamma_unblock_20261025.py` (anchor-based, --check/--rollback) + deploy script. Switch:

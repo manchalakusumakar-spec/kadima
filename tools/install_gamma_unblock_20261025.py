@@ -73,6 +73,17 @@ AE = [
         if structure is None:
             return self._reject('fresh_structure_or_valid_expiry_unavailable', index_name, direction)
 """),
+    ("""        allocation = (capital_guard.get_capital_for_signal('bull_shield','CONFIRMED')
+                      if special else capital_guard.get_capital_for_signal(kind, tier))
+""",
+     """        allocation = (capital_guard.get_capital_for_signal('bull_shield','CONFIRMED')
+                      if special else capital_guard.get_capital_for_signal(kind, tier))
+        # GAMMA CONFIRM v1 (trader 2026-10-25): auto gamma may risk up to 30% of cash. Real-cash
+        # limits still apply below (Sniper rule 7, capital_guard 1-lot headroom).
+        if kind == 'gamma_blast' and not manual_request:
+            from . import gamma_confirm
+            allocation = gamma_confirm.scaled_allocation(allocation, trade_policy.RISK_FRACTION)
+"""),
 ]
 AE_TAIL = '''
 

@@ -22,7 +22,8 @@ import time
 
 from .config import DATA_DIR
 
-DEFAULTS = {'mode': 'live', 'min_hhi': 0.09, 'window_start': '09:45', 'window_end': '10:00'}
+DEFAULTS = {'mode': 'live', 'min_hhi': 0.09, 'window_start': '09:45', 'window_end': '10:00',
+            'risk_fraction': 0.30}   # trader 2026-10-25: auto gamma may risk up to 30% of cash
 _cfg = {'at': 0.0, 'value': None}
 _logged: dict = {}
 
@@ -39,6 +40,9 @@ def config():
             v = raw.get('min_hhi')
             if isinstance(v, (int, float)) and not isinstance(v, bool) and 0 < v < 1:
                 value['min_hhi'] = float(v)
+            v = raw.get('risk_fraction')
+            if isinstance(v, (int, float)) and not isinstance(v, bool) and 0 < v <= 0.5:
+                value['risk_fraction'] = float(v)
             for k in ('window_start', 'window_end'):
                 if isinstance(raw.get(k), str) and _hm(raw[k]) is not None:
                     value[k] = raw[k]
@@ -93,6 +97,19 @@ def tier(row, now, threshold, old_tier):
     except Exception:  # noqa: BLE001 - display only
         pass
     return 'ACTIVE' if old_tier in ('BLAST', 'CONFIRMED') else old_tier
+
+
+def scaled_allocation(allocation, base_fraction):
+    """Auto gamma sizing: risk_budget allows allocation x base_fraction (0.15) of risk.
+    Scaling the allocation lets one trade risk risk_fraction (0.30) of it instead.
+    The real-cash checks still apply afterwards: Sniper rule 7 (risk <= max_risk_cash_pct
+    of broker cash) and capital_guard's headroom check on the 1-lot cost."""
+    try:
+        if mode() == 'off' or not allocation or not base_fraction:
+            return allocation
+        return float(allocation) * config()['risk_fraction'] / float(base_fraction)
+    except Exception:  # noqa: BLE001
+        return allocation
 
 
 def entry_block(selected, now, threshold):
