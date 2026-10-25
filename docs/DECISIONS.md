@@ -201,3 +201,15 @@ Sniper `indices` = NIFTY,BANKNIFTY,SENSEX,MIDCPNIFTY,BANKEX (the CONFIRMED winne
 **Change (branch `claude/gamma-confirm-20261025`, on top of Sniper):** `kadima/gamma_confirm.py` +
 `tools/install_gamma_unblock_20261025.py` (anchor-based, --check/--rollback) + deploy script. Switch:
 `gamma_confirm.json` mode off|shadow|live. Manual Celestial buys unchanged.
+
+## 2026-10-25 — Loss controls for the 30% gamma risk setting
+
+**Trader (20:29 IST, "recommendation please"):** went with the recommendation. (1) Daily loss limit =
+min(₹10,000, 30% of the morning's broker cash), floor ₹2,000, fixed ₹10,000 if cash is unreadable; morning cash
+persisted in `daily_cash.json` so a mid-day restart keeps it. 15% was not used: portfolio sizing also checks the
+remaining daily room, so a ₹3,300 limit would block every MIDCPNIFTY/BANKEX gamma (same as undoing 30%).
+(2) Sniper rule 6b: after any losing Sniper trade, no more Sniper entries that day (`stop_after_loss`).
+(3) 30% gamma risk kept. Worst realistic day ≈ −₹7–8k at ₹22k cash (was ≈ −₹12–15k).
+CAS/MCX keep the fixed ₹10,000 (the new limit is never higher). Files: `kadima/daily_limit.py`,
+`tools/install_loss_controls_20261025.py`, `deploy/deploy_loss_controls_20261025.sh`. Switch: `daily_limit.json`
+mode off.
