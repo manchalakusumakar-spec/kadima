@@ -162,3 +162,18 @@ still blocks.
 **Deploy:** `deploy/deploy_sniper_20261024.sh` (outside market hours; git-fetched, hash-verified,
 anchor-based installer `tools/install_sniper_20261024.py`, backups, auto-rollback; `--shadow`, `--off`
 flip within 30 s, `--rollback`). 13 tests (`tools/test_sniper_20261024.py`).
+
+## 2026-10-25 — Scalp v2 CONFIRMED gate; scalp entries back on
+
+**Trader (19:52 IST):** finalise and auto-trade only Scalp v2 suggestions with score 70–90 between
+09:45 and 10:30 IST. 21–23 Oct replay: 25 such suggestions, 21 T2 / 4 SL (84%) against 30% T2 / 64% SL for
+all Scalp v2; score 70–90 alone (all day) was 39% T2 / 60% SL, so the window is part of the rule. With the
+existing counter-trend block kept, the replay is 16 T2 / 4 SL. Small sample (3 days, one falling market).
+
+**Change (live file patched in place, scalp_v2.py is not in this repo):** `deploy/install_scalp_confirm_20261025.py`
+(hash-guarded on 7ac887bc, anchor-based, `--check` / `--rollback`, backup `scalp_v2.py.bak-scalpconfirm-20261025`).
+`build_row` tags each v2 row `tier` CONFIRMED|WATCH; non-CONFIRMED rows get `scalp_not_confirmed_score` and/or
+`scalp_not_confirmed_window` blockers when `scalp_v2.json` `"confirm_gate": "live"` (shadow = tag only). The
+executor re-runs `build_row` before submission, so the gate is checked again at order time. All other gates
+(trend, OI, news, Celestial threshold, auto arm) unchanged. `scalp_v2.json` `entries` set back to `live`.
+Off switch: `"entries": "off"` (no restart); gate off: `"confirm_gate": "off"`.
