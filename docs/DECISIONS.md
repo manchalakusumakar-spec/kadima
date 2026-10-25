@@ -180,3 +180,21 @@ trade direction vs the close 15 min earlier. Both from the engine's own closed 5
 so live trade counts will be lower than the test).
 
 **Deploy:** same script, now installs with mode=shadow; `--live` flips to live within 30 s. 17 tests.
+## 2026-10-25 — Gamma CONFIRMED rule + gamma unblock (installed with Sniper)
+
+**Trader (19:42–20:00 IST):** a Celestial gamma strike is CONFIRMED only when score >= threshold (50),
+strike concentration HHI >= 0.09 and 09:45–10:00; only CONFIRMED may auto-trade. Fix whatever else blocks
+gamma auto entries. Replay 21–23 Oct: 18 such suggestions, 14 T1 / 0 SL. HHI >= 0.09 effectively selects
+MIDCPNIFTY / BANKEX / BANKNIFTY (NIFTY and SENSEX sit near 0.07).
+
+**Bottlenecks found:** (1) 12 of the 14 winners refused `contract_not_tradeable` only because they were one
+strike OTM (Celestial allowed OTM only at score >= 90) — fixed: one strike OTM is tradeable. (2) no confirmed
+5-min swing on a clean one-way fall (`fresh_structure_or_valid_expiry_unavailable`) — fixed: gamma uses the
+trend band stop level, 35% cap kept. (3) band-half pullback wait and R3 — waived for Sniper trades (Sniper).
+(4) NOT changed, trader to decide: risk per trade <= 15% of min(cash, 62,000) (`risk_budget` and Sniper
+rule 7). At ~₹22k cash, 1-lot MIDCPNIFTY/BANKEX risk (₹4.5–8.8k) is refused; replay takes 1 trade at ₹22k,
+4 (all T1, +₹29.4k) at ₹50k.
+
+**Change (branch `claude/gamma-confirm-20261025`, on top of Sniper):** `kadima/gamma_confirm.py` +
+`tools/install_gamma_unblock_20261025.py` (anchor-based, --check/--rollback) + deploy script. Switch:
+`gamma_confirm.json` mode off|shadow|live. Manual Celestial buys unchanged.
