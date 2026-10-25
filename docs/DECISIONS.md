@@ -162,3 +162,21 @@ still blocks.
 **Deploy:** `deploy/deploy_sniper_20261024.sh` (outside market hours; git-fetched, hash-verified,
 anchor-based installer `tools/install_sniper_20261024.py`, backups, auto-rollback; `--shadow`, `--off`
 flip within 30 s, `--rollback`). 13 tests (`tools/test_sniper_20261024.py`).
+
+## 2026-10-25 — Sniper: A + B filter, FINNIFTY excluded, install in shadow
+
+**Trigger:** 6-month test (24-Apr..23-Oct-2026, 09:45–10:30 entries, proxy option pricing, 1 lot,
+₹60/trade charges) on NIFTY/BANKNIFTY/FINNIFTY/SENSEX. All 4 unfiltered: 409 trades −₹37.2k; A+B (B≥0.2%):
+144 trades +₹23.7k; A+B (B≥0.3%): 73 trades, 47% win, +₹30.6k. FINNIFTY lost under every filter.
+Almost all profit came in October (A+B ≈ +₹64.7k Oct vs −₹32.4k Apr–Sep). Trader confirmed "yes"
+to stricter A+B, drop FINNIFTY, 1 lot, shadow first.
+
+**Rules added (rule 1b, 3b in kadima/sniper.py):** `indices` allow-list (default NIFTY,BANKNIFTY,SENSEX);
+A = spot within `a_pct` 0.1% of the day high (CE) / low (PE); B = index move ≥ `b_pct` 0.3% in the
+trade direction vs the close 15 min earlier. Both from the engine's own closed 5-min index candles
+(`hourly_forecast.history_rows`) + live spot; <3 candles today, last candle >10 min old or no spot
+= `sniper_ab_no_data` (blocks; fails closed). Gate audit lines now carry spot, away_pct, move15_pct.
+`require_second_signal` switch added for rule 4 (kept ON; the 6-month test did not include rule 4,
+so live trade counts will be lower than the test).
+
+**Deploy:** same script, now installs with mode=shadow; `--live` flips to live within 30 s. 17 tests.

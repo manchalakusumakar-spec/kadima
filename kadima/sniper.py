@@ -6,10 +6,19 @@ of its index/side; stop-outs were late, repeated after an earlier stop on the sa
 or counter-trend. With mode=live, an auto Gamma Blast entry is allowed only when:
 
   1. Gamma Blast only (scalping stays off; nothing here touches other kinds)
+  1b. index is in the allow-list (default NIFTY, BANKNIFTY, SENSEX; FINNIFTY lost money
+     under every filter in the 6-month test)                      -> sniper_index_excluded
   2. 09:45 <= now < 10:30 IST                                   -> sniper_outside_window
   3. index day trend is UP/DOWN and the side agrees; SIDEWAYS = no trade
                                                                 -> sniper_sideways_day / sniper_counter_trend
-  4. not the first signal: another contract on the same index+side was suggested
+  3b. A + B filter (25-Oct 6-month test on NIFTY/BANKNIFTY/SENSEX/FINNIFTY, from the
+     engine's own closed 5-min index candles + live spot):
+       A: spot within A_PCT (0.1%) of the day high (CE) / day low (PE)
+                                                                -> sniper_not_near_day_extreme
+       B: index moved >= B_PCT (0.3%) in the trade direction over the last 15 min
+                                                                -> sniper_move_too_small
+       missing/stale candles block (fail closed)                -> sniper_ab_no_data
+  4. (switch require_second_signal) not the first signal: another contract on the same index+side was suggested
      at least CONFIRM_GAP_SEC earlier today                     -> sniper_first_signal
      and the premium is not > CHASE_PCT above this contract's first suggestion
                                                                 -> sniper_chasing_premium
@@ -62,6 +71,11 @@ DEFAULTS = {
     'exempt_r3': True,
     'exempt_pullback': True,
     'relax_flags': True,
+    'indices': 'NIFTY,BANKNIFTY,SENSEX',
+    'ab_filter': True,
+    'a_pct': 0.1,
+    'b_pct': 0.3,
+    'require_second_signal': True,
 }
 RELAXED_FLAGS = ('oi_unconfirmed', 'direction_unconfirmed')
 R3_PREFIX = 'gamma_move_exhausted_'
@@ -71,6 +85,7 @@ _cfg = {'at': 0.0, 'value': None}
 _lock = threading.Lock()
 _last_log: dict = {}
 _np_logged: set = set()
+_ab_last: dict = {}
 
 
 # ------------------------------------------------------------------ config
@@ -203,23 +218,71 @@ def _trend(index_name, token, spot, vwap, now):
     return label
 
 
-def check(index_name, direction, token, option_ltp, trend, now, entry_mode='live'):
-    """Rules 2-6. Returns a block reason or None."""
+def _bars_today(index_token, now):
+    """Today's closed 5-minute index candles (start, o, h, l, c) before now."""
+    from . import hourly_forecast
+    rows = hourly_forecast.history_rows(str(index_token), now, days=1)
+    return [r for r in rows if r[0].date() == now.date()]
+
+
+def ab_check(index_name, index_token, direction, spot, now):
+    """Rule 3b. Returns a block reason or None; the measured values go to _ab_last."""
+    cfg = config()
+    if not cfg['ab_filter']:
+        return None
+    info = {'a_pct': cfg['a_pct'], 'b_pct': cfg['b_pct']}
+    _ab_last[(index_name, direction)] = info
+    try:
+        spot = float(spot)
+    except (TypeError, ValueError):
+        spot = 0.0
+    if index_token is None or spot <= 0:
+        return 'sniper_ab_no_data'
+    bars = _bars_today(index_token, now)
+    # a latest closed candle more than 10 minutes old means the feed is stale
+    if len(bars) < 3 or bars[-1][0] + timedelta(minutes=15) < now:
+        return 'sniper_ab_no_data'
+    hi = max([b[2] for b in bars] + [spot])
+    lo = min([b[3] for b in bars] + [spot])
+    away = (hi - spot) / spot * 100 if direction == 'CE' else (spot - lo) / spot * 100
+    info['away_pct'] = round(away, 4)
+    if round(away, 4) > cfg['a_pct']:
+        return 'sniper_not_near_day_extreme'
+    cut = now - timedelta(minutes=15)
+    ref = [b for b in bars if b[0] + timedelta(minutes=5) <= cut]
+    if not ref:
+        return 'sniper_ab_no_data'
+    move = (spot / float(ref[-1][4]) - 1) * 100 * (1 if direction == 'CE' else -1)
+    info['move15_pct'] = round(move, 4)
+    if round(move, 4) < cfg['b_pct']:
+        return 'sniper_move_too_small'
+    return None
+
+
+def check(index_name, direction, token, option_ltp, trend, now, entry_mode='live',
+          index_token=None, spot=None):
+    """Rules 1b-6. Returns a block reason or None."""
     cfg = config()
     if direction not in ('CE', 'PE'):
         return 'sniper_direction_invalid'
+    allowed = [x.strip().upper() for x in cfg['indices'].split(',') if x.strip()]
+    if allowed and str(index_name).upper() not in allowed:
+        return 'sniper_index_excluded'
     if not _hm(cfg['window_start']) <= (now.hour, now.minute) < _hm(cfg['window_end']):
         return 'sniper_outside_window'
     if trend not in ('UP', 'DOWN'):
         return 'sniper_sideways_day'
     if (trend == 'DOWN') != (direction == 'PE'):
         return 'sniper_counter_trend'
+    ab = ab_check(index_name, index_token, direction, spot, now)
+    if ab:
+        return ab
     day = now.date().isoformat()
     plans = _plans(day, index_name, direction)
     gap = timedelta(seconds=cfg['confirm_gap_sec'])
     earlier = [p for p in plans if str(p[0]) != str(token)
                and (_dt(p[1]) is not None and _dt(p[1]) <= now - gap)]
-    if not earlier:
+    if not earlier and cfg['require_second_signal']:
         return 'sniper_first_signal'
     first = None
     for p in plans:
@@ -271,8 +334,10 @@ def _gate_impl(index_name, token, direction, spot, vwap, now, gate, selected, ma
         return res if m == 'live' else {}
     ctoken = selected.get('token')
     trend = _trend(index_name, token, spot, vwap, now)
+    _ab_last.pop((index_name, direction), None)
     block = check(index_name, direction, ctoken, selected.get('option_ltp'), trend, now,
-                  'live' if m == 'live' else 'shadow')
+                  'live' if m == 'live' else 'shadow', index_token=token, spot=spot)
+    ab_info = _ab_last.get((index_name, direction)) or {}
     old = (gate or {}).get('block')
     override = None
     stop_level = (gate or {}).get('stop_level')
@@ -291,7 +356,8 @@ def _gate_impl(index_name, token, direction, spot, vwap, now, gate, selected, ma
                 stop_level = level if trend_rules.live() else None
     _log((index_name, direction, ctoken, now.date()), index=index_name, direction=direction,
          token=ctoken, symbol=selected.get('symbol'), trend=trend, block=block,
-         override=override, existing_block=old, mode=m, ltp=selected.get('option_ltp'))
+         override=override, existing_block=old, mode=m, ltp=selected.get('option_ltp'),
+         spot=spot, away_pct=ab_info.get('away_pct'), move15_pct=ab_info.get('move15_pct'))
     if m != 'live':
         if block is None:
             digest = hashlib.sha1(f'{ctoken}|{now.date().isoformat()}'.encode()).hexdigest()

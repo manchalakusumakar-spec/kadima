@@ -1,11 +1,14 @@
 #!/bin/bash
-# KADIMA Sniper mode, 2026-10-24 (trader decisions 01:33 IST): live at 1 lot.
+# KADIMA Sniper mode, 2026-10-24 (trader decisions 01:33 IST), updated 25-Oct: installs in SHADOW.
+#   25-Oct additions (6-month A+B test): NIFTY/BANKNIFTY/SENSEX only (FINNIFTY excluded);
+#   A = spot within 0.1% of the day high (CE) / low (PE); B = index moved >= 0.3% with the trade in 15 min.
 #   Gamma Blast auto entries only 09:45-10:30, with the day trend (no sideways days), never the
 #   first signal of an index/side, no chase >15%, side done after a stop, max 2 a day (2nd after
 #   a loss on another index/side), 1 lot, skip if stop risk >15% of cash, no-progress exit 20 min.
 #   Sniper trades are exempt from the 30-min exhaustion (R3) and band-half pullback waits.
 # Run on EC2 OUTSIDE market hours:
-#   bash deploy_sniper_20261024.sh              # fetch branch, verify, install, mode=live, restart, health
+#   bash deploy_sniper_20261024.sh              # fetch branch, verify, install, mode=shadow, restart, health
+#   bash deploy_sniper_20261024.sh --live       # after install: mode=live (real orders, within 30 s, no restart)
 #   bash deploy_sniper_20261024.sh --shadow     # mode=shadow (log only, within 30 s, no restart)
 #   bash deploy_sniper_20261024.sh --off        # mode=off (old gamma flow, within 30 s, no restart)
 #   bash deploy_sniper_20261024.sh --rollback   # restore auto_executor/celestial, remove sniper.py, restart
@@ -14,7 +17,7 @@ ROOT=${KADIMA_ROOT:-$HOME/kadima-py}
 BRANCH=claude/sniper-mode-20261024
 REPO=git@github.com:manchalakusumakar-spec/kadima.git
 KEY=${KADIMA_DEPLOY_KEY:-$HOME/.ssh/kadima_deploy}
-H_SNIPER=ebf8cb0a0338d8b569b85a8f724c66046b7d30b831f342f5db1414432ca23eff
+H_SNIPER=a57ed33dfe16948984c3b896709fc35f6eca718e0911b205ed9238d17c84e4b7
 H_INSTALL=ca1716a9ee4274ec3e1532a77123c2c98edb46f0166d2ff5b16015ed8d6d0bf3
 DATA=$(systemctl show kadima -p Environment --value | tr ' ' '\n' | sed -n 's/^KADIMA_DATA_DIR=//p'); DATA=${DATA:-/var/lib/kadima}
 CFG=$DATA/sniper.json
@@ -42,6 +45,7 @@ health() {
   echo "health ok"; return 0
 }
 case "${1:-}" in
+  --live)   setmode live;   echo "Sniper LIVE (1 lot) within 30 s"; exit;;
   --shadow) setmode shadow; echo "Sniper SHADOW (log only) within 30 s"; exit;;
   --off)    setmode off;    echo "Sniper OFF within 30 s"; exit;;
   --rollback)
@@ -65,11 +69,11 @@ mkdir -p "$ROOT/tools" && cp -p "$SRC/tools/install_sniper_20261024.py" "$ROOT/t
 sudo chown --reference="$ROOT/kadima/auto_executor.py" "$ROOT/kadima/sniper.py"
 "$PY" -m py_compile "$ROOT/kadima/sniper.py" "$ROOT/kadima/auto_executor.py" "$ROOT/kadima/celestial.py" || {
   echo "ROLLING BACK: compile"; "$PY" "$ROOT/tools/install_sniper_20261024.py" --root "$ROOT" --rollback; exit 1; }
-echo "== 4. mode live"; setmode live
+echo "== 4. mode shadow"; setmode shadow
 echo "== 5. restart"; sudo systemctl restart kadima
 if ! health; then
   echo "ROLLING BACK"; setmode off; "$PY" "$ROOT/tools/install_sniper_20261024.py" --root "$ROOT" --rollback
   sudo systemctl restart kadima; health; exit 1
 fi
 rm -rf "$SRC"
-echo "DONE: Sniper LIVE (1 lot). Watch: grep '\"event\":\"sniper_' $DATA/audit/\$(date +%F).jsonl"
+echo "DONE: Sniper SHADOW (logs would-be trades, places nothing). Go live later: bash $0 --live. Watch: grep '\"event\":\"sniper_' $DATA/audit/\$(date +%F).jsonl"

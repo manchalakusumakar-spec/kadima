@@ -17,7 +17,8 @@ def at(h, m, s=0):
 
 
 def cfg(**kw):
-    v = dict(S.DEFAULTS); v.update(kw)
+    v = dict(S.DEFAULTS); v['ab_filter'] = False   # A+B has its own tests below
+    v.update(kw)
     S._cfg.update(at=time.monotonic() + 1e9, value=v)
     S._last_log.clear(); S._np_logged.clear()
 
@@ -196,6 +197,61 @@ def test_relax_reasons():
     assert notes == ['oi_unconfirmed', 'direction_unconfirmed']
     cfg(mode='shadow')
     assert S.relax_reasons(['oi_unconfirmed'], []) == ['oi_unconfirmed']
+
+
+def bars(closes, start=(9, 15)):
+    """5-min candles from closes; high/low = close +/- 2."""
+    t0 = at(*start)
+    return [(t0 + timedelta(minutes=5 * i), c, c + 2, c - 2, c) for i, c in enumerate(closes)]
+
+
+def ab(direction, spot, rows, now, **kw):
+    cfg(**{'mode': 'live', 'ab_filter': True, **kw})
+    with patch.object(S, '_bars_today', lambda *a: rows):
+        return S.ab_check('NIFTY', 'idx', direction, spot, now)
+
+
+def test_ab_filter():
+    # 09:15..09:45 closed (7 bars); 15 min before 10:00 = close of the 09:40 bar (ends 09:45)
+    up = bars([25000, 25010, 25020, 25030, 25040, 25050, 25060, 25070, 25080])
+    now = at(10, 0)
+    assert ab('CE', 25150.0, up, now) is None                 # new high, +0.36% in 15 min
+    assert ab('CE', 25120.0, up, now) == 'sniper_move_too_small'   # +0.24% < 0.3
+    assert ab('CE', 25120.0, up, now, b_pct=0.2) is None
+    assert ab('CE', 25050.0, up, now) == 'sniper_not_near_day_extreme'  # 0.13% below high
+    assert ab('PE', 25150.0, up, now) == 'sniper_not_near_day_extreme'  # far from day low
+    down = bars([25000, 24990, 24980, 24970, 24960, 24950, 24940, 24930, 24920])
+    assert ab('PE', 24850.0, down, now) is None
+    assert ab('CE', 24850.0, down, now) == 'sniper_not_near_day_extreme'
+
+
+def test_ab_fails_closed_without_data():
+    now = at(10, 0)
+    up = bars([25000, 25010, 25020, 25030, 25040, 25050, 25060, 25070, 25080])
+    assert ab('CE', None, up, now) == 'sniper_ab_no_data'
+    assert ab('CE', 25150.0, up[:2], now) == 'sniper_ab_no_data'
+    assert ab('CE', 25150.0, up[:4], now) == 'sniper_ab_no_data'    # last candle 09:30, stale
+    cfg(mode='live', ab_filter=True)
+    with patch.object(S, '_bars_today', lambda *a: up):
+        assert S.ab_check('NIFTY', None, 'CE', 25150.0, now) == 'sniper_ab_no_data'
+    assert ab('CE', 1.0, [], now, ab_filter=False) is None
+
+
+def test_index_allow_list_and_second_signal_switch():
+    cfg(mode='live'); reset(OK_PLANS)
+    assert chk(at(9, 50), index='FINNIFTY') == 'sniper_index_excluded'
+    cfg(mode='live', indices=''); assert chk(at(9, 50), index='FINNIFTY') == 'sniper_first_signal'
+    cfg(mode='live', require_second_signal=False)
+    assert chk(at(9, 50), index='NIFTY') is None
+
+
+def test_ab_runs_inside_check():
+    cfg(mode='live', ab_filter=True); reset(OK_PLANS)
+    with QUIET, patch.object(S, '_bars_today', lambda *a: []):
+        assert S.check('BANKNIFTY', 'PE', 't2', 300.0, 'DOWN', at(9, 50),
+                       index_token='i', spot=54000.0) == 'sniper_ab_no_data'
+        assert S.check('BANKNIFTY', 'PE', 't2', 300.0, 'UP', at(9, 50),
+                       index_token='i', spot=54000.0) == 'sniper_counter_trend'
 
 
 def test_config_file_and_bad_values():
