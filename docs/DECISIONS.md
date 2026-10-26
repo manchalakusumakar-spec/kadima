@@ -263,3 +263,15 @@ Files: `tools/install_dashboard_rules_20261025.py`, `deploy/deploy_dashboard_rul
 ## 2026-10-26 08:49 IST — CONFIRMED BLINK v1 (dashboard only)
 - Only CONFIRMED Gamma rows blink (green); score>50 rows steady light yellow; banner steady.
 - tools/install_confirmed_blink_20261026.py; backup dashboard.html.bak-blink-20261026.
+
+## 2026-10-26 15:36 IST — BEST ENTRY v1 (trader: "entry and exit to be fixed immediately", "best possible entry")
+- Incident: NIFTY 27-Oct 22450 CE bought 182.10, sold 172.30 (-5.4%, -Rs 637) ~10:14; ran to 355.95.
+- Entry (auto gamma / shield): signal arms the contract; buy only after a pullback of
+  max(0.5 x 1-min ATR, 1.5%) that holds (bounce 0.25 ATR, not > 0.5 ATR above zone, no spike candle).
+  No dip in 3 min -> half size (1 lot stays 1); arm expires at 6 min. Delta > 0.75 skipped.
+- Stop: lowest of engine stop / pullback low - 0.25 ATR / entry - 5-min range, 35% hard cap.
+- Exit (loss side only): 10-min grace (hard cap still exits); then stop exits need a 1-min close
+  below the stop or a 0.5 ATR breach; signal exits must persist 60 s. Profit side, EOD, daily loss
+  limit unchanged. Trader chose half size when no pullback comes.
+- Deferred: entry-limit re-pricing every 2-3 s (existing 30 s cancel kept); forecast-band dip level.
+- Config DATA_DIR/best_entry.json mode off|shadow|live. tools/install_best_entry_20261026.py (--rollback).
