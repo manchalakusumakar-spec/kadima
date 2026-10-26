@@ -60,6 +60,13 @@ LOTTERY_SCORE = 88.0
 LOTTERY = dict(BLAST, min_delta=0.005, max_distance_pct=15.0, cheap_min=0.5,
                hard_spread_pct=20.0)   # paise strikes: a 1-2 tick book is 10-20%
 LOTTERY_SIZE = 0.2
+# v1.2 loser filters (trader 2026-10-27 02:10; 26-Oct replay: losers 178 -> 22, net P&L unchanged)
+MIN_RET5_PCT = 0.2        # stock moved >= 0.2% in the trade direction over the last 5 min
+MAX_OPT_MOM3_PCT = 10.0   # do not chase: option already up >= 10% in the last 3 min
+MIN_PREMIUM = 3.0         # main order premium >= Rs 3 (far-strike leg keeps its own floor)
+MAX_ITM_PCT = 0.5         # strike no more than 0.5% in the money
+MAX_TRADES_PER_STOCK = 3  # per stock per day
+FILTER_LOG_SEC = 60.0
 SIZE_BY_SCORE = ((85.0, 1.0), (75.0, 0.7), (0.0, 0.4))
 HARD_STOP_PCT = 0.35
 LOCK_AT, LOCK_TO = 0.12, 0.03
@@ -164,6 +171,9 @@ def fail_reason(q, spot, g):
     dist = abs(q.strike - spot) / spot * 100.0
     if dist > g['max_distance_pct']:
         return f'distance_{dist:.1f}pct'
+    itm = (spot - q.strike) / spot * 100.0 if q.opt_type == 'CE' else (q.strike - spot) / spot * 100.0
+    if itm > MAX_ITM_PCT:
+        return f'itm_{itm:.1f}pct'
     if q.delta is None:
         return 'delta_unavailable'
     d = abs(q.delta)
@@ -171,6 +181,8 @@ def fail_reason(q, spot, g):
         return f'delta_{d:.2f}'
     if g is not NORMAL and d < NORMAL['min_delta'] and not (g['cheap_min'] <= ask <= g['cheap_max']):
         return f'cheap_premium_{ask:.2f}_outside_band'
+    if ask < MIN_PREMIUM and not (g is LOTTERY and is_lottery(q, spot)):
+        return f'premium_{ask:.2f}_under_{MIN_PREMIUM:.0f}'
     return None
 
 
@@ -293,3 +305,89 @@ def managed_stop(pos, ltp):
         except Exception:  # noqa: BLE001
             pass
         return None
+
+
+# ---------------------------------------------------------------- v1.2 entry filters
+_filter_log: dict = {}
+
+
+def _counts_path():
+    return os.path.join(DATA_DIR, 'stock_blast_counts.json')
+
+
+def _counts(day):
+    try:
+        with open(_counts_path()) as f:
+            raw = json.load(f)
+        return raw.get(day, {}) if isinstance(raw, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def trades_today(name, now):
+    return int(_counts(now.date().isoformat()).get(name, 0))
+
+
+def note_trade(name, now):
+    """Count one submitted primary order for this stock today (best effort)."""
+    try:
+        day = now.date().isoformat()
+        with _lock:
+            counts = _counts(day)
+            counts[name] = int(counts.get(name, 0)) + 1
+            tmp = _counts_path() + '.tmp'
+            with open(tmp, 'w') as f:
+                json.dump({day: counts}, f)
+            os.replace(tmp, _counts_path())
+    except Exception:  # noqa: BLE001
+        pass
+
+
+def option_move_3m(exchange, token, symbol, ltp, now):
+    """% change of this option over ~3 minutes from KADIMA's own minute record; None if unknown."""
+    try:
+        from . import price_history
+        import sqlite3
+        key = price_history.identity(exchange, str(token), symbol)
+        path = price_history.database_path()
+        c = sqlite3.connect('file:' + str(path) + '?mode=ro', uri=True, timeout=.2)
+        try:
+            minute = int(now.replace(second=0, microsecond=0).timestamp() * 1000)
+            row = c.execute('SELECT last FROM price_minutes WHERE day=? AND key=? AND minute BETWEEN ? AND ? '
+                            'ORDER BY minute DESC LIMIT 1',
+                            (now.date().isoformat(), key, minute - 240000, minute - 180000)).fetchone()
+        finally:
+            c.close()
+        if row and _finite(row[0], ltp) and row[0] > 0:
+            return (ltp / row[0] - 1) * 100.0
+    except Exception:  # noqa: BLE001
+        pass
+    return None
+
+
+def entry_filter(name, data, q, now):
+    """None if the v1.2 filters allow this stock entry, else a short reason (logged, throttled)."""
+    if not enabled():
+        return None
+    reason = None
+    sign = 1 if data.get('direction') == 'CE' else -1
+    r5 = data.get('return_5m_pct')
+    if not _finite(r5) or sign * float(r5) < MIN_RET5_PCT:
+        reason = 'stock_not_moving_5m'
+    elif trades_today(name, now) >= MAX_TRADES_PER_STOCK:
+        reason = 'stock_trade_cap_reached'
+    else:
+        mom = option_move_3m('NFO', q.token, q.symbol, q.ask or q.ltp, now)
+        if mom is not None and mom >= MAX_OPT_MOM3_PCT:
+            reason = 'option_chase_3m'
+    if reason:
+        try:
+            t = time.monotonic()
+            if t - _filter_log.get((name, reason), -1e9) >= FILTER_LOG_SEC:
+                _filter_log[(name, reason)] = t
+                audit.log('STOCK_BLAST_FILTER_BLOCK', index=name, reason=reason,
+                          direction=data.get('direction'), score=data.get('score'),
+                          return_5m_pct=r5, symbol=q.symbol)
+        except Exception:  # noqa: BLE001
+            pass
+    return reason

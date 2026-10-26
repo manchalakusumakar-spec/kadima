@@ -341,3 +341,10 @@ Files: `tools/install_dashboard_rules_20261025.py`, `deploy/deploy_dashboard_rul
   sized at 20% of the confidence size. The primary order is unchanged.
 - Daily Missed Blasts report (read-only): 15:45 IST, contracts that rose >= 3x and what KADIMA did;
   page /missed/ on the dashboard host, JSON pushed with the daily audit.
+
+## 2026-10-27 02:10 IST — STOCK BLAST v1.2 loser filters (trader: "reduce the losers", then "yes")
+- From the 26-Oct replay (381 trades, 178 losers): stock entries now need the stock up >= 0.2% in the trade
+  direction over the last 5 min; no entry if the option already rose >= 10% in the last 3 min; main premium
+  >= Rs 3; strike no more than 0.5% in the money; at most 3 trades per stock per day.
+- Replay effect on 26-Oct: 83 trades, 22 losers (was 178), losses -Rs 15k (was -Rs 172k), net P&L about the same.
+- One-day fit: every block is logged (STOCK_BLAST_FILTER_BLOCK) to re-check against live days.

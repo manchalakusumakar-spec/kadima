@@ -277,6 +277,10 @@ class MoveCaptureExecutionWorker:
             return
 
         context = self._context(data, q, days, confirmation)
+        block = stock_blast.entry_filter(name, data, q, now)   # STOCK BLAST v1.2 loser filters
+        if block:
+            self.rows[name] = dict(context, stage="BLOCKED", eligible=False, blocked_reasons=[block])
+            return
         from . import trade_audit
         trade_audit.safe_call(trade_audit.record_move, context, q, chain, stock_controls['holding_minutes'])
         self.stage = 'entry_gates'
@@ -350,6 +354,8 @@ class MoveCaptureExecutionWorker:
         audit.log(
             "MOVE_CAPTURE_DISPATCH_RESULT", signal_id=sid, index=name,
             direction=direction, score=score, **result)
+        if result.get("ok"):
+            stock_blast.note_trade(name, now)   # STOCK BLAST v1.2: per-stock daily cap
         if stock_blast.enabled() and score >= stock_blast.LOTTERY_SCORE and not context.get("lottery"):
             try:
                 self._lottery_leg(name, data, chain, days, now, context, stock_controls,
