@@ -275,3 +275,7 @@ Files: `tools/install_dashboard_rules_20261025.py`, `deploy/deploy_dashboard_rul
   limit unchanged. Trader chose half size when no pullback comes.
 - Deferred: entry-limit re-pricing every 2-3 s (existing 30 s cancel kept); forecast-band dip level.
 - Config DATA_DIR/best_entry.json mode off|shadow|live. tools/install_best_entry_20261026.py (--rollback).
+- 16:13 IST amendment (trader: "entry shouldn't be missed"): no signal is skipped by Best Entry.
+  At 6 min it buys half size even on a spike; delta > 0.75 is a note only. Unfilled auto BUY
+  orders are walked up to LTP + 1% every 5 s (max +4% over the first limit, up to 90 s) instead
+  of being cancelled at 30 s. Only a signal that stops being eligible while waiting is not bought.

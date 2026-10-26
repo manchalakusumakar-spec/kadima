@@ -17,8 +17,12 @@ each poll; every other gate runs again each time) asks:
   3. No spike chasing. never buy while the last completed 1-min candle's range is more
      than SPIKE_ATR x ATR and the premium is in the top third of it. -> wait
   4. No dip within WAIT_MIN minutes. -> BUY HALF size (1 lot stays 1 lot) at the current
-     price, unless rule 3 blocks; the arm expires at EXPIRE_MIN (signal skipped, logged).
-  5. Strike check. delta above MAX_DELTA (deep ITM) -> skip.
+     price, unless rule 3 blocks. At EXPIRE_MIN it buys half size even on a spike: the
+     trader's rule is that an entry must never be missed (26-Oct 16:13).
+  5. Strike check. delta above MAX_DELTA (deep ITM) is logged only (never skips).
+  6. Entry order not filled: instead of the old cancel at 30 s, the BUY limit is walked
+     up to fresh LTP + REPRICE_BUFFER every REPRICE_EVERY_SEC, never above the first
+     limit + MAX_CHASE_PCT, for up to REPRICE_WINDOW_SEC; then the old cancel applies.
   Too little premium history (< MIN_CANDLES completed 1-min candles) -> buy as before
   (never block on missing data).
 
@@ -71,6 +75,10 @@ DEFAULTS = {
     'grace_min': 10.0,
     'breach_atr': 0.5,
     'persist_sec': 60,
+    'reprice_every_sec': 5,
+    'reprice_window_sec': 90,
+    'reprice_buffer_pct': 1.0,
+    'max_chase_pct': 4.0,
 }
 STOP_REASONS = frozenset({'structural_stop_breached', 'dynamic_profit_trail_breached'})
 NEVER_HOLD = frozenset({'daily_loss_limit_breached', 'eod_force_close', 'mcx_session_exit',
@@ -196,10 +204,7 @@ def _decide(kind, manual, sid, token, ltp, stop, delta, samples, now):
 
     if delta is not None and abs(delta) > cfg['max_delta']:
         _log('best_entry_deep_itm', throttle_key=('itm', sid), signal_id=sid,
-             delta=round(abs(delta), 3), max_delta=cfg['max_delta'])
-        return out({'go': False, 'block': 'best_entry_strike_deep_itm'})
-    if sid in _done:
-        return out({'go': False, 'block': 'best_entry_expired'})
+             delta=round(abs(delta), 3), max_delta=cfg['max_delta'])   # note only
 
     done, cur = candles(samples or [], now)
     a = atr1(done)
@@ -236,19 +241,14 @@ def _decide(kind, manual, sid, token, ltp, stop, delta, samples, now):
                  low=arm['low'], ltp=ltp, stop=new_stop, waited_min=round(waited, 2))
             return out({'go': True, 'limit': None, 'stop': new_stop, 'fraction': 1.0,
                         'why': 'pullback_held', 'low': arm['low']})
-    if waited >= cfg['expire_min']:
-        with _lock:
-            _done.add(sid)
-            _arms.pop(sid, None)
-        _log('best_entry_expired', signal_id=sid, arm_price=arm['price'], ltp=ltp,
-             low=arm['low'], waited_min=round(waited, 2))
-        return out({'go': False, 'block': 'best_entry_expired'})
-    if waited >= cfg['wait_min'] and not arm['touched'] and not spike:
+    late = waited >= cfg['expire_min']          # never miss: buy even on a spike now
+    if late or (waited >= cfg['wait_min'] and not spike):
+        why = 'no_pullback_half_size' if not late else 'deadline_half_size'
         new_stop = _stop(stop, ltp, min(arm['low'], ltp), a, done, cfg)
-        _log('best_entry_go', signal_id=sid, why='no_pullback_half_size', arm_price=arm['price'],
-             ltp=ltp, stop=new_stop, waited_min=round(waited, 2))
+        _log('best_entry_go', signal_id=sid, why=why, arm_price=arm['price'],
+             ltp=ltp, stop=new_stop, waited_min=round(waited, 2), touched=arm['touched'])
         return out({'go': True, 'limit': None, 'stop': new_stop, 'fraction': 0.5,
-                    'why': 'no_pullback_half_size', 'low': arm['low']})
+                    'why': why, 'low': arm['low']})
     reason = ('best_entry_spike_wait' if spike else
               'best_entry_waiting_bounce' if arm['touched'] else 'best_entry_waiting_pullback')
     _log('best_entry_wait', throttle_key=('w', sid, reason), every=60.0, signal_id=sid,
@@ -279,6 +279,54 @@ def scale_lots(lots, verdict):
         return max(1, int(lots * f))
     except Exception:  # noqa: BLE001
         return lots
+
+
+_reprice: dict = {}    # intent -> {'first', 'last', 'n'}
+
+
+def entry_reprice(pos, row, status, age, ltp_fn):
+    """Unfilled auto BUY: walk the limit up to the market instead of cancelling at 30 s.
+    True = order kept alive (handled); False = old behaviour (cancel). Never raises."""
+    try:
+        return _entry_reprice(pos, row, status, age, ltp_fn)
+    except Exception as exc:  # noqa: BLE001
+        _log('best_entry_error', where='entry_reprice', error=str(exc)[:200])
+        return False
+
+
+def _entry_reprice(pos, row, status, age, ltp_fn):
+    import math
+    from . import angel_orders
+    if mode() != 'live' or getattr(pos, 'kind', None) not in _kinds('entry_kinds'):
+        return False
+    cfg = config()
+    if age >= cfg['reprice_window_sec'] or (status.filled_qty or 0) > 0:
+        return False
+    try:
+        current = float(status.raw.get('price'))
+    except (TypeError, ValueError, AttributeError):
+        return False
+    st = _reprice.setdefault(row['intent'], dict(first=current, last=None, n=0))
+    now = time.monotonic()
+    if st['last'] is not None and now - st['last'] < cfg['reprice_every_sec']:
+        return True
+    st['last'] = now
+    ltp = ltp_fn(pos.exchange, pos.token) if callable(ltp_fn) else None
+    if ltp is None or not math.isfinite(ltp) or ltp <= 0:
+        return True
+    cap = round(st['first'] * (1 + cfg['max_chase_pct'] / 100), 1)
+    new = min(round(ltp * (1 + cfg['reprice_buffer_pct'] / 100), 1), cap)
+    if new <= current:
+        return True
+    res = angel_orders.modify_order(status.order_id, price=new, side='BUY',
+        quantity=row['quantity'], contract=dict(tradingsymbol=pos.symbol,
+        symboltoken=pos.token, exchange=pos.exchange,
+        producttype=angel_orders.product_for(pos)))
+    st['n'] += 1
+    _log('best_entry_entry_repriced', signal_id=pos.signal_id, order_id=status.order_id,
+         attempt=st['n'], ltp=ltp, old_price=current, new_price=new, cap=cap,
+         accepted=getattr(res, 'ok', None), reason=getattr(res, 'reason', None))
+    return True
 
 
 def after_submit(signal_id):

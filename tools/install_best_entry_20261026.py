@@ -11,7 +11,10 @@ auto_executor.py
 best_entry.py copied in; DATA_DIR/best_entry.json written with the chosen mode.
 
 Anchor-based; nothing written unless every anchor matches once and the result compiles.
-Backup: auto_executor.py.bak-best-entry-20261026.
+execution_ledger.py
+  entry order: an unfilled auto BUY is walked up to the market (max +4% over its first
+            limit, every 5 s, up to 90 s) instead of being cancelled at 30 s.
+Backups: auto_executor.py / execution_ledger.py .bak-best-entry-20261026.
 Usage: --root ~/kadima-py --data /var/lib/kadima [--mode shadow|live] [--check | --rollback]
 """
 import argparse, json, os, shutil, sys
@@ -79,16 +82,34 @@ def _be_filter(pos, ltp, reason, now, tracker):  # BEST ENTRY v1
 '''
 
 
-def patch(path):
+EL = [(
+"""        if row['side'] == 'BUY' and pos.status == 'entry_pending' and (age >= 30 or pos.remaining_qty > 0 or pos.exit_reason):
+            angel_orders.cancel_order(status.order_id)""",
+"""        if (row['side'] == 'BUY' and pos.status == 'entry_pending' and not pos.exit_reason
+                and pos.remaining_qty == 0 and _be_entry_reprice(pos, row, status, age, ltp_fn)):
+            pass   # BEST ENTRY v1: unfilled entry walked up to the market; cancel comes later
+        elif row['side'] == 'BUY' and pos.status == 'entry_pending' and (age >= 30 or pos.remaining_qty > 0 or pos.exit_reason):
+            angel_orders.cancel_order(status.order_id)""")]
+EL_TAIL = '''
+
+def _be_entry_reprice(pos, row, status, age, ltp_fn):  # BEST ENTRY v1
+    from . import best_entry
+    return best_entry.entry_reprice(pos, row, status, age, ltp_fn)
+'''
+
+
+def patch(path, items=None, tail=None):
     src = open(path).read()
     if MARK in src:
         sys.exit(f'{os.path.basename(path)}: already contains {MARK}; nothing changed')
-    for old, new in AE:
+    items = AE if items is None else items
+    tail = AE_TAIL if tail is None else tail
+    for old, new in items:
         n = src.count(old)
         if n != 1:
-            sys.exit(f'auto_executor.py: anchor found {n} times: {old.strip()[:70]!r}; nothing changed')
+            sys.exit(f'{os.path.basename(path)}: anchor found {n} times: {old.strip()[:70]!r}; nothing changed')
         src = src.replace(old, new)
-    src += AE_TAIL
+    src += tail
     compile(src, path, 'exec')
     return src
 
@@ -103,11 +124,13 @@ def main():
     a = ap.parse_args()
     k = os.path.join(os.path.expanduser(a.root), 'kadima')
     ae = os.path.join(k, 'auto_executor.py')
+    el = os.path.join(k, 'execution_ledger.py')
     be = os.path.join(k, 'best_entry.py')
     cfg = os.path.join(a.data, 'best_entry.json')
     if a.rollback:
-        if os.path.exists(ae + SUFFIX):
-            shutil.copy2(ae + SUFFIX, ae); print('restored', ae)
+        for p in (ae, el):
+            if os.path.exists(p + SUFFIX):
+                shutil.copy2(p + SUFFIX, p); print('restored', p)
         if os.path.exists(be):
             os.remove(be); print('removed', be)
         if os.path.exists(cfg):
@@ -119,11 +142,14 @@ def main():
     new_be = open(os.path.join(HERE, 'kadima', 'best_entry.py')).read()
     compile(new_be, be, 'exec')
     text = patch(ae)
+    text_el = patch(el, EL, EL_TAIL)
     if a.check:
-        print('check ok: auto_executor.py anchors 5/5, best_entry.py compiles'); return
+        print('check ok: auto_executor.py 5/5, execution_ledger.py 1/1, best_entry.py compiles'); return
     shutil.copy2(ae, ae + SUFFIX)
+    shutil.copy2(el, el + SUFFIX)
     open(be, 'w').write(new_be); print('written', be)
     open(ae, 'w').write(text); print('written', ae)
+    open(el, 'w').write(text_el); print('written', el)
     old = {}
     if os.path.exists(cfg):
         try:

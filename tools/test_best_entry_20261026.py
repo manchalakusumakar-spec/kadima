@@ -59,10 +59,10 @@ def test_no_history_never_blocks():
     assert r['go'] and r['why'] == 'not_applied'
 
 
-def test_deep_itm_blocked():
+def test_deep_itm_noted_not_blocked():
     cfg()
     r = go(3, 182.1, warmup(at(10, 0)), at(10, 0), delta=0.86)
-    assert not r['go'] and r['block'] == 'best_entry_strike_deep_itm'
+    assert r.get('block') == 'best_entry_waiting_pullback'   # normal flow, never skipped
 
 
 def test_incident_replay_waits_then_buys_pullback_with_wider_stop():
@@ -96,7 +96,7 @@ def test_no_dip_half_size_after_wait_and_expiry():
     assert B.scale_lots(4, r) == 2 and B.scale_lots(1, r) == 1 and B.scale_lots(3, r) == 1
 
 
-def test_spike_candle_blocks_and_arm_expires():
+def test_spike_waits_but_never_missed():
     cfg()
     s = warmup(at(10, 0))
     assert not go(6, 162.0, s, at(10, 0))['go']
@@ -104,9 +104,33 @@ def test_spike_candle_blocks_and_arm_expires():
     s += series(at(10, 2), [160, 175, 190])
     r = go(6, 190.0, s, at(10, 3, 30))
     assert not r['go'] and r['block'] == 'best_entry_spike_wait'
-    r = go(6, 190.0, s, at(10, 6, 1))
-    assert not r['go'] and r['block'] == 'best_entry_expired'
-    assert go(6, 150.0, s, at(10, 7))['block'] == 'best_entry_expired'   # not re-armed
+    r = go(6, 190.0, s, at(10, 6, 1))                  # deadline: buy half, never skip
+    assert r['go'] and r['why'] == 'deadline_half_size' and r['fraction'] == 0.5
+    assert r['stop'] >= 190.0 * 0.65
+
+
+def test_entry_order_walked_up_not_cancelled():
+    from unittest.mock import patch as mpatch
+    from kadima import angel_orders
+    cfg()
+    B._reprice.clear()
+    p = SimpleNamespace(signal_id=11, kind='gamma_blast', exchange='NFO', token='T1',
+                        symbol='NIFTY27OCT2622450CE', remaining_qty=0, product='INTRADAY')
+    row = {'intent': 'K1', 'quantity': 65}
+    st = SimpleNamespace(order_id='O1', filled_qty=0, raw={'price': '180.0'})
+    calls = []
+    fake = lambda *a, **k: (calls.append(k['price']) or SimpleNamespace(ok=True, reason='ok'))
+    with mpatch.object(angel_orders, 'modify_order', fake), \
+         mpatch.object(angel_orders, 'product_for', lambda pos: 'INTRADAY'):
+        assert B.entry_reprice(p, row, st, 10, lambda e, t: 182.0)
+        assert calls == [183.8]                          # LTP + 1%
+        B._reprice['K1']['last'] -= 10
+        st.raw['price'] = '183.8'
+        assert B.entry_reprice(p, row, st, 20, lambda e, t: 200.0)
+        assert calls[-1] == 187.2                        # capped at first limit + 4%
+        assert not B.entry_reprice(p, row, st, 95, lambda e, t: 185.0)   # window over: old cancel
+        cfg(mode='shadow')
+        assert not B.entry_reprice(p, row, st, 10, lambda e, t: 185.0)
 
 
 def test_shadow_never_blocks():
@@ -180,6 +204,7 @@ def test_installer_check_apply_rollback():
     assert subprocess.run(base + ['--mode', 'live'], capture_output=True, text=True).returncode == 0
     ae = open(os.path.join(tmp, 'kadima', 'auto_executor.py')).read()
     assert ae.count('BEST ENTRY v1') >= 5
+    assert 'BEST ENTRY v1' in open(os.path.join(tmp, 'kadima', 'execution_ledger.py')).read()
     again = subprocess.run(base, capture_output=True, text=True)
     assert again.returncode != 0 and 'already contains' in again.stderr   # idempotent
     assert subprocess.run(base + ['--rollback'], capture_output=True, text=True).returncode == 0
