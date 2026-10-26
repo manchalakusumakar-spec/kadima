@@ -5,13 +5,15 @@ A Celestial gamma strike is CONFIRMED only when ALL of these hold:
   2. the index direction (Bull Shield) agrees with the option side:
      PE needs a bearish shield reading, CE a bullish one (row bear/bull_shield_score)
   3. time 09:45 <= now < 10:10 IST
-  4. strike concentration (HHI) >= min_hhi - v2 default 0 = not checked
+  4. strike concentration (HHI) >= min_hhi - v3 default 0.09 (v2 had 0 = not checked)
 Only CONFIRMED strikes may auto-trade (manual Celestial buys are not touched).
 v2 replay on minute prices with live exits, 21-23 Oct: 9 trades, 9 wins, avg +27%
 (v1 HHI rule: 5 trades, 4 wins, avg +23%). HHI did not separate winners from losers.
+v3 (trader 2026-10-26): HHI >= 0.09 back on top of the direction check. Audit 21-26 Oct,
+09:45-10:10, score >= 50, fixed T1/SL: HHI >= 0.09 17 of 17 hit T1; below 0.09 14 of 27.
 
 Config: DATA_DIR/gamma_confirm.json, re-read every 30 s:
-  {"mode": "off|shadow|live", "min_hhi": 0, "require_direction": true,
+  {"mode": "off|shadow|live", "min_hhi": 0.09, "require_direction": true,
    "window_start": "09:45", "window_end": "10:10"}
   off    - old tiers, no gate
   shadow - CONFIRMED tier shown and audited, auto entries not blocked
@@ -26,7 +28,7 @@ import time
 
 from .config import DATA_DIR
 
-DEFAULTS = {'mode': 'live', 'min_hhi': 0.0, 'require_direction': True,   # CONFIRM v2 2026-10-25
+DEFAULTS = {'mode': 'live', 'min_hhi': 0.09, 'require_direction': True,   # CONFIRM v3 2026-10-26
             'window_start': '09:45', 'window_end': '10:10',
             'risk_fraction': 0.30}   # trader 2026-10-25: auto gamma may risk up to 30% of cash
 _cfg = {'at': 0.0, 'value': None}

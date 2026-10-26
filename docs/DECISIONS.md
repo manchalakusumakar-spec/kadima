@@ -309,3 +309,15 @@ Files: `tools/install_dashboard_rules_20261025.py`, `deploy/deploy_dashboard_rul
   no 15% stop-risk lot limit. Kept: real cash checks and the daily loss limit as the cap on total
   stop risk (portfolio_capacity). Gamma / Sniper / Shield / CAS / manual unchanged.
 - 26-Oct example: 3 lots of the 22450 CE instead of 1. scalp_capital.json mode off|shadow|live.
+
+## 2026-10-26 (evening) — CONFIRM v3: HHI back for gamma, scalp back to 70-90 (trader confirmed)
+- Gamma CONFIRMED v3: score >= threshold, index direction agrees, 09:45-10:10 IST, AND strike
+  concentration HHI >= 0.09. Evidence (kadima-audit workbook 21-26 Oct, fixed T1/SL levels,
+  09:45-10:10, score >= 50): HHI >= 0.09 17 of 17 hit T1; below 0.09 14 of 27.
+  Note this differs from the v2 minute-price replay with live exits, where HHI did not separate
+  winners; the trader chose the stricter rule. Expect fewer gamma trades.
+- Scalp v2 CONFIRMED: score 70-90 (was 80-90), 09:45-10:30. Audit 09:45-10:30: 70-80 9 of 12 hit
+  T2 (avg +12.9%), 80-90 11 of 13 (+15.0%); 70-80 still positive, roughly doubles the trades.
+- Caveat: 4 trading days. Review after 5 live sessions.
+- Install: deploy/deploy_confirm_v3_20261026.sh (rollback: --rollback). HHI set in both the module
+  default and DATA_DIR/gamma_confirm.json so a missing config cannot drop the check.
