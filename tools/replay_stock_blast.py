@@ -75,6 +75,7 @@ def main():
                 continue
             trig.append(e)
     trig.sort(key=lambda e: e['ts'])
+    print(f'loaded {sum(len(v) for v in contracts.values())} contracts, {len(trig)} stock triggers', file=sys.stderr, flush=True)
 
     def minute_of(ts):
         t = datetime.fromisoformat(ts)
@@ -88,7 +89,12 @@ def main():
     def skip(r):
         skipped[r] = skipped.get(r, 0) + 1
 
-    for e in trig:
+    import time as _time
+    t_start = _time.monotonic()
+    lot_cache = {}
+    for i_e, e in enumerate(trig):
+        if i_e % 500 == 0:
+            print(f'progress {i_e}/{len(trig)} trades={len(trades)} {(_time.monotonic()-t_start):.0f}s', file=sys.stderr, flush=True)
         und, score, direction, spot = e['underlying'], float(e['score']), e['direction'], float(e['price'])
         m, t = minute_of(e['ts'])
         if not sb.entry_time_allowed(t):
@@ -152,7 +158,9 @@ def main():
             if not q.rising:
                 skip('option not rising (confirmation)'); continue
             x = q.x
-            lot = get_lot_size(x['symbol'], x['token'])
+            if x['token'] not in lot_cache:
+                lot_cache[x['token']] = get_lot_size(x['symbol'], x['token'])
+            lot = lot_cache[x['token']]
             if not lot:
                 skip('lot size unknown'); continue
             entry = q.ltp * 1.02
