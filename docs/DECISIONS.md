@@ -279,3 +279,18 @@ Files: `tools/install_dashboard_rules_20261025.py`, `deploy/deploy_dashboard_rul
   At 6 min it buys half size even on a spike; delta > 0.75 is a note only. Unfilled auto BUY
   orders are walked up to LTP + 1% every 5 s (max +4% over the first limit, up to 90 s) instead
   of being cancelled at 30 s. Only a signal that stops being eligible while waiting is not bought.
+
+## 2026-10-27 00:20 IST — BEST ENTRY v1 (extended) + MANUAL FORECAST STOP v1 (trader 23:58)
+- Trader: threshold 50; tomorrow's expiry live; manual trades get a counter-trend warning and a
+  dynamic stop that "can forecast and decide" (no fixed rupee cap).
+- 26-Oct audit (127 rows): only KADIMA trade was Scalping v2 NIFTY 22450 CE (09:45:57 @182.10,
+  thesis exit scalp_v2_premium_lower_high @172.30 after 130 s); 22650 PE 6 lots was manual
+  (manual_hard_stop_breached 14:09, -Rs 9,997).
+- Best Entry now also covers fast_momentum (Scalping v2): pullback entry; 3-min grace on scalp
+  loss exits (scalp +20% target never held).
+- Sniper rule 5 (side stopped) counts Gamma plans only: the scalp's 09:48 stop blocked NIFTY CE
+  Gamma at 10:00:54 / 10:01:21 on a +153 day.
+- Manual forecast stop: exits a manual trade before the 35% hard stop only when loss >= 12%,
+  the 10-min premium slope projects the 35% level within 30 min, premium < 1-min EMA9 for 2
+  candles, the day trend is against it, and VWAP / hourly forecast agree when available.
+- Celestial score_threshold set to 50 (dashboard CONFIRMED and executor now agree).

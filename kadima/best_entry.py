@@ -58,8 +58,9 @@ from .utils import now_ist
 MARK = 'BEST ENTRY v1'
 DEFAULTS = {
     'mode': 'off',
-    'entry_kinds': 'gamma_blast,bull_shield,bear_shield',
-    'exit_kinds': 'gamma_blast,bull_shield,bear_shield',
+    'entry_kinds': 'gamma_blast,bull_shield,bear_shield,fast_momentum',
+    'exit_kinds': 'gamma_blast,bull_shield,bear_shield,fast_momentum',
+    'scalp_grace_min': 3.0,     # fast_momentum (Scalping v2) grace; 26-Oct scalp was sold at 130 s
     'dip_atr': 0.5,
     'min_dip_pct': 1.5,
     'bounce_atr': 0.25,
@@ -81,6 +82,7 @@ DEFAULTS = {
     'max_chase_pct': 4.0,
 }
 STOP_REASONS = frozenset({'structural_stop_breached', 'dynamic_profit_trail_breached'})
+PASS_REASONS = frozenset({'scalp_v2_target_20pct'})   # profit-side reasons, never held
 NEVER_HOLD = frozenset({'daily_loss_limit_breached', 'eod_force_close', 'mcx_session_exit',
                         'killswitch_engaged', 'manual_exit_dashboard', 'squareoff_dashboard'})
 
@@ -345,7 +347,7 @@ def filter_exit(pos, ltp, reason, now=None, samples=None):
 
 
 def _filter(pos, ltp, reason, now, samples):
-    if not reason or reason in NEVER_HOLD:
+    if not reason or reason in NEVER_HOLD or reason in PASS_REASONS:
         return reason
     m = mode()
     if m == 'off' or getattr(pos, 'kind', None) not in _kinds('exit_kinds'):
@@ -359,7 +361,8 @@ def _filter(pos, ltp, reason, now, samples):
         return reason                         # hard cap always exits
     start = pos.entry_ts if isinstance(pos.entry_ts, datetime) else _dt(pos.entry_ts)
     hold = None
-    if start is not None and now - start < timedelta(minutes=cfg['grace_min']):
+    grace = cfg['scalp_grace_min'] if getattr(pos, 'kind', None) == 'fast_momentum' else cfg['grace_min']
+    if start is not None and now - start < timedelta(minutes=grace):
         hold = 'grace'
     else:
         done, _ = candles(samples or [], now, minutes=10)

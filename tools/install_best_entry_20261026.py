@@ -51,6 +51,17 @@ AE = [
 """                if band_reason and not pos.exit_reason and _be_filter(  # BEST ENTRY v1
                         pos, ltp, band_reason, now, self.state.premium_tracker):
                     pos.exit_reason = band_reason"""),
+("""                    if v2_reason and not pos.exit_reason:
+                        pos.exit_reason = v2_reason""",
+"""                    if v2_reason and not pos.exit_reason and _be_filter(  # BEST ENTRY v1
+                            pos, ltp, v2_reason, now, self.state.premium_tracker):
+                        pos.exit_reason = v2_reason"""),
+("""                    peak,stop,active,reason = manual_protection.evaluate(pos,ltp)
+""",
+"""                    peak,stop,active,reason = manual_protection.evaluate(pos,ltp)
+                    if not reason:   # MANUAL FORECAST STOP v1: exit before the hard stop
+                        reason = _mf_check(pos, ltp, now, self.state.premium_tracker)
+"""),
 ("""            if reason:
                 self._close_position(pos, ltp, reason)
 
@@ -76,6 +87,11 @@ def _be_decide(kind, manual, sid, quote, ltp, stop, tracker):  # BEST ENTRY v1
                              samples=_be_samples(tracker, quote.token))
 
 
+def _mf_check(pos, ltp, now, tracker):  # MANUAL FORECAST STOP v1
+    from . import manual_forecast
+    return manual_forecast.check(pos, ltp, _be_samples(tracker, pos.token), now)
+
+
 def _be_filter(pos, ltp, reason, now, tracker):  # BEST ENTRY v1
     from . import best_entry
     return best_entry.filter_exit(pos, ltp, reason, now, _be_samples(tracker, pos.token))
@@ -95,6 +111,28 @@ EL_TAIL = '''
 def _be_entry_reprice(pos, row, status, age, ltp_fn):  # BEST ENTRY v1
     from . import best_entry
     return best_entry.entry_reprice(pos, row, status, age, ltp_fn)
+'''
+
+
+SN = [(
+"""    if any(_dt(p[3]) is not None and _dt(p[3]) <= now for p in plans):
+        return 'sniper_side_stopped'""",
+"""    if any(_dt(p[3]) is not None and _dt(p[3]) <= now   # BEST ENTRY v1: Gamma stops only
+           for p in _gamma_stops(day, index_name, direction)):
+        return 'sniper_side_stopped'""")]
+SN_TAIL = '''
+
+def _gamma_stops(day, index_name, direction):  # BEST ENTRY v1
+    """Rule 5 counts only Gamma plans. A scalp plan's tight stop (26-Oct: NIFTY 22450 CE scalp,
+    09:48) blocked every NIFTY CE Gamma entry for the rest of a +153-point up day."""
+    c = storage.conn()
+    try:
+        return c.execute(
+            "SELECT token, suggested_at, plan, sl_at FROM trade_audit_plans "
+            "WHERE day=? AND underlying=? AND direction=? AND strategy='GAMMA'",
+            (day, index_name, direction)).fetchall()
+    except Exception:  # noqa: BLE001
+        return []
 '''
 
 
@@ -125,29 +163,41 @@ def main():
     k = os.path.join(os.path.expanduser(a.root), 'kadima')
     ae = os.path.join(k, 'auto_executor.py')
     el = os.path.join(k, 'execution_ledger.py')
+    sn = os.path.join(k, 'sniper.py')
+    mf = os.path.join(k, 'manual_forecast.py')
+    mfc = os.path.join(a.data, 'manual_forecast.json')
     be = os.path.join(k, 'best_entry.py')
     cfg = os.path.join(a.data, 'best_entry.json')
     if a.rollback:
-        for p in (ae, el):
+        for p in (ae, el, sn):
             if os.path.exists(p + SUFFIX):
                 shutil.copy2(p + SUFFIX, p); print('restored', p)
-        if os.path.exists(be):
-            os.remove(be); print('removed', be)
+        for p in (be, mf):
+            if os.path.exists(p):
+                os.remove(p); print('removed', p)
         if os.path.exists(cfg):
             json.dump({'mode': 'off'}, open(cfg, 'w')); print('mode off', cfg)
+        if os.path.exists(mfc):
+            json.dump({'mode': 'off', 'warn': 'off'}, open(mfc, 'w')); print('mode off', mfc)
         return
     for need in ('trend_rules.py', 'sniper.py'):
         if not os.path.exists(os.path.join(k, need)):
             sys.exit(f'{need} missing on this box; nothing changed')
     new_be = open(os.path.join(HERE, 'kadima', 'best_entry.py')).read()
     compile(new_be, be, 'exec')
+    new_mf = open(os.path.join(HERE, 'kadima', 'manual_forecast.py')).read()
+    compile(new_mf, mf, 'exec')
     text = patch(ae)
     text_el = patch(el, EL, EL_TAIL)
+    text_sn = patch(sn, SN, SN_TAIL)
     if a.check:
-        print('check ok: auto_executor.py 5/5, execution_ledger.py 1/1, best_entry.py compiles'); return
-    shutil.copy2(ae, ae + SUFFIX)
-    shutil.copy2(el, el + SUFFIX)
+        print(f'check ok: auto_executor.py {len(AE)}/{len(AE)}, execution_ledger.py 1/1, sniper.py 1/1, '
+              'best_entry.py + manual_forecast.py compile'); return
+    for p in (ae, el, sn):
+        shutil.copy2(p, p + SUFFIX)
     open(be, 'w').write(new_be); print('written', be)
+    open(mf, 'w').write(new_mf); print('written', mf)
+    open(sn, 'w').write(text_sn); print('written', sn)
     open(ae, 'w').write(text); print('written', ae)
     open(el, 'w').write(text_el); print('written', el)
     old = {}
@@ -158,6 +208,7 @@ def main():
             old = {}
     old['mode'] = a.mode
     json.dump(old, open(cfg, 'w'), indent=1); print('config', cfg, old)
+    json.dump({'mode': a.mode, 'warn': 'live'}, open(mfc, 'w'), indent=1); print('config', mfc)
 
 
 if __name__ == '__main__':

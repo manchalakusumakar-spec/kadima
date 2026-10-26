@@ -195,7 +195,7 @@ def test_errors_fail_to_old_behaviour():
 
 def test_installer_check_apply_rollback():
     tmp = tempfile.mkdtemp()
-    shutil.copytree(os.path.join(ROOT, 'kadima'), os.path.join(tmp, 'kadima'))
+    shutil.copytree(os.environ.get('KADIMA_LIVE_SRC', os.path.join(ROOT, 'kadima')), os.path.join(tmp, 'kadima'))  # live snapshot
     data = tempfile.mkdtemp()
     py, inst = sys.executable, os.path.join(ROOT, 'tools', 'install_best_entry_20261026.py')
     base = [py, inst, '--root', tmp, '--data', data]
@@ -209,6 +209,85 @@ def test_installer_check_apply_rollback():
     assert again.returncode != 0 and 'already contains' in again.stderr   # idempotent
     assert subprocess.run(base + ['--rollback'], capture_output=True, text=True).returncode == 0
     assert 'BEST ENTRY v1' not in open(os.path.join(tmp, 'kadima', 'auto_executor.py')).read()
+
+
+def test_scalp_grace_is_short_and_target_passes():
+    cfg()
+    p = pos(kind='fast_momentum', entry_ts=at(9, 45, 57), entry_price=160.0)
+    # 26-Oct scalp: thesis exit at 130 s -> held inside the 3-min scalp grace
+    assert B.filter_exit(p, 155.0, 'scalp_v2_premium_lower_high', at(9, 48, 8), []) is None
+    assert B.filter_exit(p, 192.0, 'scalp_v2_target_20pct', at(9, 47), []) == 'scalp_v2_target_20pct'
+    # after 3 min it is a normal persisting signal again
+    for t in (at(9, 49, 30), at(9, 49, 50), at(9, 50, 10)):   # monitor polls every ~10-20 s
+        assert B.filter_exit(p, 155.0, 'scalp_v2_premium_lower_high', t, []) is None
+    assert B.filter_exit(p, 155.0, 'scalp_v2_premium_lower_high', at(9, 50, 31), []) == 'scalp_v2_premium_lower_high'
+
+
+def _mf_setup(trend='UP', spot=22700.0, vwap=22600.0, mid=None):
+    from kadima import manual_forecast as M, trend_rules
+    M._cfg.update(at=time.monotonic() + 1e9, value=dict(M.DEFAULTS, mode='live', warn='shadow'))
+    M._warned.clear(); M._logged.clear()
+    trend_rules._trend['NIFTY'] = dict(day=DAY.date().isoformat(), label=trend)
+    M._structure = lambda index, now: (spot, vwap)
+    M._forecast_mid = lambda index, now: mid
+    return M
+
+
+def _falling(start, p0, per_min, minutes):
+    return [(start + timedelta(seconds=20 * i), p0 - per_min * i / 3) for i in range(int(minutes * 3))]
+
+
+def mpos(**kw):
+    p = dict(signal_id=546, kind='MANUAL_PROTECTED', status='open', entry_price=81.63, index='NIFTY',
+             direction='PE', symbol='NIFTY27OCT2622650PE')
+    p.update(kw)
+    return SimpleNamespace(**p)
+
+
+def test_manual_forecast_exits_early_counter_trend_falling():
+    """26-Oct 22650 PE: UP day, premium sliding ~0.6/min. Exit well before -31%."""
+    from datetime import date
+    import kadima.utils as U
+    M = _mf_setup()
+    s = _falling(at(13, 26), 81.0, 0.6, 30)            # 13:26 -> 13:56, 81 -> ~63
+    now = at(13, 46)
+    ltp = [px for ts, px in s if ts <= now][-1]       # ~69 (-15%)
+    orig = M.now_ist; M.now_ist = lambda: now
+    try:
+        r = M.check(mpos(), ltp, [x for x in s if x[0] <= now], now)
+    finally:
+        M.now_ist = orig
+    assert r == 'manual_forecast_stop', M.assess(mpos(), ltp, [x for x in s if x[0] <= now], now)
+    assert (81.63 - ltp) / 81.63 < 0.2               # out near -15%, not -31%
+
+
+def test_manual_forecast_holds_with_trend_or_small_loss_or_vwap_disagrees():
+    M = _mf_setup(trend='DOWN')                       # PE WITH the trend -> hold
+    s = _falling(at(13, 26), 81.0, 0.6, 30)
+    now = at(13, 46); ltp = [px for ts, px in s if ts <= now][-1]
+    sub = [x for x in s if x[0] <= now]
+    orig = M.now_ist; M.now_ist = lambda: now
+    try:
+        assert M.check(mpos(), ltp, sub, now) is None
+        M = _mf_setup(trend='UP', spot=22500.0, vwap=22600.0)   # spot below VWAP: PE side fine
+        assert M.check(mpos(), ltp, sub, now) is None
+        M = _mf_setup(trend='UP')
+        assert M.check(mpos(), 76.0, sub, now) is None          # only -7%: noise, hold
+        M = _mf_setup(trend='UP', mid=22500.0)                  # forecast says index falls: PE ok
+        assert M.check(mpos(), ltp, sub, now) is None
+    finally:
+        M.now_ist = orig
+
+
+def test_sniper_rule5_counts_gamma_plans_only():
+    tmp = tempfile.mkdtemp()
+    shutil.copytree(os.environ.get('KADIMA_LIVE_SRC', os.path.join(ROOT, 'kadima')), os.path.join(tmp, 'kadima'))  # live snapshot
+    data = tempfile.mkdtemp()
+    inst = os.path.join(ROOT, 'tools', 'install_best_entry_20261026.py')
+    assert subprocess.run([sys.executable, inst, '--root', tmp, '--data', data],
+                          capture_output=True, text=True).returncode == 0
+    src = open(os.path.join(tmp, 'kadima', 'sniper.py')).read()
+    assert "strategy='GAMMA'" in src and '_gamma_stops(day, index_name, direction)' in src
 
 
 if __name__ == '__main__':
