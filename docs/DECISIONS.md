@@ -259,3 +259,7 @@ Files: `tools/install_dashboard_rules_20261025.py`, `deploy/deploy_dashboard_rul
 - Kept: stops, trail, daily loss limit, Sniper stop-after-loss / side-stopped / max 2 / 1 lot /
   30% cash risk / 15% chase, spot_beyond_band_stop, clean spread, tradeable, capital checks.
 - Switch: sniper.json "confirmed_bypass": false. Install: deploy/deploy_bottleneck_fix_20261025.sh
+
+## 2026-10-26 08:49 IST — CONFIRMED BLINK v1 (dashboard only)
+- Only CONFIRMED Gamma rows blink (green); score>50 rows steady light yellow; banner steady.
+- tools/install_confirmed_blink_20261026.py; backup dashboard.html.bak-blink-20261026.
