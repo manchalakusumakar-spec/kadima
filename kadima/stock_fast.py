@@ -342,6 +342,15 @@ def deadline_reason(pos, now=None):
     if now >= datetime.fromisoformat(row[1]):
         return 'stock_fast_session_exit'
     if pos.entry_ts and now >= pos.entry_ts + timedelta(minutes=row[0]):
+        # STOCK BLAST v1 (2026-10-27): a stock blast that is running (peak >= +5%) is left to
+        # the peak runner instead of being cut at the fixed holding deadline.
+        try:
+            from . import stock_blast
+            if (stock_blast.enabled() and pos.entry_price
+                    and (pos.peak_price or 0) >= pos.entry_price * 1.05):
+                return None
+        except Exception:  # noqa: BLE001
+            pass
         return 'stock_fast_holding_deadline'
     return None
 

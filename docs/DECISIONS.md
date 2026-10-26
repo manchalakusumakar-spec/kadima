@@ -321,3 +321,13 @@ Files: `tools/install_dashboard_rules_20261025.py`, `deploy/deploy_dashboard_rul
 - Caveat: 4 trading days. Review after 5 live sessions.
 - Install: deploy/deploy_confirm_v3_20261026.sh (rollback: --rollback). HHI set in both the module
   default and DATA_DIR/gamma_confirm.json so a missing config cannot drop the check.
+
+## 2026-10-27 01:00 IST — STOCK BLAST v1 (trader)
+- Trigger: 26-Oct ATHERENERG ran 1414 -> 1612 (14:26-14:54); Move Capture fired CE score 89.5 at 14:26:37
+  and was rejected "move_capture_no_liquid_option" on every attempt; 1400 CE went 10.85 -> 215.
+  Since 1 Oct: ~90,000 stock triggers, zero stock orders (COFORGE, PATANJALI, POLICYBZR the same).
+- Decided: stock-specific strike rules (spread <= 6%, blast <= 8%; delta 0.25-0.85; blast score >= 80 also
+  cheap OTM Rs 2-30), 4 strikes each side, entries until 15:10 ("no time bar"), sizing by trigger confidence
+  (Claude's call: <75 40%, 75-85 70%, >=85 100% of the existing allocation), exit = existing PEAK RUNNER
+  (-35% hard stop, +12% locks +3%, runner from +20%), live from 27-Oct open, per-strike rejection log.
+- Index engines unchanged. Off switch: DATA_DIR/stock_blast.json {"mode":"off"}; installer --rollback.

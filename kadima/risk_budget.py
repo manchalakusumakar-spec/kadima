@@ -51,32 +51,43 @@ def _spread_pct(c: StrikeCandidate) -> Optional[float]:
     return (c.ask - c.bid) / mid * 100.0
 
 
-def _quality_fail_reason(c: StrikeCandidate, spot: float) -> Optional[str]:
+def _quality_fail_reason(c: StrikeCandidate, spot: float, gates: Optional[dict] = None) -> Optional[str]:
     """Returns None if the strike passes all gates, else the failure reason.
-    Missing data is a FAILURE, not a pass — we do not size on unknowns."""
+    Missing data is a FAILURE, not a pass — we do not size on unknowns.
+    gates: STOCK BLAST v1 (2026-10-27) per-call overrides for stock contracts;
+    None keeps the index gates above unchanged."""
+    g = gates or {}
+    max_spread = g.get('max_spread_pct', MAX_SPREAD_PCT)
+    min_delta = g.get('min_delta', MIN_DELTA)
+    min_volume = g.get('min_volume', MIN_OPTION_VOLUME)
+    min_oi = g.get('min_oi', MIN_OPEN_INTEREST)
+    max_distance = g.get('max_distance_pct', MAX_DISTANCE_FROM_SPOT_PCT)
     if not trade_policy.positive(c.ltp, spot, c.strike):
         return "no_valid_ltp"
 
     sp = _spread_pct(c)
     if sp is None:
         return "spread_unavailable"
-    if not 0 <= sp <= MAX_SPREAD_PCT:
-        return f"spread_{sp:.1f}pct_over_{MAX_SPREAD_PCT}"
+    if not 0 <= sp <= max_spread:
+        # Stock rule: a tight rupee spread on a cheap contract is tradeable up to a hard cap.
+        if not (gates and c.ask - c.bid <= g.get('abs_spread', 0) + 1e-9
+                and sp <= g.get('hard_spread_pct', max_spread)):
+            return f"spread_{sp:.1f}pct_over_{max_spread}"
 
     if c.delta is None:
         return "delta_unavailable"
-    if not trade_policy.positive(abs(c.delta)) or abs(c.delta) < MIN_DELTA:
-        return f"delta_{abs(c.delta):.2f}_under_{MIN_DELTA}"
+    if not trade_policy.positive(abs(c.delta)) or abs(c.delta) < min_delta:
+        return f"delta_{abs(c.delta):.2f}_under_{min_delta}"
 
-    if not trade_policy.positive(c.volume) or c.volume < MIN_OPTION_VOLUME:
-        return f"volume_{c.volume}_under_{MIN_OPTION_VOLUME}"
+    if not trade_policy.positive(c.volume) or c.volume < min_volume:
+        return f"volume_{c.volume}_under_{min_volume}"
 
-    if not trade_policy.positive(c.open_interest) or c.open_interest < MIN_OPEN_INTEREST:
-        return f"oi_{c.open_interest}_under_{MIN_OPEN_INTEREST}"
+    if not trade_policy.positive(c.open_interest) or c.open_interest < min_oi:
+        return f"oi_{c.open_interest}_under_{min_oi}"
 
     dist_pct = abs(c.strike - spot) / spot * 100.0
-    if dist_pct > MAX_DISTANCE_FROM_SPOT_PCT:
-        return f"distance_{dist_pct:.1f}pct_over_{MAX_DISTANCE_FROM_SPOT_PCT}"
+    if dist_pct > max_distance:
+        return f"distance_{dist_pct:.1f}pct_over_{max_distance}"
 
     return None
 
@@ -87,6 +98,7 @@ def select_within_budget(
     spot: float,
     allocated_capital: float = 0.0,
     max_lots: int = 1,
+    gates: Optional[dict] = None,
 ) -> StrikeVerdict:
     """
     Pick the lowest-risk strike that passes every quality gate AND fits
@@ -101,7 +113,7 @@ def select_within_budget(
     max_risk_inr = allocated_capital * trade_policy.RISK_FRACTION
 
     for c in candidates:
-        fail = _quality_fail_reason(c, spot)
+        fail = _quality_fail_reason(c, spot, gates)
         if fail:
             rejected.append((c.strike, c.option_type, fail))
             continue

@@ -106,7 +106,9 @@ class MoveCaptureExecutionWorker:
         if not _finite(spot, .000001):
             raise ValueError("move_capture_spot_invalid")
         index = self._index(data["underlying"])
-        chain = OptionChain(index, self.scrips, strikes_each_side=2)
+        from . import stock_blast   # STOCK BLAST v1: wider ladder, stock strike rules
+        chain = OptionChain(index, self.scrips, strikes_each_side=(
+            stock_blast.STRIKES_EACH_SIDE if stock_blast.enabled() else 2))
         chain.rebuild_ladder(spot)
         if len(chain.quotes) < 2 or not chain.poll():
             raise ValueError("move_capture_option_poll_incomplete")
@@ -116,9 +118,15 @@ class MoveCaptureExecutionWorker:
         days = (expiry - now).total_seconds() / 86400
         if not _finite(days, .000001):
             raise ValueError("move_capture_expiry_invalid")
-        ranked = [r for r in strike_selector.rank(
-            chain, data["direction"], spot, days) if not r.rejected]
+        if stock_blast.enabled():
+            all_ranked = stock_blast.rank(chain, data["direction"], spot, days,
+                                          data.get("score", 0))
+        else:
+            all_ranked = strike_selector.rank(chain, data["direction"], spot, days)
+        ranked = [r for r in all_ranked if not r.rejected]
         if not ranked:
+            stock_blast.log_rejects(data["underlying"], data["direction"],
+                                    data.get("score"), all_ranked)
             raise ValueError("move_capture_no_liquid_option")
         # Keep the contract through the short confirmation window when it still
         # passes ranking filters. An invalid contract is never pinned for entry.
@@ -227,7 +235,11 @@ class MoveCaptureExecutionWorker:
                 underlying=name, stage="LIVE_DISABLED", eligible=False,
                 ts=now.isoformat(), blocked_reasons=["stock_live_control_disabled"])
             return
-        if not stock_fast.entry_time_allowed(now, stock_controls['holding_minutes']):
+        from . import stock_blast   # STOCK BLAST v1: no holding-horizon bar, entries to 15:10
+        if stock_blast.enabled():
+            if not stock_blast.entry_time_allowed(now):
+                raise ValueError('move_capture_outside_entry_window')
+        elif not stock_fast.entry_time_allowed(now, stock_controls['holding_minutes']):
             raise ValueError('move_capture_horizon_crosses_session_exit')
         if data.get("asset_scope") != "STOCK":
             return
@@ -309,7 +321,8 @@ class MoveCaptureExecutionWorker:
             sign = 1 if direction == 'CE' else -1
             if (not _finite(price, .000001) or sign*(price-initial['spot_stop']) <= 0
                     or abs(price/data['price']-1) > .005
-                    or not stock_fast.entry_time_allowed(now_ist(), stock_controls['holding_minutes'])):
+                    or not (stock_blast.entry_time_allowed(now_ist()) if stock_blast.enabled()
+                            else stock_fast.entry_time_allowed(now_ist(), stock_controls['holding_minutes']))):
                 return None
             revised = dict(initial)
             revised["ts"] = latest["updated_at"]
