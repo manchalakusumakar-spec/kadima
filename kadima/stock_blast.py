@@ -54,10 +54,17 @@ NORMAL = dict(min_delta=0.25, max_delta=0.85, max_spread_pct=6.0, abs_spread=0.5
               hard_spread_pct=12.0, min_volume=1000, min_oi=5000, max_distance_pct=4.0)
 BLAST = dict(NORMAL, min_delta=0.05, max_distance_pct=8.0, max_spread_pct=8.0, abs_spread=0.75,
              cheap_min=2.0, cheap_max=30.0)
+# v1.1 (trader 2026-10-27 01:30): on very strong triggers also far strikes (27-Oct ATHER 1580/1600 CE
+# went ~34x from the previous close). Sized at LOTTERY_SIZE of the normal allocation.
+LOTTERY_SCORE = 88.0
+LOTTERY = dict(BLAST, min_delta=0.005, max_distance_pct=15.0, cheap_min=0.5,
+               hard_spread_pct=20.0)   # paise strikes: a 1-2 tick book is 10-20%
+LOTTERY_SIZE = 0.2
 SIZE_BY_SCORE = ((85.0, 1.0), (75.0, 0.7), (0.0, 0.4))
 HARD_STOP_PCT = 0.35
 LOCK_AT, LOCK_TO = 0.12, 0.03
 STRIKES_EACH_SIDE = 4
+LOTTERY_LADDER = 10
 REJECT_LOG_SEC = 60.0
 
 _cfg = {'at': 0.0, 'value': None}
@@ -106,12 +113,29 @@ def applies(chain, fast):
         return False
 
 
+def ladder_width(score):
+    """Strikes each side to quote: wider on lottery-grade triggers so far strikes are seen."""
+    s = float(score) if _finite(score) else 0.0
+    return LOTTERY_LADDER if s >= LOTTERY_SCORE else STRIKES_EACH_SIDE
+
+
 def entry_time_allowed(now):
     return now.weekday() < 5 and ENTRY_START <= (now.hour, now.minute) < ENTRY_END
 
 
 def gates(score):
-    return BLAST if _finite(score) and float(score) >= BLAST_SCORE else NORMAL
+    s = float(score) if _finite(score) else 0.0
+    return LOTTERY if s >= LOTTERY_SCORE else BLAST if s >= BLAST_SCORE else NORMAL
+
+
+def is_lottery(q, spot):
+    """A strike only the LOTTERY tier allows: > 8% from spot or premium under Rs 2."""
+    try:
+        ask = q.ask or q.ltp
+        return (abs(q.strike - spot) / spot * 100.0 > BLAST['max_distance_pct']
+                or ask < BLAST['cheap_min'])
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def spread_ok(bid, ask, g):
@@ -145,7 +169,7 @@ def fail_reason(q, spot, g):
     d = abs(q.delta)
     if d < g['min_delta'] or d > g['max_delta']:
         return f'delta_{d:.2f}'
-    if g is BLAST and d < NORMAL['min_delta'] and not (g['cheap_min'] <= ask <= g['cheap_max']):
+    if g is not NORMAL and d < NORMAL['min_delta'] and not (g['cheap_min'] <= ask <= g['cheap_max']):
         return f'cheap_premium_{ask:.2f}_outside_band'
     return None
 
@@ -186,8 +210,11 @@ def rank(chain, direction, spot, days_to_expiry, score=0.0):
             continue
         lev = leverage(q, spot)
         liq = math.log10(max(q.volume or 1, 1))
-        out.append(RankedStrike(q, lev * 10 + liq, [f'leverage {lev:.1f}', f'liq {liq:.1f}',
-                                                   'blast' if g is BLAST else 'normal']))
+        tier = ('lottery' if g is LOTTERY and is_lottery(q, spot)
+                else 'normal' if g is NORMAL else 'blast')
+        # A lottery strike is sized at LOTTERY_SIZE, so rank it by its sized payoff.
+        weight = LOTTERY_SIZE if tier == 'lottery' else 1.0
+        out.append(RankedStrike(q, lev * 10 * weight + liq, [f'leverage {lev:.1f}', f'liq {liq:.1f}', tier]))
     out.sort(key=lambda r: (r.rejected is None, r.score), reverse=True)
     return out
 
@@ -201,7 +228,7 @@ def log_rejects(name, direction, score, ranked):
                 return
             _last_reject_log[name] = now
         audit.log('STOCK_BLAST_STRIKE_REJECTS', index=name, direction=direction, score=score,
-                  mode='blast' if gates(score) is BLAST else 'normal',
+                  mode={id(NORMAL): 'normal', id(BLAST): 'blast', id(LOTTERY): 'lottery'}[id(gates(score))],
                   rejects=[(r.quote.strike, r.quote.ltp, r.rejected) for r in ranked][:12])
     except Exception:  # noqa: BLE001
         pass
@@ -215,9 +242,11 @@ def size_fraction(score):
     return SIZE_BY_SCORE[-1][1]
 
 
-def allocation(base, score):
+def allocation(base, score, fast=None):
     try:
         frac = size_fraction(score)
+        if isinstance(fast, dict) and fast.get('lottery') is True:
+            frac *= LOTTERY_SIZE
         out = float(base) * frac
         audit.log('STOCK_BLAST_SIZING', score=score, fraction=frac, base=round(float(base), 0),
                   allocation=round(out, 0))

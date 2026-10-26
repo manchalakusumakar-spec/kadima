@@ -108,7 +108,7 @@ class MoveCaptureExecutionWorker:
         index = self._index(data["underlying"])
         from . import stock_blast   # STOCK BLAST v1: wider ladder, stock strike rules
         chain = OptionChain(index, self.scrips, strikes_each_side=(
-            stock_blast.STRIKES_EACH_SIDE if stock_blast.enabled() else 2))
+            stock_blast.ladder_width(data.get("score", 0)) if stock_blast.enabled() else 2))
         chain.rebuild_ladder(spot)
         if len(chain.quotes) < 2 or not chain.poll():
             raise ValueError("move_capture_option_poll_incomplete")
@@ -211,6 +211,7 @@ class MoveCaptureExecutionWorker:
             days=float(days),
             eligible=True,
             option_confirmation=confirmation,
+            lottery=bool(stock_blast.enabled() and stock_blast.is_lottery(q, float(spot))),
         )
 
     def process(self, row):
@@ -302,7 +303,8 @@ class MoveCaptureExecutionWorker:
         direction = data["direction"]
         initial = dict(context)
 
-        def revalidate():
+        def make_revalidate(initial):
+          def revalidate():
             latest = handoff.current(name)
             try:
                 current_controls = stock_fast.controls()
@@ -330,7 +332,9 @@ class MoveCaptureExecutionWorker:
             revised["eligible"] = not fast_momentum.live_blocks(
                 name, direction, now_ist(), revised["score"])
             return revised if revised["eligible"] else None
+          return revalidate
 
+        revalidate = make_revalidate(initial)
         chain._entry_guard = lambda: (
             live_requested() and handoff.still_current(name, episode, direction))
         self.last_attempt[episode] = time.monotonic()
@@ -346,6 +350,51 @@ class MoveCaptureExecutionWorker:
         audit.log(
             "MOVE_CAPTURE_DISPATCH_RESULT", signal_id=sid, index=name,
             direction=direction, score=score, **result)
+        if stock_blast.enabled() and score >= stock_blast.LOTTERY_SCORE and not context.get("lottery"):
+            try:
+                self._lottery_leg(name, data, chain, days, now, context, stock_controls,
+                                  make_revalidate, confirmation)
+            except Exception as exc:  # noqa: BLE001 - the primary leg is already done
+                audit.log("STOCK_BLAST_LOTTERY_ERROR", index=name,
+                          error=type(exc).__name__, detail=str(exc)[:120])
+
+    def _lottery_leg(self, name, data, chain, days, now, primary, stock_controls,
+                     make_revalidate, confirmation):
+        """STOCK BLAST v1.1: on a very strong trigger, a second small order on the best far
+        strike (> 8% out or under Rs 2), sized at stock_blast.LOTTERY_SIZE. Own signal id,
+        same executor gates."""
+        from . import stock_blast
+        spot, direction = float(data["price"]), data["direction"]
+        picks = [r for r in stock_blast.rank(chain, direction, spot, days, data.get("score", 0))
+                 if not r.rejected and 'lottery' in r.reasons
+                 and str(r.quote.token) != primary.get("token")]
+        if not picks:
+            audit.log("STOCK_BLAST_LOTTERY_NONE", index=name, direction=direction)
+            return
+        picks.sort(key=lambda r: stock_blast.leverage(r.quote, spot), reverse=True)
+        q = picks[0].quote
+        leg = dict(data, episode=data["episode"] + ":lottery")
+        context = self._context(leg, q, days, confirmation)
+        context["lottery"] = True
+        sid = handoff.signal_id(leg)
+        c = stock_fast._connection()
+        with c:
+            c.execute('INSERT OR IGNORE INTO stock_fast_policies VALUES (?,?,?,?)',
+                      (sid, leg['episode'], stock_controls['holding_minutes'],
+                       stock_fast.session_exit(now).isoformat()))
+        base = make_revalidate(dict(context))
+
+        def revalidate():
+            out = base()
+            if out is not None:
+                out["episode"], out["lottery"] = leg["episode"], True
+            return out
+        result = self.executor.evaluate_and_enter(
+            name, direction, chain, spot, indicators.Snapshot(),
+            days, "fast_momentum", sid, "EXPERIMENTAL", float(data["score"]),
+            fast_context=revalidate)
+        audit.log("STOCK_BLAST_LOTTERY_DISPATCH", signal_id=sid, index=name, symbol=q.symbol,
+                  ask=q.ask, direction=direction, score=data["score"], **result)
 
     def cycle(self):
         now = now_ist()
@@ -360,7 +409,9 @@ class MoveCaptureExecutionWorker:
         self.first_samples = {k:v for k,v in self.first_samples.items() if k in names}
         self.last_attempt = {k:v for k,v in self.last_attempt.items() if k in episodes}
         self.last_served = {k:v for k,v in self.last_served.items() if k in names}
-        rows.sort(key=lambda r: (self.last_served.get(r['name'], 0), -r['data']['score']))
+        # STOCK BLAST v1.1 (2026-10-27): triggers scoring >= 80 are served before the rotation.
+        rows.sort(key=lambda r: (0 if r['data'].get('score', 0) >= 80 else 1,
+                                 self.last_served.get(r['name'], 0), -r['data']['score']))
         prepared = 0
         failed = 0
         for row in rows:

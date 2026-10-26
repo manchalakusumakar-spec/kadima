@@ -56,8 +56,10 @@ check('ATHER blast picks a cheap high-leverage strike (<= Rs 30)',
       ok_blast and ok_blast[0].quote.ask <= 30)
 print('     chosen', ok_blast[0].quote.symbol if ok_blast else None,
       [(r.quote.strike, r.rejected) for r in blast])
-check('Rs 1.6 premium stays outside the Rs 2-30 cheap band',
-      any(r.quote.strike == 1500 and r.rejected for r in blast))
+check('Rs 1.6 strike is only a far-strike (lottery) candidate at 89.5 (v1.1)',
+      any(r.quote.strike == 1500 and not r.rejected and 'lottery' in r.reasons for r in blast))
+b85 = stock_blast.rank(chain('ATHERENERG', [OptionQuote(**vars(x)) for x in ather]), 'CE', 1414.2, days, score=85)
+check('Rs 1.6 premium rejected below the lottery score', any(r.quote.strike == 1500 and r.rejected for r in b85))
 
 normal = stock_blast.rank(chain('ATHERENERG', [OptionQuote(**vars(x)) for x in ather]),
                           'CE', 1414.2, days, score=70.0)

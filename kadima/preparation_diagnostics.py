@@ -22,7 +22,19 @@ ERROR_TYPES = frozenset(('ValueError', 'TypeError', 'KeyError', 'AttributeError'
     'OperationalError', 'IntegrityError', 'OSError', 'ImportError', 'NameError'))
 
 
+def _hint(exc):
+    """Short, cleaned exception text (2026-10-27): long tokens, URLs and quotes removed."""
+    import re
+    text = re.sub(r'https?://\S+', '<url>', str(exc))
+    text = re.sub(r'[A-Za-z0-9_\-.]{24,}', '<redacted>', text)
+    text = re.sub(r'[^A-Za-z0-9 _.:,()<>/-]', ' ', text)
+    return ' '.join(text.split())[:120]
+
+
 def describe(exc, stage, fallback='preparation_error'):
+    name = type(exc).__name__
     return dict(reason=KNOWN_MESSAGES.get(str(exc), fallback),
-                error_type=type(exc).__name__ if type(exc).__name__ in ERROR_TYPES else 'OtherError',
+                error_type=name if name in ERROR_TYPES else 'OtherError',
+                error_class=name if name.isidentifier() else 'Unknown',
+                error_hint=_hint(exc),
                 preparation_stage=stage)

@@ -129,7 +129,8 @@ class Worker:
             raise ValueError("gap_worker_stopping")
         self.last_history = time.monotonic()
         SESSION.ensure()
-        response = SESSION.api.getCandleData(dict(
+        from . import candle_pacer   # shared Angel historical-API pacing (2026-10-27)
+        response = candle_pacer.get(SESSION.api, dict(
             exchange=index.exchange, symboltoken=index.token, interval="FIVE_MINUTE",
             fromdate=(now-timedelta(days=30)).strftime("%Y-%m-%d 09:15"),
             todate=now.strftime("%Y-%m-%d %H:%M")))

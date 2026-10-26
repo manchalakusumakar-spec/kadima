@@ -331,3 +331,13 @@ Files: `tools/install_dashboard_rules_20261025.py`, `deploy/deploy_dashboard_rul
   (Claude's call: <75 40%, 75-85 70%, >=85 100% of the existing allocation), exit = existing PEAK RUNNER
   (-35% hard stop, +12% locks +3%, runner from +20%), live from 27-Oct open, per-strike rejection log.
 - Index engines unchanged. Off switch: DATA_DIR/stock_blast.json {"mode":"off"}; installer --rollback.
+
+## 2026-10-27 01:30 IST — STOCK BLAST v1.1 (trader: "go ahead")
+- Move Capture hot list 10 -> 20; triggers scoring >= 80 are prepared before the rotation.
+- Historical candles (stock_fast, stock_execution, gap_live) share one pacer (<= 2.5/s, <= 150/min) with one
+  retry on "Too many requests"; rejection logs now carry the real error class and a cleaned message.
+- Far strikes (trader approved after 27-Oct ATHER 1580/1600 CE ~34x from previous close): on triggers >= 88,
+  a second small order on the best strike > 8% out or under Rs 2 (to 15% out, Rs 0.50 floor, spread <= 20%),
+  sized at 20% of the confidence size. The primary order is unchanged.
+- Daily Missed Blasts report (read-only): 15:45 IST, contracts that rose >= 3x and what KADIMA did;
+  page /missed/ on the dashboard host, JSON pushed with the daily audit.

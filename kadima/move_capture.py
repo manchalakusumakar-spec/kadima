@@ -283,7 +283,7 @@ class MoveCaptureDetector:
     """Bounded universe detector and Top-N hot list; no execution capability."""
 
     def __init__(self, *, trigger_score=65.0, release_score=45.0,
-                 max_hot=10, stale_seconds=20, cooldown_seconds=120):
+                 max_hot=20, stale_seconds=20, cooldown_seconds=120):   # 2026-10-27: was 10 (list full most days)
         if not 0 <= release_score < trigger_score <= 100:
             raise ValueError("invalid_move_capture_thresholds")
         if type(max_hot) is not int or not 1 <= max_hot <= 50:

@@ -383,7 +383,8 @@ class Worker:
                 raise ValueError('stock_fast_worker_stopping')
             self.last_history = time.monotonic()
             SESSION.ensure()
-            response = SESSION.api.getCandleData(dict(exchange=index.exchange,
+            from . import candle_pacer   # shared Angel historical-API pacing (2026-10-27)
+            response = candle_pacer.get(SESSION.api, dict(exchange=index.exchange,
                 symboltoken=index.token, interval=label,
                 fromdate=now.strftime('%Y-%m-%d 09:15'), todate=now.strftime('%Y-%m-%d %H:%M')))
             if not isinstance(response, dict) or response.get('status') is not True:
