@@ -32,6 +32,7 @@ def main():
     ap.add_argument('--data', default='/var/lib/kadima')
     ap.add_argument('--cash', type=float, default=None)
     ap.add_argument('--max-lots', type=int, default=2)
+    ap.add_argument('--dump', help='write every trade with entry features to this JSON file')
     a = ap.parse_args()
     from kadima import stock_blast as sb
     from kadima.greeks import implied_vol_and_greeks
@@ -62,7 +63,25 @@ def main():
             (day, key))}
         contracts.setdefault(und, []).append(dict(symbol=sym, token=tok, strike=strike, typ=typ,
                                                   expiry=exp, bars=bars))
+    spot_bars = {}   # underlying -> {minute_ms: (first, last, high, low)}
+    for key, und in c.execute("SELECT key, underlying FROM price_days WHERE day=? AND asset IN ('STOCK','INDEX')",
+                              (day,)):
+        spot_bars[und] = {r[0]: r[1:] for r in c.execute(
+            'SELECT minute, first, last, high, low FROM price_minutes WHERE day=? AND key=?', (day, key))}
     c.close()
+
+    def spot_at(und, minute, back=0):
+        bars = spot_bars.get(und, {})
+        for k in range(minute - back * 60000, minute - back * 60000 - 6 * 60000, -60000):
+            if k in bars and bars[k][1]:
+                return bars[k][1]
+        return None
+
+    def day_open(und):
+        bars = spot_bars.get(und, {})
+        return bars[min(bars)][0] if bars else None
+
+    trig_count = {}
 
     # ---- triggers ------------------------------------------------------------------------
     trig = []
@@ -97,6 +116,17 @@ def main():
             print(f'progress {i_e}/{len(trig)} trades={len(trades)} {(_time.monotonic()-t_start):.0f}s', file=sys.stderr, flush=True)
         und, score, direction, spot = e['underlying'], float(e['score']), e['direction'], float(e['price'])
         m, t = minute_of(e['ts'])
+        trig_count[(und, direction)] = trig_count.get((und, direction), 0) + 1
+        sign = 1 if direction == 'CE' else -1
+        o = day_open(und)
+        s5, s15 = spot_at(und, m, 5), spot_at(und, m, 15)
+        n0, n15 = spot_at('NIFTY', m), spot_at('NIFTY', m, 15)
+        feat = dict(
+            day_move=round(sign * (spot / o - 1) * 100, 2) if o else None,
+            ret5=round(sign * (spot / s5 - 1) * 100, 2) if s5 else None,
+            ret15=round(sign * (spot / s15 - 1) * 100, 2) if s15 else None,
+            nifty15=round(sign * (n0 / n15 - 1) * 100, 2) if n0 and n15 else None,
+            trigger_n=trig_count[(und, direction)], direction=direction)
         if not sb.entry_time_allowed(t):
             skip('outside 09:15-15:10'); continue
         if realized <= -10000:
@@ -211,8 +241,15 @@ def main():
                                contract=x['symbol'][len(und):], far=lottery, lots=lots, qty=qty,
                                entry=round(entry, 2), peak=round(peak, 2), exit=round(exit_px, 2),
                                out=datetime.fromtimestamp(exit_m / 1000, IST).strftime('%H:%M'),
-                               reason=reason, pnl=round(pnl)))
+                               reason=reason, pnl=round(pnl),
+                               moneyness=round(sign * (x['strike'] / spot - 1) * 100, 2),
+                               opt_mom3=(round((q.ltp / x['bars'][m - 180000][1] - 1) * 100, 1)
+                                         if (m - 180000) in x['bars'] and x['bars'][m - 180000][1] else None),
+                               **feat))
     wins = [t for t in trades if t['pnl'] > 0]
+    if a.dump:
+        with open(a.dump, 'w') as f:
+            json.dump(trades, f)
     print(json.dumps(dict(
         day=day, morning_cash=cash0, triggers=len(trig), trades=len(trades), wins=len(wins),
         net_pnl=round(sum(t['pnl'] for t in trades)),
