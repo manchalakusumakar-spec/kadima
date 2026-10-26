@@ -294,3 +294,12 @@ Files: `tools/install_dashboard_rules_20261025.py`, `deploy/deploy_dashboard_rul
   the 10-min premium slope projects the 35% level within 30 min, premium < 1-min EMA9 for 2
   candles, the day trend is against it, and VWAP / hourly forecast agree when available.
 - Celestial score_threshold set to 50 (dashboard CONFIRMED and executor now agree).
+
+## 2026-10-27 00:30 IST — PEAK RUNNER v1 (trader: replace the fixed +20% scalp target)
+- "amend it as trailing stoploss of 20.00 profit"; "it should continuously forecast ... once the
+  peak is reached as per forecast of latest 15 seconds, it should exit".
+- Scalping v2 at +20%: no fixed target; floor stop at entry +20%; wide backstop (keep 50% of the
+  gain); exit when the 15-s premium slope forecasts no new high (2 consecutive checks, slope < 0,
+  premium >= noise below peak). Thesis exits skipped while running; 2-s monitor while a runner is open.
+- Replay 26-Oct 22450 CE (entry ~165): exit ~306 at 09:58 (+Rs 9,179) vs ~198 (+Rs 2,145).
+- scalp_runner.json mode off|shadow|live; tools/install_peak_runner_20261027.py (--rollback).
