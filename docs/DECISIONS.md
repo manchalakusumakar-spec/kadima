@@ -303,3 +303,9 @@ Files: `tools/install_dashboard_rules_20261025.py`, `deploy/deploy_dashboard_rul
   premium >= noise below peak). Thesis exits skipped while running; 2-s monitor while a runner is open.
 - Replay 26-Oct 22450 CE (entry ~165): exit ~306 at 09:58 (+Rs 9,179) vs ~198 (+Rs 2,145).
 - scalp_runner.json mode off|shadow|live; tools/install_peak_runner_20261027.py (--rollback).
+
+## 2026-10-27 00:35 IST — SCALP NO-CAP v1 (trader: "there is no cap on capital for such trades"; ok 00:26)
+- Scalping v2 only: capital = all available cash minus 5% buffer (was <= 30,000); no 2-lot limit;
+  no 15% stop-risk lot limit. Kept: real cash checks and the daily loss limit as the cap on total
+  stop risk (portfolio_capacity). Gamma / Sniper / Shield / CAS / manual unchanged.
+- 26-Oct example: 3 lots of the 22450 CE instead of 1. scalp_capital.json mode off|shadow|live.
