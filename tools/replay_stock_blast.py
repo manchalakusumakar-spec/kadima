@@ -161,7 +161,7 @@ def main():
             covered = 0
             for k in span:
                 b = x['bars'].get(k)
-                held = (k - m) / 60000
+                age = (k - m) / 60000
                 if b is None:
                     continue
                 covered += 1
@@ -173,9 +173,9 @@ def main():
                     stop = max(stop, entry * 1.20, entry + 0.5 * (peak - entry))
                 elif peak >= entry * 1.12:
                     stop = max(stop, entry * 1.03)
-                if held >= 5 and peak < entry * 1.05:
+                if age >= 5 and peak < entry * 1.05:
                     exit_px, reason, exit_m = last, 'no progress 5 min', k; break
-                if held >= 15 and peak < entry * 1.05:
+                if age >= 15 and peak < entry * 1.05:
                     exit_px, reason, exit_m = last, 'holding deadline', k; break
             if exit_px is None:
                 last_bar = max((k for k in mins if k <= end), default=None)
