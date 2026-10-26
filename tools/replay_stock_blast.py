@@ -81,6 +81,7 @@ def main():
         return int(t.replace(second=0, microsecond=0).timestamp() * 1000), t
 
     Q = type('Q', (), {})
+    delta_cache = {}
     realized, open_until, held = 0.0, {}, []   # held: (exit_minute, cost)
     trades, skipped = [], {}
 
@@ -103,16 +104,25 @@ def main():
         pool = [x for x in pool if x['expiry'] == nearest]
         days = max((nearest - t).total_seconds() / 86400, 0.01)
         quotes = []
+        gmax = sb.gates(score)
         for x in pool:
             b = x['bars'][m]
             px = b[1]
             if not px or px <= 0:
                 continue
+            # cheap pre-gates before the (slow) IV solve
+            if abs(x['strike'] - spot) / spot * 100 > gmax['max_distance_pct']:
+                continue
+            if px < gmax.get('cheap_min', 2.0) and gmax is not sb.LOTTERY:
+                continue
             q = Q(); q.strike, q.ltp, q.ask, q.bid = x['strike'], px, px, px * 0.98
             q.volume, q.oi = 10 ** 6, 10 ** 6
-            iv, g = implied_vol_and_greeks(spot=spot, strike=x['strike'], premium=px, days=days,
-                                           opt_type=direction)
-            q.delta = g['delta'] if g else None
+            ck = (x['symbol'], m)
+            if ck not in delta_cache:
+                iv, g = implied_vol_and_greeks(spot=spot, strike=x['strike'], premium=px, days=days,
+                                               opt_type=direction, tol=1e-3, max_iter=40)
+                delta_cache[ck] = g['delta'] if g else None
+            q.delta = delta_cache[ck]
             q.x, q.rising = x, (b[2] or px) >= px
             quotes.append(q)
 
