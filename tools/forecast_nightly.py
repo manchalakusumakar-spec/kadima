@@ -116,7 +116,7 @@ def fetch(index_name, now):
 def replay(index_name, now):
     idx = INDICES[index_name]
     rows = HF.history_rows(idx.token, now, days=REPLAY_DAYS + ANALOG_POOL_DAYS + 30)
-    days = [d for d in M.build_days(rows) if sum(c is not None for c in d.closes) >= 60]
+    days = [d for d in M.build_days(rows, fill_before=now.date()) if sum(c is not None for c in d.closes) >= 60]
     params = HF.load_params(index_name)
     first = max(10, len(days) - REPLAY_DAYS)
     samples = []
