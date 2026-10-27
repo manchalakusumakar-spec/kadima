@@ -165,7 +165,12 @@ class UniverseScanner:
 
         self._last_universe_quotes = quotes
         moves.sort(key=lambda m: m[0], reverse=True)
-        return [stock for _, stock in moves[:MAX_SHORTLIST]]
+        top = [stock for _, stock in moves[:MAX_SHORTLIST]]
+        # FOCUS LIST v1: focus names are always on the shortlist, in addition to the top movers.
+        from . import focus_list
+        names = {s["name"] for s in top}
+        focus = [s for s in self.universe if focus_list.is_focus(s["name"]) and s["name"] not in names]
+        return top + focus[:focus_list.MAX_SYMBOLS]
 
     def _fetch_screen_batch(self, by_exchange: dict, batch_start: int) -> dict:
         pending = {ex: list(tokens) for ex, tokens in by_exchange.items()}
@@ -221,7 +226,10 @@ class UniverseScanner:
         # memory constraint behind this whole design is, the bound belongs
         # on the function that actually allocates state, not on trusting
         # every future caller to pre-slice correctly.
-        if len(self._tracked) >= MAX_SHORTLIST:
+        from . import focus_list   # FOCUS LIST v1: cap raised by the focus count
+        cap = MAX_SHORTLIST + min(len(focus_list.symbols()), focus_list.MAX_SYMBOLS)
+        if len(self._tracked) >= cap or (not focus_list.is_focus(name) and
+                                         sum(not focus_list.is_focus(n) for n in self._tracked) >= MAX_SHORTLIST):
             audit.log("universe_promote_refused_at_cap", name=name,
                       currently_tracked=len(self._tracked))
             return

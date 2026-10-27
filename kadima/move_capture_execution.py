@@ -416,7 +416,9 @@ class MoveCaptureExecutionWorker:
         self.last_attempt = {k:v for k,v in self.last_attempt.items() if k in episodes}
         self.last_served = {k:v for k,v in self.last_served.items() if k in names}
         # STOCK BLAST v1.1 (2026-10-27): triggers scoring >= 80 are served before the rotation.
-        rows.sort(key=lambda r: (0 if r['data'].get('score', 0) >= 80 else 1,
+        from . import focus_list   # FOCUS LIST v1: focus names first, then score >= 80
+        rows.sort(key=lambda r: (0 if focus_list.is_focus(r['name']) else 1,
+                                 0 if r['data'].get('score', 0) >= 80 else 1,
                                  self.last_served.get(r['name'], 0), -r['data']['score']))
         prepared = 0
         failed = 0

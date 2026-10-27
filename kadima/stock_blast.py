@@ -365,6 +365,14 @@ def option_move_3m(exchange, token, symbol, ltp, now):
     return None
 
 
+def _trade_cap(name):
+    try:
+        from . import focus_list   # FOCUS LIST v1: more attempts on focus names
+        return focus_list.max_trades(MAX_TRADES_PER_STOCK) if focus_list.is_focus(name) else MAX_TRADES_PER_STOCK
+    except Exception:  # noqa: BLE001
+        return MAX_TRADES_PER_STOCK
+
+
 def entry_filter(name, data, q, now):
     """None if the v1.2 filters allow this stock entry, else a short reason (logged, throttled)."""
     if not enabled():
@@ -374,7 +382,7 @@ def entry_filter(name, data, q, now):
     r5 = data.get('return_5m_pct')
     if not _finite(r5) or sign * float(r5) < MIN_RET5_PCT:
         reason = 'stock_not_moving_5m'
-    elif trades_today(name, now) >= MAX_TRADES_PER_STOCK:
+    elif trades_today(name, now) >= _trade_cap(name):
         reason = 'stock_trade_cap_reached'
     else:
         mom = option_move_3m('NFO', q.token, q.symbol, q.ask or q.ltp, now)

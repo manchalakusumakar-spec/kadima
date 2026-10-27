@@ -319,7 +319,10 @@ class MoveCaptureDetector:
         previous_row = self.hot.get(identity.name)
         was_hot = previous_row is not None
         direction_changed = bool(previous_row and previous_row.get("direction") != candidate["direction"])
-        qualifies = features["ready"] and features["score"] >= self.trigger_score
+        from . import focus_list   # FOCUS LIST v1: focus names trigger earlier
+        focus = focus_list.is_focus(identity.name)
+        threshold = focus_list.trigger_score(self.trigger_score) if focus else self.trigger_score
+        qualifies = features["ready"] and features["score"] >= threshold
         retained = features['ready'] and was_hot and not direction_changed and features["score"] >= self.release_score
 
         if qualifies or retained:
@@ -355,8 +358,11 @@ class MoveCaptureDetector:
                 self.hot.pop(name, None)
                 self.episodes.pop(name, None)
         if len(self.hot) > self.max_hot:
-            keep = {r["underlying"] for r in sorted(
-                self.hot.values(), key=lambda x: (-x["score"], x["underlying"]))[:self.max_hot]}
+            from . import focus_list   # FOCUS LIST v1: focus names are never evicted
+            focus = {n for n in self.hot if focus_list.is_focus(n)}
+            others = [r for r in self.hot.values() if r["underlying"] not in focus]
+            keep = focus | {r["underlying"] for r in sorted(
+                others, key=lambda x: (-x["score"], x["underlying"]))[:self.max_hot]}
             self.hot = {k: v for k, v in self.hot.items() if k in keep}
             self.episodes = {k: v for k, v in self.episodes.items() if k in keep}
 

@@ -348,3 +348,9 @@ Files: `tools/install_dashboard_rules_20261025.py`, `deploy/deploy_dashboard_rul
   >= Rs 3; strike no more than 0.5% in the money; at most 3 trades per stock per day.
 - Replay effect on 26-Oct: 83 trades, 22 losers (was 178), losses -Rs 15k (was -Rs 172k), net P&L about the same.
 - One-day fit: every block is logged (STOCK_BLAST_FILTER_BLOCK) to re-check against live days.
+
+## 2026-10-27 08:36 IST — FOCUS LIST v1 (trader: results day, "keep a special focus", "should support F&O universe scanner")
+- DATA_DIR/focus_symbols.json: today's results names (LT, MARUTI, BAJAJ-AUTO, TATASTEEL, SBILIFE, CIPLA, INDUSTOWER,
+  MAZDOCK, MFSL, PGEL, RADICO, SAIL, WAAREEENER). Focus names: never evicted from the Move Capture hot list,
+  trigger at score 60 (others 65), prepared first, up to 5 stock trades/day (others 3), always on the universe
+  scanner's gamma shortlist (cap 20 + focus count). Loser filters, loss limit and exits unchanged.
