@@ -354,3 +354,14 @@ Files: `tools/install_dashboard_rules_20261025.py`, `deploy/deploy_dashboard_rul
   MAZDOCK, MFSL, PGEL, RADICO, SAIL, WAAREEENER). Focus names: never evicted from the Move Capture hot list,
   trigger at score 60 (others 65), prepared first, up to 5 stock trades/day (others 3), always on the universe
   scanner's gamma shortlist (cap 20 + focus count). Loser filters, loss limit and exits unchanged.
+
+## 2026-10-27 09:14 IST — TREND GRACE v1 (trader confirmed), on top of CONFIRM v3 + BEST ENTRY v1
+- 26-Oct review: Shield read PE on an up day, so the 09:45-10:10 CE gamma winners were not
+  CONFIRMED; CONFIRMED scalps were sold by noise within minutes, then ran +44%..+102%.
+- Gamma CONFIRMED direction: Shield agrees OR day trend agrees (index >= 0.3% from open and on
+  the same side of VWAP). HHI 0.09, score, window unchanged. Replay 21/22/23/26 Oct (v3):
+  4 -> 5 trades, all wins (+122% -> +143%). Switch gamma_confirm.json "trend_confirm".
+- Scalp: BEST ENTRY scalp grace 3 -> 5 min (best_entry.json), v2 no-progress exit 5 -> 10 min.
+  Replay (BEST ENTRY loss rules): +134% -> +249%, 60% -> 80% wins, 26-Oct -32% -> +101%.
+- Not adopted (tested, no benefit): day-trend filter on scalps, no-chase after a 30-min burst.
+- Install: deploy/deploy_trend_grace_20261027.sh (--rollback). After 15:45 IST.
