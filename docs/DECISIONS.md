@@ -370,3 +370,4 @@ Files: `tools/install_dashboard_rules_20261025.py`, `deploy/deploy_dashboard_rul
 - sniper.json "max_trades": 999 (was the default 2). Backup sniper.json.bak-maxtrades-20261028.
 - Still in force: 1 lot, risk <= 30% of cash, stop after a losing Sniper trade, 09:45-10:30, daily loss limit.
 - 00:05 IST: sniper.json "stop_after_loss": false (trader). Same index+side still blocked after a stop there. Backup sniper.json.bak-stopafterloss-20261028.
+- 2026-10-28 00:20 IST: CONFIRMED MERGE v1 (trader): Celestial Trade Audit shows one merged "CONFIRMED trades" table (CONFIRMED gamma + scalp, taken trades, manual tagged MANUAL) with a Show-all switch; main audit table defaults to CONFIRMED + manual. trade_audit.confirmed_at stamped the first time a row is CONFIRMED. SCALP CAP v1: index scalps max 2 lots (scalp_capital.json max_lots).
