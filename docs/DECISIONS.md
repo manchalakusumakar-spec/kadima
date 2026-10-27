@@ -369,3 +369,4 @@ Files: `tools/install_dashboard_rules_20261025.py`, `deploy/deploy_dashboard_rul
 ## 2026-10-28 00:03 IST — Sniper daily cap removed (trader)
 - sniper.json "max_trades": 999 (was the default 2). Backup sniper.json.bak-maxtrades-20261028.
 - Still in force: 1 lot, risk <= 30% of cash, stop after a losing Sniper trade, 09:45-10:30, daily loss limit.
+- 00:05 IST: sniper.json "stop_after_loss": false (trader). Same index+side still blocked after a stop there. Backup sniper.json.bak-stopafterloss-20261028.
