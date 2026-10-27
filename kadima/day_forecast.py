@@ -144,7 +144,7 @@ class DayForecaster:
     def _model(self, name, token, day, k, anchor, *, atm_iv=None, shield_dir=None, shield_score=None, rows=None):
         t = ts_of(day, k)
         rows = rows if rows is not None else HF.history_rows(token, t)
-        days = M.build_days(rows)
+        days = M.build_days(rows, fill_before=day)
         if not days or days[-1].day != day:
             days.append(M.Day(day, *[[None] * M.BARS_PER_DAY for _ in range(4)]))
         di = len(days) - 1
@@ -259,8 +259,9 @@ class DayForecaster:
     def reforecast(self, name, st, token, day, pts, now, rows=None):
         """Publish at most one revision per loop (a restart mid-day catches up gradually).
 
-        In order of time: an hourly milestone always reforecasts; otherwise a closed candle the
-        threshold or more from the path in force does. Provisional prices never trigger one.
+        In order of time: an hourly milestone always reforecasts; otherwise two closed candles in a
+        row, both the threshold or more from the path in force on the same side, do (27 Oct: one
+        spike candle no longer redraws the day). Provisional prices never trigger one.
         """
         if not pts:
             return None
@@ -271,6 +272,7 @@ class DayForecaster:
         active = active_path(pts, revs)
         by_k = {p['k']: p for p in pts}
         mks = {k_of(m) for m in MILESTONES}
+        prev_side = 0                                # +1 / -1 if the previous candle was beyond the limit
         for k in range(last_k + 1, STEPS):
             mark = ts_of(day, k)
             if now < mark:
@@ -291,8 +293,10 @@ class DayForecaster:
                 return None                  # candles are judged in order; wait for this one
             thr = threshold_pts(token, mark, self.db)
             dev = round(p['actual'] - active[k], 2)
-            if abs(dev) >= thr:
+            side = (1 if dev > 0 else -1) if abs(dev) >= thr else 0
+            if side and side == prev_side:
                 return self._publish(name, st, token, day, k, 'deviation', p['actual'], dev, thr, now, revs, rows)
+            prev_side = side
         return None
 
     def _publish(self, name, st, token, day, k, kind, anchor, dev, thr, now, revs, rows=None):

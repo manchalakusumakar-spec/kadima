@@ -152,7 +152,7 @@
     <span><i style="border-color:var(--live);border-top-width:6px;width:6px;border-radius:50%"></i>Live price</span>
     <span><i style="border-color:var(--rev)"></i>Reforecast (each ≥5 pt miss on a closed candle)</span>
     <span><i style="border-color:var(--flat);border-top-style:dashed"></i>Provisional bar (not scored)</span>
-    <span><i style="border-color:var(--rev)"></i>Day: D = reforecast at each hourly checkpoint, or when a closed candle is 10–20 pts off (one typical candle)</span>
+    <span><i style="border-color:var(--rev)"></i>Day: D = reforecast at each hourly checkpoint, or when two closed candles in a row are 10–20 pts off on the same side (one typical candle)</span>
   </div>
 
   <div id="daycard"></div>
@@ -447,7 +447,7 @@
   function card(s) {
     const st = s.status;
     let chips = `<span class="chip ${st}">${st.toUpperCase()}</span>`;
-    if (s.late) chips += ' <span class="chip late" title="Engine was not running at the slot start; rebuilt from the slot open and excluded from calibration">LATE</span>';
+    if (s.late) chips += ' <span class="chip late" title="No fresh live price at the slot start; rebuilt from the slot open and excluded from calibration">LATE</span>';
     if (s.score && s.score.dir_hit != null) chips += ` <span class="chip ${s.score.dir_hit ? 'hit' : 'miss'}">${s.score.dir_hit ? 'HIT' : 'MISS'}</span>`;
     let head = '';
     if (s.direction && data && data.model && data.model.band_only && s.status === 'live') {

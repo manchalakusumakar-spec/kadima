@@ -113,8 +113,44 @@ class Day:
         return all(self.closes[x] is not None for x in range(j))
 
 
-def build_days(rows):
-    """rows: iterable of (start datetime, open, high, low, close), any order."""
+MAX_FILL_BARS = 2               # a finished session missing at most this many 5-minute bars is repaired
+
+
+def fill_gaps(d):
+    """Repair a finished session missing a few 5-minute bars (27 Oct fix): each gap bar is drawn on
+    a straight line from the close before it to the open after it (flat at the ends). Without this,
+    one lost candle removes the whole day from the similar-days search."""
+    miss = [j for j in range(BARS_PER_DAY) if d.closes[j] is None]
+    if not miss or len(miss) > MAX_FILL_BARS or len(miss) == BARS_PER_DAY:
+        return False
+    j = 0
+    while j < BARS_PER_DAY:
+        if d.closes[j] is not None:
+            j += 1
+            continue
+        a = j
+        while j < BARS_PER_DAY and d.closes[j] is None:
+            j += 1
+        b = j                                        # first present bar after the gap, or end
+        left = d.closes[a - 1] if a > 0 else d.opens[b]
+        right = d.opens[b] if b < BARS_PER_DAY else left
+        n = b - a + 1
+        prev = left
+        for t, x in enumerate(range(a, b), start=1):
+            c = left + (right - left) * t / n
+            d.opens[x], d.closes[x] = prev, c
+            d.highs[x], d.lows[x] = max(prev, c), min(prev, c)
+            prev = c
+    d._rets = None
+    return True
+
+
+def build_days(rows, fill_before=None):
+    """rows: iterable of (start datetime, open, high, low, close), any order.
+
+    fill_before: a date; finished sessions strictly before it that miss at most MAX_FILL_BARS
+    bars are repaired with fill_gaps(). The session being forecast is never touched.
+    """
     by_day = {}
     for start, o, h, lo, c in rows:
         if not all(finite(v) and v > 0 for v in (o, h, lo, c)):
@@ -124,6 +160,10 @@ def build_days(rows):
             continue
         d = by_day.setdefault(start.date(), Day(start.date(), *[[None] * BARS_PER_DAY for _ in range(4)]))
         d.opens[j], d.highs[j], d.lows[j], d.closes[j] = o, h, lo, c
+    if fill_before is not None:
+        for k, d in by_day.items():
+            if k < fill_before:
+                fill_gaps(d)
     return [by_day[k] for k in sorted(by_day)]
 
 
@@ -595,12 +635,14 @@ def fit_params(samples, prior=None):
     sxx = sum((x['p_raw'] - 0.5) ** 2 for x in s)
     sxy = sum((x['p_raw'] - 0.5) * ((1.0 if x['up'] else 0.0) - 0.5) for x in s)
     prior_x = lam * 0.01
-    out['prob_c'] = round(clip((sxy + prior_x * prior['prob_c']) / (sxx + prior_x), 0.0, 1.5), 4)
+    out['prob_c'] = round(clip((sxy + prior_x * prior['prob_c']) / (sxx + prior_x), PROB_C_MIN, 1.5), 4)
     return out
 
 
 # ---------------------------------------------------------------- self-audit
 MAX_STEP = 0.10            # largest change to any weight per recalibration
+PROB_C_MIN = 0.40          # confidence floor (27 Oct): below this nearly every call reads FLAT
+MIN_REL_GAIN = 0.02        # a challenger must cut probability error by at least 2% to be adopted
 EVAL_MIN = 20              # slots needed before a challenger may replace the champion
 BAND_ONLY_BELOW = 0.52     # direction hit rate (>= 30 directional calls) that switches to range-only
 BAND_ONLY_EXIT = 0.55      # hit rate needed to show direction again
@@ -655,7 +697,7 @@ def step_toward(champion, challenger, max_step=MAX_STEP):
     for name, _, lo, hi in BETAS:
         a, b = champion.get(name, DEFAULT_PARAMS[name]), challenger.get(name, DEFAULT_PARAMS[name])
         out[name] = round(clip(a + clip(b - a, -max_step, max_step), lo, hi), 4)
-    for name, lo, hi, step in (('band_z', 0.6, 2.0, 0.1), ('prob_c', 0.0, 1.5, 0.15)):
+    for name, lo, hi, step in (('band_z', 0.6, 2.0, 0.1), ('prob_c', PROB_C_MIN, 1.5, 0.15)):
         a, b = champion.get(name, DEFAULT_PARAMS[name]), challenger.get(name, DEFAULT_PARAMS[name])
         out[name] = round(clip(a + clip(b - a, -step, step), lo, hi), 4)
     out['n_samples'] = challenger.get('n_samples', 0)
@@ -674,7 +716,7 @@ def _better(a, b):
     if b['logloss'] > a['logloss'] + 0.005 or hit_b < hit_a - 0.02 or cov_b > cov_a + 0.02:
         return ''
     gains = []
-    if b['logloss'] < a['logloss'] - 0.002:
+    if b['logloss'] < a['logloss'] * (1 - MIN_REL_GAIN):
         gains.append(f"probability error {a['logloss']:.3f}\u2192{b['logloss']:.3f}")
     if hit_b >= hit_a + 0.02:
         gains.append(f'direction hits {hit_a:.0%}\u2192{hit_b:.0%}')
@@ -718,7 +760,7 @@ def recalibrate(champion, train, holdout, prior=None):
 
 # ---------------------------------------------------------------- deviation reasons
 REASONS = {
-    'engine_down': 'Engine was not running at the slot start (late or missed forecast)',
+    'engine_down': 'No fresh live price at the slot start (engine down or feed stale): built from the slot open',
     'small_move': 'Market barely moved (< 0.10%): noise, not a model failure',
     'trend_day_against': 'Trend day: model leaned against a day move already above 0.8%',
     'band_breach': 'Move was larger than the volatility band allowed',

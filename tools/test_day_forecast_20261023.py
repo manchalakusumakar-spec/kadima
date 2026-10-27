@@ -66,28 +66,38 @@ def main():
         start = DF.ts_of(today, k - 1).replace(tzinfo=None)
         put(start, close - 1, close + rng / 2, close - rng / 2, close, closed)
 
-    # Candles on the path (within 4 pts): no reforecast through 10:05.
-    for k in range(1, 11):
+    # Candles on the path (within 4 pts): no reforecast through 09:55.
+    for k in range(1, 9):
         bar(k, fc[k] + (3 if k % 2 else -3))
         dfc.tick('NIFTY', None, DF.ts_of(today, k) + timedelta(seconds=10))
     check('no reforecast while candles stay on the path', not DF.revisions(today.isoformat(), 'NIFTY', db))
-    thr = DF.threshold_pts(TOKEN, DF.ts_of(today, 11), db)
+    thr = DF.threshold_pts(TOKEN, DF.ts_of(today, 9), db)
     check('threshold is one typical candle, held to 10..20', 10 <= thr <= 20)
 
     # Provisional (unclosed) bar far away: never triggers.
-    bar(11, fc[11] + 40, closed=False)
-    dfc.tick('NIFTY', None, DF.ts_of(today, 11) + timedelta(seconds=30))
+    bar(9, fc[9] + 40, closed=False)
+    dfc.tick('NIFTY', None, DF.ts_of(today, 9) + timedelta(seconds=30))
     check('provisional price never triggers a reforecast', not DF.revisions(today.isoformat(), 'NIFTY', db))
 
-    # It closes 40 pts off -> deviation reforecast from 10:10.
-    bar(11, fc[11] + 40)
-    dfc.tick('NIFTY', None, DF.ts_of(today, 11) + timedelta(seconds=40))
+    # One closed candle 40 pts off: not enough on its own (27 Oct rule).
+    bar(9, fc[9] + 40)
+    dfc.tick('NIFTY', None, DF.ts_of(today, 9) + timedelta(seconds=40))
+    check('one closed candle beyond the limit does not reforecast', not DF.revisions(today.isoformat(), 'NIFTY', db))
+
+    # The next candle is also 40 pts off on the same side -> deviation reforecast from 10:05.
+    bar(10, fc[10] + 40)
+    dfc.tick('NIFTY', None, DF.ts_of(today, 10) + timedelta(seconds=40))
     revs = DF.revisions(today.isoformat(), 'NIFTY', db)
-    check('closed candle beyond the threshold publishes a reforecast', len(revs) == 1 and revs[0]['kind'] == 'deviation')
-    check('reforecast starts from that candle and runs to 15:30',
-          revs and json.loads(revs[0]['points'])[0]['k'] == 12 and json.loads(revs[0]['points'])[-1]['k'] == 75)
+    check('two closed candles beyond the limit publish a reforecast', len(revs) == 1 and revs[0]['kind'] == 'deviation')
+    check('reforecast starts from the second candle and runs to 15:30',
+          revs and json.loads(revs[0]['points'])[0]['k'] == 11 and json.loads(revs[0]['points'])[-1]['k'] == 75)
     check('reforecast records deviation, limit and receipt',
           revs and abs(revs[0]['deviation_pts'] - 40) < 0.01 and revs[0]['threshold_pts'] >= 10 and len(revs[0]['receipt']) == 16)
+
+    # 10:10 back on the new path, then the 10:15 checkpoint.
+    p0 = {q['k']: q['forecast'] for q in json.loads(revs[0]['points'])}
+    bar(11, p0[11] + 2)
+    dfc.tick('NIFTY', None, DF.ts_of(today, 11) + timedelta(seconds=20))
 
     # 10:15 checkpoint: always reforecasts, even on the path.
     p1 = {q['k']: q['forecast'] for q in json.loads(revs[0]['points'])}
@@ -105,7 +115,7 @@ def main():
     # Restart catch-up: several marks due at once -> at most one reforecast per loop.
     p2 = {q['k']: q['forecast'] for q in json.loads(revs[1]['points'])}
     for k in range(13, 25):
-        bar(k, p2[k] + (60 if k in (15, 20) else 0))
+        bar(k, p2[k] + (60 if k in (15, 16, 20, 21) else 0))
     before = len(DF.revisions(today.isoformat(), 'NIFTY', db))
     dfc.tick('NIFTY', None, DF.ts_of(today, 24) + timedelta(seconds=30))
     check('one reforecast per loop when catching up', len(DF.revisions(today.isoformat(), 'NIFTY', db)) == before + 1)

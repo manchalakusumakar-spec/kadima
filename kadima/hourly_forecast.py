@@ -38,6 +38,9 @@ HISTORY_DAYS = 90
 LOOP_SEC = 5
 ON_TIME_SEC = 120            # generated within 2 min of slot start = on time
 SPOT_FRESH_SEC = 30
+# A tick can land while this loop is computing (the day forecast runs first), which makes the
+# spot's timestamp slightly newer than the loop's clock. That is fresh, not stale (27 Oct fix).
+SPOT_AHEAD_OK_SEC = 30
 FINALIZE_GIVE_UP_SEC = 900   # 15 min after the slot: score it, or mark it incomplete
 # 2026-10-20 scoring integrity: only a closed candle that starts exactly at the target bar
 # may enter accuracy scoring. A provisional (unclosed) value is shown, never scored.
@@ -282,6 +285,7 @@ def load_params(index_name, db=None):
                 params.update({k: v for k, v in saved.items() if k in params})
         except ValueError:
             pass
+    params['prob_c'] = max(params['prob_c'], M.PROB_C_MIN)
     return params
 
 
@@ -378,6 +382,7 @@ class HourlyForecaster:
         self.db = db
         self._stop = threading.Event()
         self._tod_cache = {}
+        self._live_snap = {}
         self._chain_collector = FCD.Collector(engine, FORECAST_INDICES, db)
         from . import day_forecast                       # day path (23 Oct), driven from this loop
         self.day = day_forecast.DayForecaster(self)
@@ -419,6 +424,7 @@ class HourlyForecaster:
             st = self.engine.states.get(name) if self.engine else None
             if st is None:
                 continue
+            self._live_inputs(st, now)                  # one live read per loop, shared by day and hourly
             try:                                        # day path first: a milestone reforecast feeds the new hour
                 self.day.tick(name, st, now)
             except Exception as exc:                    # noqa: BLE001 - display only, never block the hourly slots
@@ -431,10 +437,23 @@ class HourlyForecaster:
                 nifty_breadth.observe(conn(self.db), name, M.slot_label(slot[0]), now)
 
     def _live_inputs(self, st, now):
-        """Spot (if fresh), ATM IV and Bull Shield from engine memory. No broker calls."""
+        """Spot (if fresh), ATM IV and Bull Shield from engine memory. No broker calls.
+
+        Read once per loop and reused (27 Oct fix): the day forecast and the hourly slot made in
+        the same loop see exactly the same live inputs, however long the day forecast takes.
+        """
+        key = (id(st), now)
+        hit = self._live_snap.get(key)
+        if hit is not None:
+            return hit
+        out = self._read_live_inputs(st, now)
+        self._live_snap = {key: out}
+        return out
+
+    def _read_live_inputs(self, st, now):
         spot = None
         if (st.is_live_tick and st.last_updated and M.finite(st.spot)
-                and 0 <= (now - st.last_updated).total_seconds() <= SPOT_FRESH_SEC):
+                and -SPOT_AHEAD_OK_SEC <= (now - st.last_updated).total_seconds() <= SPOT_FRESH_SEC):
             spot = st.spot
         iv = None
         chain = st.chain
@@ -472,8 +491,8 @@ class HourlyForecaster:
         if on_time and spot:
             anchor, late = spot, 0
         else:
-            # Engine started mid-slot: rebuild from the slot's opening price and
-            # data before it, and mark the slot late so calibration skips it.
+            # No fresh live price at the slot start (engine started mid-slot or feed stale): rebuild
+            # from the slot's opening price and data before it; calibration skips late slots.
             anchor, late = candle_open(token, t0), 1
             iv, shield_dir, shield_score = None, None, None
             if anchor is None:
@@ -495,7 +514,7 @@ class HourlyForecaster:
         start, end = slot
         t0 = _slot_dt(day, start)
         rows = rows if rows is not None else history_rows(token, t0)
-        days = M.build_days(rows)
+        days = M.build_days(rows, fill_before=day)
         if not days or days[-1].day != day:
             days.append(M.Day(day, *[[None] * M.BARS_PER_DAY for _ in range(4)]))
         di = len(days) - 1
@@ -649,16 +668,11 @@ class HourlyForecaster:
                        r['day'], r['index_name'], r['slot']))
         audit.log('hourly_forecast_scored', index=r['index_name'], day=r['day'], slot=r['slot'], **sc)
         # Self-audit after every slot: why it deviated, then a guarded recalibration.
+        # 27 Oct: weights are no longer changed after a single slot mid-session. The slot is stored
+        # and joins the guarded retune that runs once a day after the close (tools/forecast_nightly.py).
         modification, decision = None, None
         if sc and not r['late']:
-            try:
-                params, decision, change = recalibrate_index(r['index_name'], self.db)
-                modification = ('Weights changed: ' + change) if change else ('No change: ' + decision['reason'])
-                audit.log('hourly_forecast_recalibrated', index=r['index_name'], adopted=decision['adopted'],
-                          reason=decision['reason'], change=change)
-            except Exception as exc:                    # noqa: BLE001 - never block scoring
-                modification = 'Recalibration skipped: ' + type(exc).__name__
-                audit.log('hourly_forecast_recalibration_error', error=str(exc)[:200])
+            modification = 'No change now: this hour joins the daily retune after the close'
         elif r['late']:
             modification = 'No change: late slot is not used for tuning'
         try:
