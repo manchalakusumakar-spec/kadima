@@ -11,6 +11,10 @@ from . import audit
 from .config import IST
 from .utils import now_ist
 
+# Reasons rate_limiter's low-priority poll gives when the shared quote budget is in use.
+BUSY_REASONS=('forecast_foreground_quote_active','forecast_quote_budget_busy')
+BUSY_RETRY_SEC=0.25
+
 SCHEMA = '''
 CREATE TABLE IF NOT EXISTS chain_wide (
  index_name TEXT NOT NULL, ts TEXT NOT NULL, expiry TEXT NOT NULL,
@@ -183,7 +187,24 @@ class Collector:
                 deadline=minute+timedelta(seconds=59) if kind=='wide' else local.replace(hour=15,minute=32,second=0,microsecond=0)
                 try:self.collect(name,local,deadline,kind=='eod')
                 except Exception as exc:
-                    audit.log('forecast_chain_cycle_skipped',index=name,kind=kind,error_type=type(exc).__name__)
+                    audit.log('forecast_chain_cycle_skipped',index=name,kind=kind,error_type=type(exc).__name__,
+                              error=str(exc)[:80])
+
+    def _poll_when_idle(self,poll,deadline,**kwargs):
+        """Low-priority poll, retried while the shared quote budget is busy, until the deadline.
+
+        27 Oct: the poll was tried once per 5-minute mark and a busy budget (engine quotes run
+        almost continuously) skipped the whole cycle, so chain_wide/chain_eod never got a row
+        since 21 Oct. Retrying only re-asks for idle capacity: foreground quotes still always win.
+        """
+        while True:
+            try:
+                return poll(**kwargs)
+            except TimeoutError as exc:
+                if str(exc) not in BUSY_REASONS:
+                    raise
+            if now_ist()>=deadline or self.stop_event.wait(BUSY_RETRY_SEC):
+                raise TimeoutError('quote_budget_busy_until_deadline')
 
     def collect(self,name,now,deadline,eod):
         from . import hourly_forecast as HF
@@ -206,7 +227,8 @@ class Collector:
             if self.stop_event.is_set() or now_ist()>=deadline:
                 raise TimeoutError('snapshot_deadline')
             batch=requested[offset:offset+50]
-            response=poll(mode='FULL',exchangeTokens={st.chain.index.opt_exchange:[r['token'] for r in batch]})
+            response=self._poll_when_idle(poll,deadline,mode='FULL',
+                                          exchangeTokens={st.chain.index.opt_exchange:[r['token'] for r in batch]})
             calls+=1
             if not isinstance(response,dict) or response.get('status') is not True:
                 raise ValueError('quote_response_unavailable')
