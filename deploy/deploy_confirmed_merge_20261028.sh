@@ -21,6 +21,7 @@ sudo cp -p $SC $SCBAK
 sudo "$PY" -c "import json;p='$SC';d=json.load(open(p));d['max_lots']=2;open(p,'w').write(json.dumps(d))"
 sudo systemctl restart kadima
 if ! health; then echo "ROLLING BACK"; rollback; exit 1; fi
+for u in $(systemctl list-units --type=service --no-legend --plain 'kadima*' | awk '{print $1}'); do [ "$u" != kadima.service ] && systemctl cat "$u" 2>/dev/null | grep -q control_api && sudo systemctl restart "$u" && echo "restarted $u (control api)"; done
 cat $SC; echo
 cd "$ROOT" && "$PY" -c "
 from kadima import trade_audit as t, auto_executor as a
