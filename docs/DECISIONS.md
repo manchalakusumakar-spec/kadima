@@ -365,3 +365,7 @@ Files: `tools/install_dashboard_rules_20261025.py`, `deploy/deploy_dashboard_rul
   Replay (BEST ENTRY loss rules): +134% -> +249%, 60% -> 80% wins, 26-Oct -32% -> +101%.
 - Not adopted (tested, no benefit): day-trend filter on scalps, no-chase after a 30-min burst.
 - Install: deploy/deploy_trend_grace_20261027.sh (--rollback). After 15:45 IST.
+
+## 2026-10-28 00:03 IST — Sniper daily cap removed (trader)
+- sniper.json "max_trades": 999 (was the default 2). Backup sniper.json.bak-maxtrades-20261028.
+- Still in force: 1 lot, risk <= 30% of cash, stop after a losing Sniper trade, 09:45-10:30, daily loss limit.
