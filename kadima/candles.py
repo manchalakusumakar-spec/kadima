@@ -18,7 +18,7 @@ from datetime import datetime
 from typing import Callable
 
 from . import audit, storage
-from .config import CANDLE_INTERVALS_MIN
+from .config import CANDLE_INTERVALS_MIN, MARKET_OPEN
 from .utils import candle_start
 
 
@@ -60,6 +60,8 @@ class CandleBuilder:
     def add_tick(self, ts: datetime, ltp: float, cum_volume: int | None) -> None:
         if ltp is None:
             return
+        if (ts.hour, ts.minute) < MARKET_OPEN:   # PREOPEN-FIX-20261028
+            return      # pre-open prices are not trades: never fold them into the 09:15 bar
         self._roll_session(ts)
 
         for interval in CANDLE_INTERVALS_MIN:
