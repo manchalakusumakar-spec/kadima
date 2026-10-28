@@ -386,16 +386,26 @@ class HourlyForecaster:
         self._chain_collector = FCD.Collector(engine, FORECAST_INDICES, db)
         from . import day_forecast                       # day path (23 Oct), driven from this loop
         self.day = day_forecast.DayForecaster(self)
+        self.live = None                                 # live line + sharp-move meter (28 Oct, display only)
+        try:
+            from . import live_forecast
+            self.live = live_forecast.LiveForecaster(self)
+        except Exception as exc:                         # noqa: BLE001 - never block the forecaster
+            audit.log('live_forecast_init_error', error=str(exc)[:200])
 
     def start(self):
         self._chain_collector.start()
         threading.Thread(target=self.run, daemon=True, name='hourly-forecast').start()
+        if self.live is not None:
+            self.live.start()
         audit.log('hourly_forecast_started', indices=list(FORECAST_INDICES))
 
     def stop(self):
         """Engine shutdown (15:40): score the 15:15 slot with what has been recorded."""
         self._stop.set()
         self._chain_collector.stop()
+        if self.live is not None:
+            self.live.stop()
         try:
             now = now_ist()
             for name in FORECAST_INDICES:
