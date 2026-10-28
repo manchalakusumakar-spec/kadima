@@ -66,7 +66,7 @@ keys into ChatGPT or GitHub. Verify AWS account ID and instance ID in console.
 
 ## Manual first-run verification
 
-After merging a reviewed workflow into the permitted branch:
+After merging a reviewed workflow into `main` (the workflow now refuses to run on other refs), and after configuring the protected GitHub environment with approved deployment branches and reviewers:
 
 1. GitHub → Actions → **KADIMA guarded EC2 operations** → Run workflow.
 2. Select `status` and enter a reason. An environment reviewer approves.
@@ -76,6 +76,8 @@ After merging a reviewed workflow into the permitted branch:
 5. Only if necessary and approved, run `connector_restart`. This restarts
    **only** the MCP connector, not the trading engine.
 6. Review the AWS SSM command ID and CloudTrail history.
+
+A green CloudFormation `CREATE_COMPLETE` is not evidence that SSM has executed successfully or that ChatGPT is connected. The GitHub integration available to this assistant cannot create GitHub environments, set environment variables, dispatch new workflows, or inspect AWS CloudFormation outputs directly; those account-owner steps must be performed in the respective consoles. Do not skip approval-gate configuration.
 
 If `send-command` fails, inspect SSM managed-node connectivity, OIDC role
 trust, region, document permissions, and instance identity. Do not broaden
