@@ -44,13 +44,17 @@ Resources:
                       uptime
                       free -h
                       df -h /
-                      systemctl is-active kadima.service || true
-                      git -C /home/ubuntu/kadima-py rev-parse HEAD || true
+                      # Read Git as the checkout owner; retain Git ownership protection.
+                      # Collect both checks and fail if either diagnostic fails.
+                      result=0
+                      systemctl is-active kadima.service || result=1
+                      runuser -u ubuntu -- git -C /home/ubuntu/kadima-py rev-parse HEAD || result=1
+                      exit "$result"
                       ;;
                     connector_status)
-                      systemctl is-active kadima-connector.service || true
-                      systemctl is-active kadima-connector-collect.timer || true
-                      systemctl show kadima-connector.service -p MainPID -p ActiveState || true
+                      systemctl is-active kadima-connector.service
+                      systemctl is-active kadima-connector-collect.timer
+                      systemctl show kadima-connector.service -p MainPID -p ActiveState
                       ;;
                     connector_restart)
                       systemctl restart kadima-connector.service
