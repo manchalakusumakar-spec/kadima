@@ -55,21 +55,14 @@ jobs:
           echo "Requested operation: $OPERATION"
           echo "Justification supplied: ${REASON:+yes}"
           case "$OPERATION" in
-            status)
-              COMMAND='date -Is; uptime; free -h; df -h /; systemctl is-active kadima.service || true; git -C /home/ubuntu/kadima-py rev-parse HEAD'
-              ;;
-            connector_status)
-              COMMAND='systemctl is-active kadima-connector.service || true; systemctl is-active kadima-connector-collect.timer || true; systemctl show kadima-connector.service -p MainPID -p ActiveState'
-              ;;
-            connector_restart)
-              COMMAND='sudo -n systemctl restart kadima-connector.service; systemctl is-active kadima-connector.service'
-              ;;
+            status|connector_status|connector_restart) ;;
             *) exit 2 ;;
           esac
-          # Fixed commands only; no caller-supplied shell, file path or script.
+          # A custom SSM document restricts the commands at the AWS policy
+          # boundary. Never grant this role AWS-RunShellScript access.
           ID=$(aws ssm send-command --instance-ids "$INSTANCE" \
-            --document-name AWS-RunShellScript \
-            --parameters "$(jq -nc --arg cmd "$COMMAND" '{commands:[$cmd],executionTimeout:["90"]}')" \
+            --document-name KadimaGuardedOps \
+            --parameters "$(jq -nc --arg operation "$OPERATION" '{operation:[$operation]}')" \
             --comment "KADIMA approved operation: $OPERATION" \
             --query 'Command.CommandId' --output text)
           echo "SSM command ID: $ID"
