@@ -49,17 +49,33 @@ template are security-sensitive: protect their changes and stack-update rights.
 Read the stack's `RoleArn`, `Region`, and `InstanceId` outputs for the
 GitHub environment variables. Do not create IAM access keys.
 
-In GitHub → Settings → Environments, create
-`kadima-production-admin`. Configure required reviewers and prevent
-self-approval if supported. Restrict deployment branches to the approved
-branch. Protect workflow edits with CODEOWNERS/branch protection; review
-changes to workflow, IAM policy and connector before enabling.
+Keep the repository private. GitHub Pro or Team alone does not provide required
+environment reviewers for private repositories:
+https://docs.github.com/en/actions/how-tos/deploy/configure-and-manage-deployments/manage-environments
+
+Before activation, establish a supported, enforceable approval arrangement.
+Native required reviewers for a private repository require a supported Enterprise
+arrangement; alternatively, a separately reviewed external approval mechanism
+must enforce approval before AWS credentials or SSM execution are available.
+Do not replace approval with a workflow input, a comment, or an unenforced
+environment declaration. If no supported gate is available, leave maintenance
+disabled and do not dispatch.
+
+In GitHub → Settings → Environments, configure `kadima-production-admin`
+to allow only the branch `main`, with no tag patterns. Configure the supported
+approval gate, prevent self-review and disable administrator bypass where
+available. Protect `main` with enforced pull-request review, required CI checks,
+stale-approval dismissal and conversation resolution; disallow force pushes
+and deletion, and apply protections to administrators. Protect workflow,
+connector and IAM template changes with required code-owner review by an
+eligible independent reviewer. CODEOWNERS alone is not enforcement.
+Verify the live settings and gate behavior before merging or dispatching.
 
 Set **environment variables** (not secrets):
 
-- `KADIMA_EC2_INSTANCE_ID`: `i-...`
-- `KADIMA_AWS_REGION`: actual EC2 region, e.g. `ap-south-2`
-- `KADIMA_AWS_OIDC_ROLE_ARN`: ARN of the dedicated role
+- `KADIMA_EC2_INSTANCE_ID`: `i-0e8039442bc5c80c3`
+- `KADIMA_AWS_REGION`: `ap-south-2`
+- `KADIMA_AWS_OIDC_ROLE_ARN`: exact current CloudFormation `RoleArn` output
 
 Do not paste access keys, dashboard tokens, broker credentials, or SSH private
 keys into ChatGPT or GitHub. Verify AWS account ID and instance ID in console.
@@ -72,10 +88,21 @@ After merging a reviewed workflow into `main` (the workflow now refuses to run o
 2. Select `status` and enter a reason. An environment reviewer approves.
 3. Verify the run displays the expected hostname-independent system metrics,
    the active KADIMA service status, and deployed Git commit SHA.
-4. Run `connector_status` to check the separately installed MCP connector.
-5. Only if necessary and approved, run `connector_restart`. This restarts
-   **only** the MCP connector, not the trading engine.
-6. Review the AWS SSM command ID and CloudTrail history.
+4. For this acceptance test, run only `status`. Do not run
+   `connector_status`, `connector_restart`, or trading operations.
+5. Record the pending gate, independent approval, successful OIDC authentication,
+   AWS identity, SSM command ID, target, complete output, and response code.
+   Require SSM Success and response code 0, with no masked diagnostic errors.
+6. Compare the deployed role trust, inline/attached policies, permissions
+   boundary, and current SSM document with the reviewed template before
+   activation. Confirm no additional policy grants generic shell access.
+7. The current template masks service and Git lookup failures with `|| true`.
+   A zero response code does not prove these checks worked. Resolve the known
+   Git ownership failure through a reviewed document change before acceptance;
+   preserve trading controls and do not globally disable Git ownership checks.
+8. Separately prove an authenticated ChatGPT MCP read of current diagnostics
+   and rejection of unauthenticated/invalid-token requests. GitHub maintenance
+   is complete only after its own approved OIDC-to-SSM test succeeds.
 
 A green CloudFormation `CREATE_COMPLETE` is not evidence that SSM has executed successfully or that ChatGPT is connected. The GitHub integration available to this assistant cannot create GitHub environments, set environment variables, dispatch new workflows, or inspect AWS CloudFormation outputs directly; those account-owner steps must be performed in the respective consoles. Do not skip approval-gate configuration.
 
