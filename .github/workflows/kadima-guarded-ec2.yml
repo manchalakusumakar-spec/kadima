@@ -33,7 +33,7 @@ jobs:
       - name: Validate configuration
         env:
           INSTANCE: ${{ vars.KADIMA_EC2_INSTANCE_ID }}
-          ROLE: ${{ vars.KADIMA_AWS_OIDC_ARN }}
+          ROLE: ${{ vars.KADIMA_AWS_OIDC_ROLE_ARN }}
           REGION: ${{ vars.KADIMA_AWS_REGION }}
         run: |
           set -euo pipefail
@@ -44,7 +44,7 @@ jobs:
       - name: Obtain short-lived AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
-          role-to-assume: ${{ vars.KADIMA_AWS_OIDC_ARN }}
+          role-to-assume: ${{ vars.KADIMA_AWS_OIDC_ROLE_ARN }}
           aws-region: ${{ vars.KADIMA_AWS_REGION }}
           role-session-name: kadima-guarded-ec2
       - name: Execute fixed SSM operation
