@@ -24,6 +24,8 @@ concurrency:
   cancel-in-progress: false
 jobs:
   guarded-ec2:
+    # Production OIDC operations are allowed only from the reviewed default branch.
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     environment: kadima-production-admin
     timeout-minutes: 8
@@ -37,7 +39,8 @@ jobs:
           set -euo pipefail
           [[ "$INSTANCE" =~ ^i-[a-f0-9]{8,17}$ ]] || exit 2
           [[ "$ROLE" =~ ^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9_+=,.@/-]+$ ]] || exit 2
-          [[ "$REGION" =~ ^[a-z]{2}-[a-z]+-[0-9]+$ ]] || exit 2
+          [[ "$REGION" == "ap-south-2" ]] || exit 2
+          [[ "$INSTANCE" == "i-0e8039442bc5c80c3" ]] || exit 2
       - name: Obtain short-lived AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
         with:
@@ -69,3 +72,9 @@ jobs:
           aws ssm wait command-executed --command-id "$ID" --instance-id "$INSTANCE"
           aws ssm get-command-invocation --command-id "$ID" --instance-id "$INSTANCE" \
             --query '{Status:Status,ResponseCode:ResponseCode,Output:StandardOutputContent,Errors:StandardErrorContent}' --output json
+          CODE=$(aws ssm get-command-invocation --command-id "$ID" --instance-id "$INSTANCE" \
+            --query 'ResponseCode' --output text)
+          if [[ "$CODE" != "0" ]]; then
+            echo "SSM operation failed with response code $CODE" >&2
+            exit 1
+          fi
