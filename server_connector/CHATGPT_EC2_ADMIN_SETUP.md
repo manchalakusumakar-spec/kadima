@@ -26,15 +26,28 @@ Manager. The instance profile should grant `AmazonSSMManagedInstanceCore`
 (or equivalent restricted SSM agent permissions). No public SSH ingress is
 needed for SSM.
 
-Create a dedicated GitHub OIDC IAM role, *not* an IAM access key. Its trust
-policy must limit `token.actions.githubusercontent.com` to:
+Create an IAM OIDC provider for `https://token.actions.githubusercontent.com`
+with audience `sts.amazonaws.com` **only if it does not already exist**.
+This is an account-wide IAM resource; avoid duplicates.
+
+In AWS CloudFormation (region `ap-south-2`), create a stack from
+`server_connector/kadima-guarded-ssm.yaml`. Its parameters are:
+
+- `GitHubOIDCProviderArn`: the existing or newly created GitHub OIDC provider ARN.
+- `KadimaInstanceId`: `i-0e8039442bc5c80c3` (verify exact instance in EC2).
+
+Review the template and acknowledge named IAM capabilities if requested.
+The stack creates `KadimaGuardedOps` (a fixed-operation SSM document) and a
+dedicated GitHub OIDC IAM role. The role trusts only:
 `repo:manchalakusumakar-spec/kadima:environment:kadima-production-admin`,
-with audience `sts.amazonaws.com`. Set its permissions to the minimum
-required for the selected instance and the `AWS-RunShellScript` document:
-`ssm:SendCommand`, `ssm:GetCommandInvocation`, and `ssm:ListCommands`
-as required; restrict `SendCommand` by **both** the exact instance ARN and
-approved SSM document ARN. `ssm:SendCommand` can execute arbitrary commands
-if the GitHub workflow or role is compromised; protect the workflow and IAM role.
+with audience `sts.amazonaws.com`. Its `ssm:SendCommand` permission is
+restricted to **both** the exact EC2 instance and the custom SSM document;
+`AWS-RunShellScript` is **not allowed** to this role. The custom document
+accepts only three enumerated operations. Its shell script and CloudFormation
+template are security-sensitive: protect their changes and stack-update rights.
+
+Read the stack's `RoleArn`, `Region`, and `InstanceId` outputs for the
+GitHub environment variables. Do not create IAM access keys.
 
 In GitHub → Settings → Environments, create
 `kadima-production-admin`. Configure required reviewers and prevent
