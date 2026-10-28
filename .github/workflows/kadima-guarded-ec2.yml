@@ -47,6 +47,19 @@ jobs:
           role-to-assume: ${{ vars.KADIMA_AWS_OIDC_ROLE_ARN }}
           aws-region: ${{ vars.KADIMA_AWS_REGION }}
           role-session-name: kadima-guarded-ec2
+      - name: Verify authenticated AWS identity
+        shell: bash
+        env:
+          EXPECTED_ROLE: ${{ vars.KADIMA_AWS_OIDC_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          IDENTITY=$(aws sts get-caller-identity --output json)
+          echo "$IDENTITY" | jq '{Account,Arn}'
+          EXPECTED_ACCOUNT=$(printf '%s' "$EXPECTED_ROLE" | cut -d: -f5)
+          EXPECTED_ROLE_NAME="${EXPECTED_ROLE##*/}"
+          jq -e --arg account "$EXPECTED_ACCOUNT" \
+            --arg arn "arn:aws:sts::$EXPECTED_ACCOUNT:assumed-role/$EXPECTED_ROLE_NAME/kadima-guarded-ec2" \
+            '.Account == $account and .Arn == $arn' <<< "$IDENTITY" >/dev/null
       - name: Execute fixed SSM operation
         shell: bash
         env:
