@@ -96,10 +96,11 @@ After merging a reviewed workflow into `main` (the workflow now refuses to run o
 6. Compare the deployed role trust, inline/attached policies, permissions
    boundary, and current SSM document with the reviewed template before
    activation. Confirm no additional policy grants generic shell access.
-7. The current template masks service and Git lookup failures with `|| true`.
-   A zero response code does not prove these checks worked. Resolve the known
-   Git ownership failure through a reviewed document change before acceptance;
-   preserve trading controls and do not globally disable Git ownership checks.
+7. The revised template reads Git as `ubuntu` and fails if the service or Git
+   diagnostic fails. Verify that `ubuntu` is the actual checkout owner before
+   deploying the reviewed stack update. The previously deployed document may
+   still mask failures: verify its current version before acceptance. Preserve
+   trading controls and do not globally disable Git ownership checks.
 8. Separately prove an authenticated ChatGPT MCP read of current diagnostics
    and rejection of unauthenticated/invalid-token requests. GitHub maintenance
    is complete only after its own approved OIDC-to-SSM test succeeds.
