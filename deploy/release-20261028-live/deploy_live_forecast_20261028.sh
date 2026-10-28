@@ -28,7 +28,7 @@ restore() {
   local BD=$1
   [ "$(h $BD/hourly_forecast.py)" = "$OLD_F" ] || { echo "ABORT: backup in $BD is not the expected predecessor"; return 1; }
   cp -p "$BD/hourly_forecast.py" "$F"; rm -f "$LF"; sudo cp "$BD/forecast.html" "$HTML"
-  [ -f "$BD/api_installer.py" ] && sudo KADIMA_ROOT=$ROOT $PY -I "$BD/api_installer.py" --rollback
+  [ -f "$BD/api_installer.py" ] && sudo KADIMA_ROOT=$ROOT KADIMA_GATEWAY=${KADIMA_GATEWAY:-/opt/kadima-dashboard/gateway.py} $PY -I "$BD/api_installer.py" --rollback
   sudo systemctl restart kadima kadima-dashboard && health
   echo "restored: hourly_forecast.py $(h $F | cut -c1-12), panel $(h $HTML | cut -c1-12), live_forecast.py removed"
 }
@@ -55,7 +55,7 @@ ok=1
 [ "$(h $TMP/lf.py)" = "$NEW_LF" ] || { echo "ABORT: live_forecast.py payload hash mismatch"; ok=0; }
 [ "$(h $TMP/forecast.html)" = "$NEW_HTML" ] || { echo "ABORT: forecast.html payload hash mismatch"; ok=0; }
 for x in hf.py lf.py api_installer.py; do [ $ok = 1 ] && { $PY -m py_compile "$TMP/$x" || { echo "ABORT: $x does not compile"; ok=0; }; }; done
-[ $ok = 1 ] && { sudo KADIMA_ROOT=$ROOT $PY -I "$TMP/api_installer.py" --check || ok=0; }
+[ $ok = 1 ] && { sudo KADIMA_ROOT=$ROOT KADIMA_GATEWAY=${KADIMA_GATEWAY:-/opt/kadima-dashboard/gateway.py} $PY -I "$TMP/api_installer.py" --check || ok=0; }
 [ $ok = 1 ] || { rm -rf "$TMP"; echo "nothing changed"; exit 1; }
 free -m | head -3
 read -r -p "No open positions and OK to restart kadima now? type YES: " OK; [ "$OK" = "YES" ] || { rm -rf "$TMP"; echo "stopped, nothing changed"; exit 1; }
@@ -67,7 +67,7 @@ echo "== 3. install"
 cp "$TMP/lf.py" "$LF.new" && mv "$LF.new" "$LF"
 cp "$TMP/hf.py" "$F.new-live" && mv "$F.new-live" "$F"
 sudo cp "$TMP/forecast.html" "$HTML"
-sudo KADIMA_ROOT=$ROOT $PY -I "$TMP/api_installer.py" || { echo "== AUTO ROLLBACK (api patch failed)"; restore "$BD"; exit 1; }
+sudo KADIMA_ROOT=$ROOT KADIMA_GATEWAY=${KADIMA_GATEWAY:-/opt/kadima-dashboard/gateway.py} $PY -I "$TMP/api_installer.py" || { echo "== AUTO ROLLBACK (api patch failed)"; restore "$BD"; exit 1; }
 rm -rf "$TMP"
 if [ "$(h $F)" != "$NEW_F" ] || [ "$(h $LF)" != "$NEW_LF" ] || [ "$(h $HTML)" != "$NEW_HTML" ]; then
   echo "== AUTO ROLLBACK (files not as expected)"; restore "$BD"; exit 1
