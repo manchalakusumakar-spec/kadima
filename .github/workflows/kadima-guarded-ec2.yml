@@ -69,12 +69,16 @@ jobs:
             --comment "KADIMA approved operation: $OPERATION" \
             --query 'Command.CommandId' --output text)
           echo "SSM command ID: $ID"
-          aws ssm wait command-executed --command-id "$ID" --instance-id "$INSTANCE"
+          # The waiter returns nonzero for failed commands. Still retrieve evidence.
+          WAIT_CODE=0
+          aws ssm wait command-executed --command-id "$ID" --instance-id "$INSTANCE" || WAIT_CODE=$?
           aws ssm get-command-invocation --command-id "$ID" --instance-id "$INSTANCE" \
             --query '{Status:Status,ResponseCode:ResponseCode,Output:StandardOutputContent,Errors:StandardErrorContent}' --output json
           CODE=$(aws ssm get-command-invocation --command-id "$ID" --instance-id "$INSTANCE" \
             --query 'ResponseCode' --output text)
-          if [[ "$CODE" != "0" ]]; then
+          STATUS=$(aws ssm get-command-invocation --command-id "$ID" --instance-id "$INSTANCE" \
+            --query 'Status' --output text)
+          if [[ "$WAIT_CODE" != "0" || "$STATUS" != "Success" || "$CODE" != "0" ]]; then
             echo "SSM operation failed with response code $CODE" >&2
             exit 1
           fi
