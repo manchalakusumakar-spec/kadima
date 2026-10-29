@@ -446,6 +446,11 @@ class Engine:
     
             st._gamma_entry_signal = sid
 
+        # Celestial dispatches once after Radar.publish_chain has refreshed the
+        # candidate. The legacy call has no candidate_id and is rejected there.
+        from . import celestial
+        if celestial.enabled():
+            return
         auto_executor.EXECUTOR.evaluate_and_enter(
             index_name=st.name, direction=result.direction, chain=st.chain,
             spot=st.spot, snap=st.snap, days_to_expiry=self._dte(st),
@@ -655,3 +660,4 @@ class Engine:
                 audit.log("market_close_shutdown")
                 self.stop()
                 return
+
