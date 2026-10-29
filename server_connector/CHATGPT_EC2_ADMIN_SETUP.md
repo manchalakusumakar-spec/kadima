@@ -85,7 +85,7 @@ keys into ChatGPT or GitHub. Verify AWS account ID and instance ID in console.
 After merging a reviewed workflow into `main` (the workflow now refuses to run on other refs), and after configuring the protected GitHub environment with approved deployment branches and reviewers:
 
 1. GitHub → Actions → **KADIMA guarded EC2 operations** → Run workflow.
-2. Select `status` and enter a reason. An environment reviewer approves.
+2. Select `status` and enter a 1–64 character ticket/reference containing only letters, digits, `. _ / # : -`. The workflow records it in the SSM command comment. An environment reviewer approves.
 3. Verify the run displays the expected hostname-independent system metrics,
    the active KADIMA service status, and deployed Git commit SHA.
 4. For this acceptance test, run only `status`. Do not run
@@ -151,6 +151,9 @@ installed by this change.
 ## Rollback
 
 Disable the GitHub workflow or revoke the dedicated OIDC role to stop SSM
-maintenance commands. To disable the separate MCP connector, follow the
-existing `server_connector/README.md` rollback. Neither should touch
-broker positions, trading engine, or risk-control settings.
+maintenance commands. Before deleting the CloudFormation stack, verify there
+are no in-flight commands; deleting it removes the dedicated role and custom
+SSM document. Retain the OIDC provider if another workflow uses it. To disable
+the separate MCP connector, follow the existing `server_connector/README.md`
+rollback. Neither should touch broker positions, trading engine, or risk-control
+settings.
