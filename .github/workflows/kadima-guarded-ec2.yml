@@ -13,7 +13,7 @@ on:
           - connector_status
           - connector_restart
       reason:
-        description: Change ticket / justification
+        description: Ticket/reference ID recorded in the SSM audit comment (letters, digits, . _ / # : - only)
         type: string
         required: true
 permissions:
@@ -34,12 +34,14 @@ jobs:
         env:
           INSTANCE: ${{ vars.KADIMA_EC2_INSTANCE_ID }}
           ROLE: ${{ vars.KADIMA_AWS_OIDC_ROLE_ARN }}
+          REASON: ${{ inputs.reason }}
           REGION: ${{ vars.KADIMA_AWS_REGION }}
         run: |
           set -euo pipefail
           [[ "$INSTANCE" =~ ^i-[a-f0-9]{8,17}$ ]] || exit 2
           [[ "$ROLE" =~ ^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9_+=,.@/-]+$ ]] || exit 2
           [[ "$REGION" == "ap-south-2" ]] || exit 2
+          [[ "$REASON" =~ ^[A-Za-z0-9][A-Za-z0-9._/#:-]{0,63}$ ]] || exit 2
           [[ "$INSTANCE" == "i-0e8039442bc5c80c3" ]] || exit 2
       - name: Obtain short-lived AWS credentials
         uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
@@ -69,7 +71,12 @@ jobs:
         run: |
           set -euo pipefail
           echo "Requested operation: $OPERATION"
-          echo "Justification supplied: ${REASON:+yes}"
+          if [[ ! "$REASON" =~ ^[A-Za-z0-9][A-Za-z0-9._/#:-]{0,63}$ ]]; then
+            echo "Reason must be a 1-64 character ticket/reference using letters, digits, dot, underscore, slash, hash, colon, or hyphen." >&2
+            exit 2
+          fi
+          COMMENT="KADIMA ${OPERATION}: ${REASON}"
+          echo "SSM audit comment: $COMMENT"
           case "$OPERATION" in
             status|connector_status|connector_restart) ;;
             *) exit 2 ;;
@@ -79,7 +86,7 @@ jobs:
           ID=$(aws ssm send-command --instance-ids "$INSTANCE" \
             --document-name KadimaGuardedOps \
             --parameters "$(jq -nc --arg operation "$OPERATION" '{operation:[$operation]}')" \
-            --comment "KADIMA approved operation: $OPERATION" \
+            --comment "$COMMENT" \
             --query 'Command.CommandId' --output text)
           echo "SSM command ID: $ID"
           # The waiter returns nonzero for failed commands. Still retrieve evidence.
