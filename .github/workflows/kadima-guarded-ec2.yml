@@ -42,7 +42,7 @@ jobs:
           [[ "$REGION" == "ap-south-2" ]] || exit 2
           [[ "$INSTANCE" == "i-0e8039442bc5c80c3" ]] || exit 2
       - name: Obtain short-lived AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
         with:
           role-to-assume: ${{ vars.KADIMA_AWS_OIDC_ROLE_ARN }}
           aws-region: ${{ vars.KADIMA_AWS_REGION }}
