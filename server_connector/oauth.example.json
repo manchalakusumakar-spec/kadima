@@ -1,0 +1,8 @@
+{
+  "resource_url": "https://kadima-mcp.example.com/mcp",
+  "issuer_url": "https://identity.example.com/",
+  "jwks_url": "https://identity.example.com/.well-known/jwks.json",
+  "read_scope": "kadima:read",
+  "allowed_subjects": ["REPLACE_WITH_YOUR_OAUTH_SUBJECT"],
+  "allowed_client_ids": ["REPLACE_WITH_REGISTERED_CHATGPT_CLIENT_ID"]
+}
