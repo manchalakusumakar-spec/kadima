@@ -1,0 +1,108 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: >-
+  KADIMA guarded GitHub-to-EC2 SSM maintenance. Does not alter trading services,
+  broker controls, or running engine. Requires an existing GitHub OIDC provider.
+Parameters:
+  GitHubOIDCProviderArn:
+    Type: String
+    Description: Existing IAM OIDC provider ARN for token.actions.githubusercontent.com
+    AllowedPattern: '^arn:aws:iam::[0-9]{12}:oidc-provider/token[.]actions[.]githubusercontent[.]com$'
+  KadimaInstanceId:
+    Type: String
+    Default: i-0e8039442bc5c80c3
+    AllowedPattern: '^i-[a-f0-9]{8,17}$'
+    Description: Verify this exact EC2 instance ID in the Hyderabad region before creation.
+Resources:
+  GuardedOpsDocument:
+    Type: AWS::SSM::Document
+    Properties:
+      Name: KadimaGuardedOps
+      DocumentType: Command
+      DocumentFormat: YAML
+      Content:
+        schemaVersion: '2.2'
+        description: Fixed KADIMA read-only checks and isolated MCP connector restart
+        parameters:
+          operation:
+            type: String
+            description: Pre-approved operation ID; never accepts shell input
+            allowedValues:
+              - status
+              - connector_status
+              - connector_restart
+        mainSteps:
+          - action: aws:runShellScript
+            name: runGuardedOperation
+            inputs:
+              timeoutSeconds: '90'
+              runCommand:
+                - |
+                  set -eu
+                  case "{{ operation }}" in
+                    status)
+                      date -Is
+                      uptime
+                      free -h
+                      df -h /
+                      # Read Git as the checkout owner; retain Git ownership protection.
+                      # Collect both checks and fail if either diagnostic fails.
+                      result=0
+                      systemctl is-active kadima.service || result=1
+                      runuser -u ubuntu -- git -C /home/ubuntu/kadima-py rev-parse HEAD || result=1
+                      exit "$result"
+                      ;;
+                    connector_status)
+                      systemctl is-active kadima-connector.service
+                      systemctl is-active kadima-connector-collect.timer
+                      systemctl show kadima-connector.service -p MainPID -p ActiveState
+                      ;;
+                    connector_restart)
+                      systemctl restart kadima-connector.service
+                      systemctl is-active kadima-connector.service
+                      ;;
+                    *)
+                      echo 'Unsupported operation' >&2
+                      exit 2
+                      ;;
+                  esac
+  GitHubGuardedOpsRole:
+    Type: AWS::IAM::Role
+    Properties:
+      Description: GitHub environment-approved KADIMA EC2 fixed SSM operations only
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref GitHubOIDCProviderArn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                'token.actions.githubusercontent.com:aud': sts.amazonaws.com
+                'token.actions.githubusercontent.com:sub': 'repo:manchalakusumakar-spec/kadima:environment:kadima-production-admin'
+      Policies:
+        - PolicyName: SendOnlyFixedKadimaOperations
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Sid: SendOnlyNamedDocumentToExactInstance
+                Effect: Allow
+                Action: ssm:SendCommand
+                Resource:
+                  - !Sub 'arn:${AWS::Partition}:ec2:${AWS::Region}:${AWS::AccountId}:instance/${KadimaInstanceId}'
+                  - !Sub 'arn:${AWS::Partition}:ssm:${AWS::Region}:${AWS::AccountId}:document/KadimaGuardedOps'
+              - Sid: InspectInvocationStatus
+                Effect: Allow
+                Action: ssm:GetCommandInvocation
+                Resource: '*'
+Outputs:
+  RoleArn:
+    Description: GitHub environment variable KADIMA_AWS_OIDC_ROLE_ARN
+    Value: !GetAtt GitHubGuardedOpsRole.Arn
+  Region:
+    Description: GitHub environment variable KADIMA_AWS_REGION
+    Value: !Ref AWS::Region
+  InstanceId:
+    Description: GitHub environment variable KADIMA_EC2_INSTANCE_ID
+    Value: !Ref KadimaInstanceId

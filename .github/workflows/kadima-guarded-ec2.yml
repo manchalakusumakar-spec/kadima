@@ -1,0 +1,104 @@
+name: KADIMA guarded EC2 operations
+# Manual, audited, environment-approved maintenance channel.
+# Never places orders or modifies trading controls.
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Approved fixed operation
+        type: choice
+        required: true
+        options:
+          - status
+          - connector_status
+          - connector_restart
+      reason:
+        description: Ticket/reference ID recorded in the SSM audit comment (letters, digits, . _ / # : - only)
+        type: string
+        required: true
+permissions:
+  id-token: write
+  contents: read
+concurrency:
+  group: kadima-ec2-maintenance
+  cancel-in-progress: false
+jobs:
+  guarded-ec2:
+    # Production OIDC operations are allowed only from the reviewed default branch.
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: kadima-production-admin
+    timeout-minutes: 8
+    steps:
+      - name: Validate configuration
+        env:
+          INSTANCE: ${{ vars.KADIMA_EC2_INSTANCE_ID }}
+          ROLE: ${{ vars.KADIMA_AWS_OIDC_ROLE_ARN }}
+          REASON: ${{ inputs.reason }}
+          REGION: ${{ vars.KADIMA_AWS_REGION }}
+        run: |
+          set -euo pipefail
+          [[ "$INSTANCE" =~ ^i-[a-f0-9]{8,17}$ ]] || exit 2
+          [[ "$ROLE" =~ ^arn:aws:iam::[0-9]{12}:role/[A-Za-z0-9_+=,.@/-]+$ ]] || exit 2
+          [[ "$REGION" == "ap-south-2" ]] || exit 2
+          [[ "$REASON" =~ ^[A-Za-z0-9][A-Za-z0-9._/#:-]{0,63}$ ]] || exit 2
+          [[ "$INSTANCE" == "i-0e8039442bc5c80c3" ]] || exit 2
+      - name: Obtain short-lived AWS credentials
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: ${{ vars.KADIMA_AWS_OIDC_ROLE_ARN }}
+          aws-region: ${{ vars.KADIMA_AWS_REGION }}
+          role-session-name: kadima-guarded-ec2
+      - name: Verify authenticated AWS identity
+        shell: bash
+        env:
+          EXPECTED_ROLE: ${{ vars.KADIMA_AWS_OIDC_ROLE_ARN }}
+        run: |
+          set -euo pipefail
+          IDENTITY=$(aws sts get-caller-identity --output json)
+          echo "$IDENTITY" | jq '{Account,Arn}'
+          EXPECTED_ACCOUNT=$(printf '%s' "$EXPECTED_ROLE" | cut -d: -f5)
+          EXPECTED_ROLE_NAME="${EXPECTED_ROLE##*/}"
+          jq -e --arg account "$EXPECTED_ACCOUNT" \
+            --arg arn "arn:aws:sts::$EXPECTED_ACCOUNT:assumed-role/$EXPECTED_ROLE_NAME/kadima-guarded-ec2" \
+            '.Account == $account and .Arn == $arn' <<< "$IDENTITY" >/dev/null
+      - name: Execute fixed SSM operation
+        shell: bash
+        env:
+          INSTANCE: ${{ vars.KADIMA_EC2_INSTANCE_ID }}
+          OPERATION: ${{ inputs.operation }}
+          REASON: ${{ inputs.reason }}
+        run: |
+          set -euo pipefail
+          echo "Requested operation: $OPERATION"
+          if [[ ! "$REASON" =~ ^[A-Za-z0-9][A-Za-z0-9._/#:-]{0,63}$ ]]; then
+            echo "Reason must be a 1-64 character ticket/reference using letters, digits, dot, underscore, slash, hash, colon, or hyphen." >&2
+            exit 2
+          fi
+          COMMENT="KADIMA ${OPERATION}: ${REASON}"
+          echo "SSM audit comment: $COMMENT"
+          case "$OPERATION" in
+            status|connector_status|connector_restart) ;;
+            *) exit 2 ;;
+          esac
+          # A custom SSM document restricts the commands at the AWS policy
+          # boundary. Never grant this role AWS-RunShellScript access.
+          ID=$(aws ssm send-command --instance-ids "$INSTANCE" \
+            --document-name KadimaGuardedOps \
+            --parameters "$(jq -nc --arg operation "$OPERATION" '{operation:[$operation]}')" \
+            --comment "$COMMENT" \
+            --query 'Command.CommandId' --output text)
+          echo "SSM command ID: $ID"
+          # The waiter returns nonzero for failed commands. Still retrieve evidence.
+          WAIT_CODE=0
+          aws ssm wait command-executed --command-id "$ID" --instance-id "$INSTANCE" || WAIT_CODE=$?
+          aws ssm get-command-invocation --command-id "$ID" --instance-id "$INSTANCE" \
+            --query '{Status:Status,ResponseCode:ResponseCode,Output:StandardOutputContent,Errors:StandardErrorContent}' --output json
+          CODE=$(aws ssm get-command-invocation --command-id "$ID" --instance-id "$INSTANCE" \
+            --query 'ResponseCode' --output text)
+          STATUS=$(aws ssm get-command-invocation --command-id "$ID" --instance-id "$INSTANCE" \
+            --query 'Status' --output text)
+          if [[ "$WAIT_CODE" != "0" || "$STATUS" != "Success" || "$CODE" != "0" ]]; then
+            echo "SSM operation failed with response code $CODE" >&2
+            exit 1
+          fi
