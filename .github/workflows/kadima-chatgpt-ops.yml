@@ -1,0 +1,109 @@
+name: KADIMA ChatGPT approved EC2 operations
+on:
+  workflow_dispatch:
+    inputs:
+      operation:
+        description: Fixed operation requiring owner approval
+        type: choice
+        default: status
+        options: [status, deploy]
+        required: true
+      commit_sha:
+        description: For deploy only, exact reviewed 40-character current main commit
+        type: string
+        required: false
+      reason:
+        description: Ticket/reference (letters, digits, dot, underscore, slash, hash, colon, hyphen)
+        type: string
+        required: true
+permissions:
+  id-token: write
+  contents: read
+concurrency:
+  group: kadima-chatgpt-ops
+  cancel-in-progress: false
+jobs:
+  approved-operation:
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    environment: kadima-chatgpt-ops
+    timeout-minutes: 8
+    steps:
+      - name: Validate requested operation
+        env:
+          OPERATION: ${{ inputs.operation }}
+          TARGET_SHA: ${{ inputs.commit_sha }}
+          REASON: ${{ inputs.reason }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          [[ "$REASON" =~ ^[A-Za-z0-9][A-Za-z0-9._/#:-]{0,63}$ ]]
+          case "$OPERATION" in
+            status) [[ -z "$TARGET_SHA" ]] ;;
+            deploy) [[ "$TARGET_SHA" =~ ^[a-f0-9]{40}$ ]] ;;
+            *) exit 2 ;;
+          esac
+          printf 'Operation: %s\nReviewed commit: %s\nReference: %s\n' "$OPERATION" "$TARGET_SHA" "$REASON"
+      - name: Verify OIDC subject without logging credentials
+        shell: python
+        run: |
+          import base64, json, os, urllib.request
+          url = os.environ['ACTIONS_ID_TOKEN_REQUEST_URL'] + '&audience=sts.amazonaws.com'
+          req = urllib.request.Request(url, headers={
+              'Authorization': 'Bearer ' + os.environ['ACTIONS_ID_TOKEN_REQUEST_TOKEN']})
+          with urllib.request.urlopen(req, timeout=30) as response:
+              token = json.load(response)['value']
+          body = token.split('.')[1]
+          claims = json.loads(base64.urlsafe_b64decode(body + '=' * (-len(body) % 4)))
+          # Public identity metadata only. Never print a token or request headers.
+          identity = {k: claims.get(k) for k in ('iss', 'aud', 'sub')}
+          print(json.dumps(identity))
+          expected = {
+              'iss': 'https://token.actions.githubusercontent.com',
+              'aud': 'sts.amazonaws.com',
+              'sub': 'repo:manchalakusumakar-spec@318973916/kadima@1369670503:environment:kadima-chatgpt-ops'}
+          if identity != expected:
+              raise SystemExit('OIDC identity mismatch; AWS authentication was not attempted')
+      - name: Obtain credentials for separate approved-operations role
+        uses: aws-actions/configure-aws-credentials@e1253824e5c10ff9df46874f81ed3ec929e19cfd # v6.3.0
+        with:
+          role-to-assume: arn:aws:iam::763427697688:role/KadimaChatGPTApprovedOps
+          aws-region: ap-south-2
+          role-session-name: kadima-chatgpt-ops
+          role-duration-seconds: 900
+          retry-max-attempts: 2
+      - name: Verify separate AWS identity
+        shell: bash
+        run: |
+          set -euo pipefail
+          aws sts get-caller-identity --output json | jq -e '
+            .Account == "763427697688" and
+            .Arn == "arn:aws:sts::763427697688:assumed-role/KadimaChatGPTApprovedOps/kadima-chatgpt-ops"'
+      - name: Run fixed approved operation
+        env:
+          OPERATION: ${{ inputs.operation }}
+          TARGET_SHA: ${{ inputs.commit_sha }}
+          REASON: ${{ inputs.reason }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          INSTANCE=i-0e8039442bc5c80c3
+          case "$OPERATION" in
+            status) DOCUMENT=KadimaChatGPTReadOnlyStatus; PARAMETERS='{}' ;;
+            deploy)
+              [[ "$TARGET_SHA" =~ ^[a-f0-9]{40}$ ]]
+              DOCUMENT=KadimaChatGPTDeployReviewedCommit
+              PARAMETERS=$(jq -nc --arg sha "$TARGET_SHA" '{commitSha:[$sha]}') ;;
+            *) exit 2 ;;
+          esac
+          ID=$(aws ssm send-command --instance-ids "$INSTANCE" \
+            --document-name "$DOCUMENT" --parameters "$PARAMETERS" \
+            --comment "ChatGPT ${OPERATION} ${REASON} run ${GITHUB_RUN_ID}" \
+            --query 'Command.CommandId' --output text)
+          echo "SSM command ID: $ID"
+          WAIT_CODE=0
+          aws ssm wait command-executed --command-id "$ID" --instance-id "$INSTANCE" || WAIT_CODE=$?
+          RESULT=$(aws ssm get-command-invocation --command-id "$ID" --instance-id "$INSTANCE" --output json)
+          jq '{Status,ResponseCode,Output: .StandardOutputContent,Errors: .StandardErrorContent}' <<< "$RESULT"
+          [[ "$WAIT_CODE" == 0 ]]
+          jq -e '.Status == "Success" and .ResponseCode == 0' <<< "$RESULT" >/dev/null
