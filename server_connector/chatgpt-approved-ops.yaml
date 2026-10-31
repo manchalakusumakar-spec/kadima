@@ -1,0 +1,127 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: Separate ChatGPT approved KADIMA status and exact-commit deployment. New resources only.
+Parameters:
+  GitHubOIDCProviderArn:
+    Type: String
+    Default: arn:aws:iam::763427697688:oidc-provider/token.actions.githubusercontent.com
+    AllowedValues:
+      - arn:aws:iam::763427697688:oidc-provider/token.actions.githubusercontent.com
+Rules:
+  HyderabadOnly:
+    Assertions:
+      - Assert: !Equals [!Ref 'AWS::Region', ap-south-2]
+        AssertDescription: Create this stack in Hyderabad (ap-south-2).
+Resources:
+  ChatGPTStatusDocument:
+    Type: AWS::SSM::Document
+    Properties:
+      Name: KadimaChatGPTReadOnlyStatus
+      DocumentType: Command
+      DocumentFormat: YAML
+      Content:
+        schemaVersion: '2.2'
+        description: Fixed read-only status. No parameters, restart, deployment, or trading controls.
+        mainSteps:
+          - action: aws:runShellScript
+            name: readStatus
+            inputs:
+              timeoutSeconds: '90'
+              runCommand:
+                - |
+                  set -eu
+                  date -Is
+                  uptime
+                  free -h
+                  df -h /
+                  result=0
+                  systemctl is-active kadima.service || result=1
+                  runuser -u ubuntu -- git -C /home/ubuntu/kadima-py rev-parse HEAD || result=1
+                  exit "$result"
+  ChatGPTDeployDocument:
+    Type: AWS::SSM::Document
+    Properties:
+      Name: KadimaChatGPTDeployReviewedCommit
+      DocumentType: Command
+      DocumentFormat: YAML
+      Content:
+        schemaVersion: '2.2'
+        description: Deploy exact current main commit to fixed KADIMA checkout and restart kadima.service
+        parameters:
+          commitSha:
+            type: String
+            allowedPattern: '^[a-f0-9]{40}$'
+            interpolationType: ENV_VAR
+        mainSteps:
+          - action: aws:runShellScript
+            name: deployReviewedCommit
+            inputs:
+              timeoutSeconds: '180'
+              runCommand:
+                - |
+                  set -eu
+                  # ENV_VAR requires a current SSM agent; fail closed if unsupported.
+                  test -n "${SSM_commitSha:-}"
+                  # A lock also serializes overlapping SSM invocations.
+                  exec 9>/run/lock/kadima-chatgpt-deploy.lock
+                  flock -n 9 || { echo 'Another ChatGPT deployment is active' >&2; exit 1; }
+                  systemctl is-active --quiet kadima.service
+                  runuser -u ubuntu -- env TARGET_SHA="$SSM_commitSha" sh -eu -c '
+                    cd /home/ubuntu/kadima-py
+                    test "$(git symbolic-ref --short HEAD)" = main
+                    test -z "$(git status --porcelain)"
+                    # Fetch only the fixed public repository. Never accept a user URL.
+                    git fetch --no-tags https://github.com/manchalakusumakar-spec/kadima.git main
+                    test "$(git rev-parse FETCH_HEAD)" = "$TARGET_SHA"
+                    git merge-base --is-ancestor HEAD "$TARGET_SHA"
+                    # Dependency, service and deployment changes require a separate review.
+                    if git diff --name-only HEAD "$TARGET_SHA" | grep -E "(^|/)(requirements[^/]*|pyproject[.]toml|poetry[.]lock|uv[.]lock|Pipfile[^/]*|setup[.]py|setup[.]cfg|[^/]*[.]service|[^/]*[.]timer)$|^(server_connector/|[.]github/|deploy/|scripts/)"; then
+                      echo "Deployment contains infrastructure/dependency changes; stop for separate review" >&2
+                      exit 1
+                    fi
+                    echo "Previous checkout SHA: $(git rev-parse HEAD)"
+                    echo "Approved checkout SHA: $TARGET_SHA"
+                    git merge --ff-only "$TARGET_SHA"
+                    test "$(git rev-parse HEAD)" = "$TARGET_SHA"
+                  '
+                  systemctl restart kadima.service
+                  systemctl is-active --quiet kadima.service
+                  systemctl show kadima.service -p ActiveState -p SubState
+                  runuser -u ubuntu -- git -C /home/ubuntu/kadima-py rev-parse HEAD
+  ChatGPTStatusRole:
+    Type: AWS::IAM::Role
+    Properties:
+      RoleName: KadimaChatGPTApprovedOps
+      Description: Separate ChatGPT role for approved status and exact-commit deployment
+      MaxSessionDuration: 3600
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Federated: !Ref GitHubOIDCProviderArn
+            Action: sts:AssumeRoleWithWebIdentity
+            Condition:
+              StringEquals:
+                'token.actions.githubusercontent.com:aud': sts.amazonaws.com
+                'token.actions.githubusercontent.com:sub': repo:manchalakusumakar-spec@318973916/kadima@1369670503:environment:kadima-chatgpt-ops
+      Policies:
+        - PolicyName: OnlyFixedChatGPTOperations
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action: ssm:SendCommand
+                Resource:
+                  - arn:aws:ec2:ap-south-2:763427697688:instance/i-0e8039442bc5c80c3
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:document/${ChatGPTStatusDocument}'
+                  - !Sub 'arn:aws:ssm:${AWS::Region}:${AWS::AccountId}:document/${ChatGPTDeployDocument}'
+              - Effect: Allow
+                Action: ssm:GetCommandInvocation
+                Resource: '*'
+Outputs:
+  DeployDocumentName:
+    Value: !Ref ChatGPTDeployDocument
+  RoleArn:
+    Value: !GetAtt ChatGPTStatusRole.Arn
+  DocumentName:
+    Value: !Ref ChatGPTStatusDocument
