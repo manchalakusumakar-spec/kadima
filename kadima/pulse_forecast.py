@@ -10,7 +10,15 @@ that stop-losses follow. Called every second from live_forecast.LiveForecaster.t
    live price and tilts its first 15 minutes by the last 3 minutes' momentum (fading, tau 6 min).
 2. Milestones: turning points of the pulse line (swing >= trigger), with a best-entry plan:
    side, entry (the next pullback milestone or now), stop just beyond it, target at the next turn.
-3. Circuit mode: when a 50-100 pt class surge looks likely (sharp-move meter HIGH with a lean, a
+3. PRECISION 2-Nov night (backtest of 510 days of NIFTY 5-min bars, validated on the last 128): the
+   big-move alarm fires only when a 5-minute surge (>= 0.15% of spot) AND a Marubozu agree in direction,
+   in the direction of the day so far, and not in the first 10 minutes. The meter, a surge or a
+   Marubozu alone no longer trigger it (alone they showed no directional edge: about as often wrong as
+   right). The projected move is the typical follow-through: 1.0 x today's median 5-minute range
+   (stretch target 1.8x); the stop room is 1.0 x the median 5-minute range. Every alarm is scored:
+   RIGHT when the move reaches the projection before the stop room, WRONG when the stop room comes
+   first, EXPIRED when neither within 15 minutes. No limit on alarms per day.
+   (Original 2-Nov text:) Circuit mode: when a 50-100 pt class surge looks likely (sharp-move meter HIGH with a lean, a
    5-minute surge >= 0.15% of spot, or an early Marubozu) the line becomes a step ("electric
    circuit") path toward a projected move sized from the day: 4x today's median closed 5-minute range,
    scaled up by signal strength (meter HIGH score, surge size, Marubozu range), kept within 0.15%-0.6%
@@ -35,9 +43,13 @@ TILT_MIN = 15
 TILT_TAU = 6.0
 SURGE_PCT = 0.0015
 MOVE_PCT = 0.003            # legacy fixed size (kept for reference)
-MOVE_MULT = 4.0             # x median closed 5-min range
-MOVE_MIN_PCT = 0.0015
+MOVE_MULT = 1.0             # PRECISION: expected follow-through = 1.0 x median closed 5-min range (was 4.0)
+STRETCH_MULT = 1.8          # 75th-percentile follow-through, shown as a stretch target
+MOVE_MIN_PCT = 0.0004       # (was 0.0015: forced >= ~35 pts, about twice the typical follow-through)
 MOVE_MAX_PCT = 0.006
+SKIP_OPEN_MIN = 10          # no big-move alarm in the first 10 minutes
+SL_ROOM_MED = 1.0           # stop room >= 1.0 x median 5-min range (winners' 80th-pct adverse move ~0.8x)
+ALARM_WINDOW_SEC = 900      # an alarm is scored over the next 15 minutes
 CIRCUIT_MIN = 16
 CIRCUIT_HOLD_SEC = 180
 SL_ROOM_SIG = 1.5           # max SL: room beyond the forecast worst case, in typical 1-min moves
@@ -230,7 +242,7 @@ def move_size(spot, mz, meter, surge):
         k += 0.5 * min(1.0, abs(surge) / (2 * SURGE_PCT * spot))
     if (mz or {}).get('state') == 'FORMING' and (mz.get('range_x') or 0) >= 2:
         k += 0.25
-    move = MOVE_MULT * med * k
+    move = MOVE_MULT * med * min(k, 1.5)
     return round(min(max(move, MOVE_MIN_PCT * spot), MOVE_MAX_PCT * spot), 1)
 
 
@@ -249,7 +261,7 @@ def sigma_1m(spots, now, spot):
     return min(max(1.25 * d[len(d) // 2], lo), hi)
 
 
-def _sl_candidate(now, spot, fwd, side, target_ts, sig):
+def _sl_candidate(now, spot, fwd, side, target_ts, sig, min_room=0.0):
     down = side == 'PE'
     tgt_t = _dt(target_ts) if target_ts else None
     worst = spot
@@ -259,10 +271,11 @@ def _sl_candidate(now, spot, fwd, side, target_ts, sig):
         hw = sig * math.sqrt(max((t - now).total_seconds() / 60.0, 0.0))
         worst = max(worst, v + hw) if down else min(worst, v - hw)
     cand = worst + (SL_ROOM_SIG * sig if down else -SL_ROOM_SIG * sig)
-    return max(cand, spot + SL_MIN_SIG * sig) if down else min(cand, spot - SL_MIN_SIG * sig)
+    room = max(SL_MIN_SIG * sig, min_room)
+    return max(cand, spot + room) if down else min(cand, spot - room)
 
 
-def trail_sl(st, now, spot, fwd, plan, sig):
+def trail_sl(st, now, spot, fwd, plan, sig, min_room=0.0):
     """Dynamic maximum stop-loss for the plan's side (display only). Returns a dict or None."""
     side = (plan or {}).get('side')
     s = st.get('sl')
@@ -271,7 +284,7 @@ def trail_sl(st, now, spot, fwd, plan, sig):
     if side in ('CE', 'PE') and (s is None or s['side'] != side):
         pend = st.get('sl_pending')
         if s is None or (pend and pend[0] == side and (now - pend[1]).total_seconds() >= SL_SIDE_HOLD_SEC):
-            lvl = round(_sl_candidate(now, spot, fwd, side, plan.get('target_ts'), sig), 1)
+            lvl = round(_sl_candidate(now, spot, fwd, side, plan.get('target_ts'), sig, min_room), 1)
             s = dict(side=side, level=lvl, init=lvl, since=now.isoformat(), hist=[[now.isoformat(), lvl]],
                      hit=None, plan_stop=plan.get('stop'))
             st['sl'], st['sl_pending'] = s, None
@@ -287,7 +300,7 @@ def trail_sl(st, now, spot, fwd, plan, sig):
             return None
     elif side == s['side'] and not s['hit']:
         down = side == 'PE'
-        cand = _sl_candidate(now, spot, fwd, side, plan.get('target_ts'), sig)
+        cand = _sl_candidate(now, spot, fwd, side, plan.get('target_ts'), sig, min_room)
         if (down and cand < s['level'] - 0.5) or (not down and cand > s['level'] + 0.5):
             s['level'] = round(cand, 1)
             s['hist'] = (s['hist'] + [[now.isoformat(), s['level']]])[-60:]
@@ -303,39 +316,145 @@ def s_side(s):
     return s['side'] if s else None
 
 
+def _track(st, now, spot):
+    """Incremental 5-minute candles, minute closes and the session's first price (constant cost per call)."""
+    tr = st.get('trk')
+    if tr is None or tr['day'] != now.date():
+        tr = st['trk'] = dict(day=now.date(), c5=[], cur=None, m1={}, open=spot)
+    m = now.hour * 60 + now.minute
+    sm = m - (m - (9 * 60 + 15)) % 5
+    key = now.replace(hour=sm // 60, minute=sm % 60, second=0, microsecond=0)
+    cur = tr['cur']
+    if cur is None or cur[0] != key:
+        if cur is not None:
+            tr['c5'].append(tuple(cur))
+        tr['cur'] = [key, spot, spot, spot, spot]
+    else:
+        cur[2] = max(cur[2], spot)
+        cur[3] = min(cur[3], spot)
+        cur[4] = spot
+    mk = now.replace(second=0, microsecond=0)
+    tr['m1'][mk] = spot
+    if len(tr['m1']) > 120:
+        for k in sorted(tr['m1'])[:-100]:
+            del tr['m1'][k]
+    return tr
+
+
+def marubozu_trk(tr, now, spot):
+    """Same rules as marubozu(), from the incremental candles."""
+    done = tr['c5']
+    ranges = sorted(c[2] - c[3] for c in done)
+    med = ranges[len(ranges) // 2] if len(ranges) >= 3 else (spot or 0) * 0.0008
+    med = med or 1e-9
+    out = dict(state='NONE', median_5m_range=round(med, 2))
+    st_, o, h, l, c = tr['cur']
+    rng = h - l
+    if (now - st_).total_seconds() >= 120 and rng > 0:
+        body = abs(c - o) / rng
+        up = c > o
+        near = (h - c) / rng <= 0.15 if up else (c - l) / rng <= 0.15
+        if body >= 0.8 and near and rng >= 1.2 * med:
+            out.update(state='FORMING', dir='UP' if up else 'DOWN', tf='5m', body_ratio=round(body, 2),
+                       range=round(rng, 2), range_x=round(rng / med, 2), since=st_.isoformat())
+            return out
+    if done:
+        st_, o, h, l, c = done[-1]
+        rng = h - l
+        if rng > 0 and abs(c - o) / rng >= 0.9 and rng >= 1.2 * med:
+            out.update(state='CLOSED', dir='UP' if c > o else 'DOWN', tf='5m',
+                       body_ratio=round(abs(c - o) / rng, 2), range=round(rng, 2),
+                       range_x=round(rng / med, 2), since=st_.isoformat())
+    return out
+
+
+def sigma_trk(tr, now, spot):
+    cut = now.replace(second=0, microsecond=0)
+    cl = [v for k, v in sorted(tr['m1'].items()) if k < cut][-90:]
+    lo, hi = 0.00015 * spot, 0.003 * spot
+    if len(cl) < 6:
+        return 0.0004 * spot
+    d = sorted(abs(b - a) for a, b in zip(cl, cl[1:]))
+    return min(max(1.25 * d[len(d) // 2], lo), hi)
+
+
+def _ago_fast(spots, now, sec):
+    """Price about `sec` seconds ago; spots is a deque/list of (t, p), newest last (scans back only)."""
+    target = now - timedelta(seconds=sec)
+    for t, p in reversed(spots):
+        if t <= target:
+            return p
+    return None
+
+
+def _score_alarms(st, now, spot):
+    """Track open alarms: RIGHT when the projected move is reached first, WRONG when the stop room is."""
+    for a in st.get('alarms', []):
+        if a['outcome']:
+            continue
+        sgn = 1 if a['dir'] == 'UP' else -1
+        move = (spot - a['spot']) * sgn
+        a['fav'] = round(max(a['fav'], move), 2)
+        a['adv'] = round(max(a['adv'], -move), 2)
+        if a['fav'] >= a['expected']:
+            a['outcome'], a['resolved'] = 'RIGHT', now.isoformat()
+        elif a['adv'] >= a['room']:
+            a['outcome'], a['resolved'] = 'WRONG', now.isoformat()
+        elif (now - _dt(a['ts'])).total_seconds() >= ALARM_WINDOW_SEC:
+            a['outcome'], a['resolved'] = 'EXPIRED', now.isoformat()
+
+
+def alarm_stats(alarms):
+    done = [a for a in alarms if a['outcome']]
+    r = sum(a['outcome'] == 'RIGHT' for a in done)
+    w = sum(a['outcome'] == 'WRONG' for a in done)
+    e = sum(a['outcome'] == 'EXPIRED' for a in done)
+    return dict(n=len(alarms), right=r, wrong=w, expired=e, open=len(alarms) - len(done),
+                precision=round(r / len(done), 3) if done else None)
+
+
 def update(name, now, spot, snap, spots):
     """Returns the pulse dict for this index (or None when no spot)."""
     if spot is None:
         return None
-    spots = list(spots or [])
+    spots = spots if spots is not None else []
     st = _S.setdefault(name, dict(rev=0, line=[], rev_ts=None, reason=None, day=None, circuit=None,
                                   revs=[]))
     if st['day'] != now.date():
-        st.update(rev=0, line=[], rev_ts=None, reason=None, day=now.date(), circuit=None, revs=[])
+        st.update(rev=0, line=[], rev_ts=None, reason=None, day=now.date(), circuit=None, revs=[], alarms=[],
+                  sl=None, sl_pending=None)
+    st.setdefault('alarms', [])
     trig = trigger_for(spot)
-    mz = marubozu(spots, now, spot)
+    tr = _track(st, now, spot)
+    mz = marubozu_trk(tr, now, spot)
+    med = mz.get('median_5m_range') or spot * 0.0008
     meter = snap.get('meter') or {}
-    # ---- big-move detection (circuit mode)
-    p5 = _ago(spots, now, 300)
+    # ---- big-move detection (circuit mode), PRECISION rule: surge AND Marubozu AND the day's direction
+    p5 = _ago_fast(spots, now, 300)
     surge = (spot - p5) if p5 else 0.0
+    surge_dir = ('UP' if surge > 0 else 'DOWN') if p5 and abs(surge) >= SURGE_PCT * spot else None
+    mz_dir = mz.get('dir') if mz.get('state') in ('FORMING', 'CLOSED') else None
+    day_dir = 'UP' if spot > tr['open'] else 'DOWN' if spot < tr['open'] else None
+    early = now.hour * 60 + now.minute < 9 * 60 + 15 + SKIP_OPEN_MIN
+    direction = surge_dir if (surge_dir and surge_dir == mz_dir and surge_dir == day_dir and not early) else None
     why = []
-    direction = None
-    if meter.get('available') and meter.get('level') == 'HIGH' and meter.get('lean') in ('UP', 'DOWN'):
-        why.append('meter HIGH %s' % meter.get('lean'))
-        direction = meter['lean']
-    if p5 and abs(surge) >= SURGE_PCT * spot:
-        why.append('5-min surge %+.0f' % surge)
-        direction = direction or ('UP' if surge > 0 else 'DOWN')
-    if mz.get('state') == 'FORMING':
-        why.append('Marubozu forming %s' % mz['dir'])
-        direction = direction or mz['dir']
+    if direction:
+        why = ['5-min surge %+.0f' % surge, 'Marubozu %s %s' % (mz['state'].lower(), mz_dir),
+               'day %s from %.0f' % ('up' if day_dir == 'UP' else 'down', tr['open'])]
+        if meter.get('available') and meter.get('level') == 'HIGH' and meter.get('lean') == direction:
+            why.append('meter HIGH agrees')
     circ = st['circuit']
     if why and direction:
         if not circ or circ['dir'] != direction:
-            circ = dict(dir=direction, since=now.isoformat(), why=why,
-                        move=move_size(spot, mz, meter, surge))
+            mv = move_size(spot, mz, meter, surge)
+            room = round(max(trig, SL_ROOM_MED * med), 1)
+            circ = dict(dir=direction, since=now.isoformat(), why=why, move=mv,
+                        stretch=round(mv * STRETCH_MULT / MOVE_MULT, 1), room=room)
             st['circuit'] = circ
             st['line'] = []                           # force a new revision in circuit shape
+            st['alarms'].append(dict(ts=now.isoformat(), dir=direction, spot=round(spot, 2), expected=mv,
+                                     stretch=circ['stretch'], room=room, why=why, fav=0.0, adv=0.0,
+                                     outcome=None, resolved=None))
         circ['last'] = now.isoformat()
         circ['why'] = why
     elif circ and (now - _dt(circ['last'])).total_seconds() > CIRCUIT_HOLD_SEC:
@@ -360,7 +479,7 @@ def update(name, now, spot, snap, spots):
             base = [(_dt(p['ts']), float(p['v'])) for p in src]
             if not base:
                 base = [(now, spot), (now + timedelta(minutes=30), spot)]
-            p3 = _ago(spots, now, 180)
+            p3 = _ago_fast(spots, now, 180)
             slope = ((spot - p3) / 3.0) if p3 else 0.0       # pts per minute
             line = []
             for t, v in base:
@@ -384,17 +503,19 @@ def update(name, now, spot, snap, spots):
         tgt = line[-1]
         sgn = 1 if circ['dir'] == 'UP' else -1
         plan = dict(side='CE' if sgn > 0 else 'PE', entry=round(spot, 2), entry_is='now (momentum)',
-                    stop=round(spot - sgn * max(trig * 2, 0.3 * circ['move']), 2), target=round(tgt[1], 2),
+                    stop=round(spot - sgn * circ.get('room', max(trig, SL_ROOM_MED * med)), 2), target=round(tgt[1], 2),
                     target_ts=tgt[0].isoformat())
         plan['reward_risk'] = round(abs(plan['target'] - plan['entry']) / abs(plan['entry'] - plan['stop']), 2)
     else:
         plan = plan_for(now, spot, fwd, [m for m in ms if _dt(m['ts']) >= now], trig)
-    sig = sigma_1m(spots, now, spot)
+    sig = sigma_trk(tr, now, spot)
     try:
-        msl = trail_sl(st, now, spot, fwd, plan, sig)
+        msl = trail_sl(st, now, spot, fwd, plan, sig, min_room=SL_ROOM_MED * med)
     except Exception:                                   # noqa: BLE001 - display only
         msl = None
-    return dict(mode='circuit' if circ else 'smooth', rev=st['rev'], max_sl=msl, sigma_1m=round(sig, 2), rev_ts=st['rev_ts'].isoformat(),
+    _score_alarms(st, now, spot)
+    return dict(mode='circuit' if circ else 'smooth', rev=st['rev'], max_sl=msl, sigma_1m=round(sig, 2),
+                median_5m_range=round(med, 2), alarms=st['alarms'][-10:], alarm_stats=alarm_stats(st['alarms']), rev_ts=st['rev_ts'].isoformat(),
                 rev_reason=st['reason'], trigger=trig, dev=None if dev is None else round(dev, 2),
                 line=[dict(ts=t.isoformat(), v=round(v, 2)) for t, v in line],
                 milestones=ms[:8], plan=plan, circuit=circ, marubozu=mz, revs=st['revs'][-10:],

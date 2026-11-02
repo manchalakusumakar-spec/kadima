@@ -779,7 +779,10 @@ def forecast_live(index: str = Query('NIFTY'), authorization: Optional[str] = He
     """Live forecast line + sharp-move meter (display only, read-only)."""
     _check_auth(authorization)
     from . import live_forecast
-    return live_forecast.snapshot(_forecast_index(index))
+    name = (index or '').upper()             # PULSE-ALL-INDICES 2-Nov: PULSE runs for more indices than the models
+    if name not in hourly_forecast.FORECAST_INDICES and name not in live_forecast.PULSE_INDICES:
+        raise HTTPException(422, f'index_not_enabled_for_forecast:{name}')
+    return live_forecast.snapshot(name)
 
 
 @app.get('/api/forecast/days')

@@ -39,10 +39,20 @@ LOG_SEC = 60.0
 PATH_REFRESH_SEC = 15.0
 SAMPLE_FRESH_SEC = 60.0
 LIVE = {}                      # index -> latest snapshot (read by control_api)
+# PULSE for every index (2-Nov night, phase 1): PULSE line, plan, max SL and alarm scorecard; the hourly/day
+# models and the option-chain meter stay NIFTY-only (HF.FORECAST_INDICES) until memory and history are checked.
+PULSE_INDICES = tuple(x for x in os.environ.get('KADIMA_PULSE_INDICES', 'NIFTY,BANKNIFTY,SENSEX,MIDCPNIFTY,BANKEX').split(',') if x)
+TAPE_MIN, TAPE_STEP_SEC = 30, 10   # short price trace sent with each snapshot (cards, magnifier)
+STATS_SEC = 300.0
 SAVE_SEC = 60.0                # AFTER-HOURS 2-Nov: last snapshot saved to forecast.db for after the close
 _DB = {}                       # index -> db path used for the saved snapshot
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS pulse_alarms (
+    day TEXT NOT NULL, index_name TEXT NOT NULL, ts TEXT NOT NULL, dir TEXT NOT NULL, spot REAL NOT NULL,
+    expected REAL, stretch REAL, room REAL, why TEXT, outcome TEXT NOT NULL, fav REAL, adv REAL, resolved TEXT,
+    PRIMARY KEY (day, index_name, ts)
+);
 CREATE TABLE IF NOT EXISTS live_snapshot (
     day TEXT NOT NULL, index_name TEXT NOT NULL, ts TEXT NOT NULL, snap TEXT NOT NULL,
     PRIMARY KEY (day, index_name)
@@ -243,6 +253,8 @@ class LiveForecaster:
         self._last_log = {}
         self._last_sample = {}
         self._last_save = {}
+        self._saved_alarms = set()
+        self._stats = {}                  # name -> (mono, 30-day alarm stats)
         with HF.conn(self.db) as c:
             c.executescript(SCHEMA)
 
@@ -302,7 +314,9 @@ class LiveForecaster:
         if now.weekday() >= 5 or not (9 * 60 + 15 <= now.hour * 60 + now.minute < 15 * 60 + 31):
             return
         eng = self.hourly.engine
-        for name in HF.FORECAST_INDICES:
+        names = list(dict.fromkeys(list(HF.FORECAST_INDICES) + list(PULSE_INDICES)))
+        for name in names:
+            full = name in HF.FORECAST_INDICES          # hourly/day models + meter only where enabled
             st = eng.states.get(name) if eng else None
             if st is None:
                 continue
@@ -315,7 +329,7 @@ class LiveForecaster:
                     sp.clear()
                 sp.append((now, spot))
             slot = M.slot_for(now.time())
-            if slot and spot is not None:
+            if full and slot and spot is not None:
                 h = self._load(name, 'hour', now.date(), M.slot_label(slot[0]))
                 if h:
                     snap['hour'] = dict(slot=M.slot_label(slot[0]),
@@ -323,19 +337,69 @@ class LiveForecaster:
                 dd = self._load(name, 'day', now.date())
                 if dd:
                     snap['day'] = dict(line=live_line(dd['path'], dd['start'], dd['anchor'], now, spot))
-            if spot is not None and time.monotonic() - self._last_meter.get(name, 0) >= METER_SEC:
+            if full and spot is not None and time.monotonic() - self._last_meter.get(name, 0) >= METER_SEC:
                 self._last_meter[name] = time.monotonic()
                 snap['meter'] = self._meter(name, st, now, spot) or snap['meter']
             try:   # PULSE forecast 2-Nov-2026 (display only)
                 from . import pulse_forecast
                 snap['pulse'] = pulse_forecast.update(name, now, spot, snap, self._spots.get(name))
             except Exception as exc:                    # noqa: BLE001
-                audit.log('pulse_forecast_error', error=str(exc)[:200])
+                audit.log('pulse_forecast_error', index=name, error=str(exc)[:200])
+            snap['models'] = 'full' if full else 'pulse_only'
+            snap['tape'] = self._tape(name, now)
+            if snap.get('pulse'):
+                self._alarms(name, snap['pulse'], now)
             LIVE[name] = snap
             _DB[name] = self.db
             if time.monotonic() - self._last_save.get(name, 0) >= SAVE_SEC or now.hour * 60 + now.minute >= 15 * 60 + 30:
                 self._last_save[name] = time.monotonic()
                 save_snapshot(name, snap, self.db, now)
+
+    def _tape(self, name, now):
+        sp = self._spots.get(name)
+        if not sp:
+            return []
+        cut = now - timedelta(minutes=TAPE_MIN)
+        out, last = [], None
+        for t, p in reversed(sp):
+            if t < cut:
+                break
+            if last is None or (last - t).total_seconds() >= TAPE_STEP_SEC:
+                out.append([t.isoformat(), round(p, 2)])
+                last = t
+        return out[::-1]
+
+    def _alarms(self, name, pulse, now):
+        """Store each scored big-move alarm once; attach today's and the 30-day precision."""
+        for a in pulse.get('alarms') or []:
+            key = (name, a['ts'])
+            if a.get('outcome') and key not in self._saved_alarms:
+                self._saved_alarms.add(key)
+                try:
+                    c = HF.conn(self.db)
+                    with c:
+                        c.execute('INSERT OR IGNORE INTO pulse_alarms VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                                  (now.date().isoformat(), name, a['ts'], a['dir'], a['spot'], a.get('expected'),
+                                   a.get('stretch'), a.get('room'), json.dumps(a.get('why')), a['outcome'],
+                                   a.get('fav'), a.get('adv'), a.get('resolved')))
+                except Exception as exc:                # noqa: BLE001
+                    audit.log('pulse_alarm_save_error', error=str(exc)[:200])
+        hit = self._stats.get(name)
+        if not hit or time.monotonic() - hit[0] >= STATS_SEC:
+            try:
+                c = HF.conn(self.db)
+                since = (now.date() - timedelta(days=30)).isoformat()
+                rows = c.execute('SELECT outcome, COUNT(*) FROM pulse_alarms WHERE index_name=? AND day>=? GROUP BY outcome',
+                                 (name, since)).fetchall()
+                d = {r[0]: r[1] for r in rows}
+                n = sum(d.values())
+                hit = (time.monotonic(), dict(n=n, right=d.get('RIGHT', 0), wrong=d.get('WRONG', 0),
+                                              expired=d.get('EXPIRED', 0),
+                                              precision=round(d.get('RIGHT', 0) / n, 3) if n else None))
+            except Exception:                           # noqa: BLE001
+                hit = (time.monotonic(), None)
+            self._stats[name] = hit
+        pulse['alarm_stats_30d'] = hit[1]
 
     def _meter(self, name, st, now, spot):
         chain = getattr(st, 'chain', None)

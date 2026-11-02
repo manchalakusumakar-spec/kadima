@@ -201,7 +201,8 @@
     <span><i style="border-color:var(--flat);border-top-style:dashed"></i>Provisional bar (not scored)</span>
     <span><i style="border-color:var(--lf);border-top-style:dashed"></i>Live forecast: path in force re-anchored on the live price every second (display only, not used by stops)</span>
     <span><i style="border-color:var(--eup);box-shadow:0 0 6px var(--eup)"></i><i style="border-color:var(--edn);box-shadow:0 0 6px var(--edn)"></i>PULSE (electric): GREEN where it rises, RED where it falls; reforecast the moment price misses it by the trigger (5 pt NIFTY); ⚡ step path when a big move looks likely</span>
-    <span><i style="border-color:var(--edn);border-top-style:dashed"></i>MAX SL: dynamic maximum stop-loss, recomputed every second, only tightens (display only)</span>
+    <span><i style="border-color:var(--edn);border-top-style:dashed"></i>MAX SL: dynamic maximum stop-loss, recomputed every second, only tightens, never closer than one median 5-min range (display only)</span>
+    <span><i style="border-color:var(--el)"></i>⚡ MOVE ALARM: 5-min surge AND Marubozu agreeing with the day; projects the typical follow-through (1× median 5-min range, stretch 1.8×); every alarm scored RIGHT / WRONG / EXPIRED</span>
     <span><i style="border-color:var(--rev)"></i>Day: D = reforecast at each hourly checkpoint, or when two closed candles in a row are 10–20 pts off on the same side (one typical candle)</span>
   </div>
 
@@ -771,7 +772,10 @@
       `Plan: <b>${pl.side}</b> entry ${fmt(pl.entry, 0)} (${esc(pl.entry_is)}${pl.entry_ts && pl.entry_is === 'pullback' ? ' ~' + hhmm(pl.entry_ts) : ''}) · SL ${fmt(pl.stop, 0)} · T ${fmt(pl.target, 0)} · R:R ${fmt(pl.reward_risk, 1)}`;
     el.innerHTML = `<span style="color:${circ ? '#ffd400' : '#00e5ff'};font-weight:800">${circ ? '⚡ CIRCUIT' : 'PULSE'} R${P.rev}</span>` +
       `<span>miss <b>${P.dev == null ? '—' : fmt(P.dev, 1)}</b> / ${fmt(P.trigger, 0)} pt</span>` +
-      (circ ? `<span class="lvl HIGH">big move ${c.dir === 'UP' ? '▲ +' : '▼ −'}${fmt(c.move, 0)}</span><span style="color:var(--dim)">${esc((c.why || []).join(' · '))}</span>` : '') +
+      (circ ? `<span class="lvl HIGH">move alarm ${c.dir === 'UP' ? '▲ +' : '▼ −'}${fmt(c.move, 0)} · stretch ${fmt(c.stretch || c.move, 0)} · stop room ${fmt(c.room || 0, 0)}</span><span style="color:var(--dim)">${esc((c.why || []).join(' · '))}</span>` : '') +
+      (() => { const a = P.alarm_stats || {}, b = P.alarm_stats_30d;
+        return `<span>Alarms today <b>${a.n || 0}</b>: ✓${a.right || 0} ✗${a.wrong || 0} ·${a.expired || 0}${a.open ? ' (' + a.open + ' open)' : ''}` +
+               ` · 30 days ${b && b.n ? '<b>' + Math.round(b.precision * 100) + '%</b> right of ' + b.n : 'being measured'}</span>`; })() +
       mzTxt + `<span>${plTxt}</span>` +
       `<span style="color:var(--dim)">last reforecast ${hhmm(P.rev_ts)} (${esc(P.rev_reason || '')}) · ${P.revs_today} today · display only</span>` +
       (liveOpen() ? '' : `<span class="closedtag">Market closed · as of ${hhmm(LIVEF.ts)}</span>`);
@@ -815,7 +819,9 @@
     if (!T) { el.style.display = 'none'; return; }
     el.style.display = '';
     const {P, pl, ms, spot, tNow, side, atm, ltp, prem, eStart, eEnd, exitT, open} = T, c = P.circuit;
-    const big = P.mode === 'circuit' && c ? `<span class="big">⚡ BIG MOVE LIKELY ${c.dir === 'UP' ? '▲ +' : '▼ −'}${fmt(c.move, 0)}</span> · ` : '';
+    const st30 = P.alarm_stats_30d, std = P.alarm_stats || {};
+    const prec = st30 && st30.n ? ` · alarm precision 30 days ${Math.round(st30.precision * 100)}% of ${st30.n}` : ' · alarm precision: being measured';
+    const big = P.mode === 'circuit' && c ? `<span class="big">⚡ MOVE ALARM ${c.dir === 'UP' ? '▲ +' : '▼ −'}${fmt(c.move, 0)} (stretch ${fmt(c.stretch || c.move, 0)})</span>${prec} · ` : '';
     if (!side || side === 'WAIT') {
       el.className = 'tcard';
       el.innerHTML = `<div class="act">WAIT<small>${big}${esc(pl.note || 'no clear leg ahead')} · PULSE R${P.rev}${open ? '' : ' · market closed, as of ' + hhmm(LIVEF.ts)}</small></div><div class="f"></div>`;
@@ -895,6 +901,9 @@
     if (act.length > 1) body += `<path d="${act.map((p, i) => (i ? 'L' : 'M') + xs(p[0]).toFixed(1) + ' ' + ys(p[1]).toFixed(1)).join(' ')}" fill="none" stroke="var(--actual)" stroke-width="1.8" opacity=".8"/>`;
     const right = [];
     if (pl.entry != null && pl.side && pl.side !== 'WAIT') { body += `<line x1="${L}" x2="${W - R}" y1="${ys(pl.entry)}" y2="${ys(pl.entry)}" stroke="#fff" stroke-dasharray="6 5" opacity=".6"/>`; right.push([pl.entry, 'ENTRY ' + fmt(pl.entry, 0), '#fff']); }
+    const cc = P.mode === 'circuit' && P.circuit && P.circuit.stretch ? P.circuit : null;
+    if (cc) { const sv = P.alarms && P.alarms.length ? P.alarms[P.alarms.length - 1].spot + (cc.dir === 'UP' ? 1 : -1) * cc.stretch : null;
+      if (sv != null) { if (sv >= lo && sv <= hi) body += `<line x1="${xs(tNow)}" x2="${W - R}" y1="${ys(sv)}" y2="${ys(sv)}" stroke="var(--up)" stroke-dasharray="2 6" opacity=".55"/>`; right.push([sv, 'stretch ' + fmt(sv, 0), 'var(--muted)']); } }
     if (pl.target != null && pl.side && pl.side !== 'WAIT') { if (pl.target >= lo && pl.target <= hi) body += `<line x1="${xs(tNow)}" x2="${W - R}" y1="${ys(pl.target)}" y2="${ys(pl.target)}" stroke="var(--up)" stroke-dasharray="6 5"/>`; right.push([pl.target, 'T ' + fmt(pl.target, 0), 'var(--up)']); }
     if (ms) {
       const st = []; (ms.hist || []).forEach(([t, v], i) => { const tt = Date.parse(t); if (i) st.push([tt, ms.hist[i - 1][1]]); st.push([tt, v]); }); st.push([tNow, ms.level]);

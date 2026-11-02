@@ -126,7 +126,8 @@
 <section class="panel wide"><div class="split"><h2>The Five Pillars</h2><span id="legacy-market" class="muted">Market state unavailable</span></div><div class="indices grid" id="legacy-indices"></div></section>
 <section class="panel wide"><div class="split"><h2>Open Positions · Entry, Stop & Targets</h2><span id="legacy-positionsTime" class="muted"></span></div><div id="legacy-positions"></div><div id="legacy-exitMessage" role="status"></div><p class="muted">Prices are reported by the execution engine. Its current API can substitute entry/peak prices when broker quotes fail; quote freshness is unverified. Targets are engine-calculated levels, not profit forecasts.</p></section>
 <section class="panel"><div class="split"><h2>Master Checklist</h2><select id="legacy-focus" aria-label="Checklist index"><option>NIFTY</option><option>BANKNIFTY</option><option>SENSEX</option><option>MIDCPNIFTY</option><option>BANKEX</option></select></div><div id="legacy-checklist"></div></section>
-<section class="panel wide"><h2>Observed Price History · 5-Minute Samples</h2><p class="muted">Collected while this page is open. No predicted prices or invented confidence values.</p><div id="legacy-history" class="grid indices"></div></section>
+<section class="panel wide" id="pc-section"><div class="split"><h2>PULSE Forecast · All Indices</h2><span class="muted" id="pc-status">loading…</span></div><p class="muted">Live PULSE forecast per index: electric line GREEN rising / RED falling, best-entry plan, dynamic MAX SL, ⚡ move alarm with its measured precision. Display only. Hourly and day models run for NIFTY; other indices show PULSE only for now.</p><div id="pc-grid" class="pc-grid"></div></section>
+<section class="panel wide" style="display:none"><h2>Observed Price History · 5-Minute Samples</h2><p class="muted">Collected while this page is open. No predicted prices or invented confidence values.</p><div id="legacy-history" class="grid indices"></div></section>
 <section class="panel"><h2>Macro & Event Watch</h2><div class="scroll-tools"><small>Auto-scroll · hover or focus to pause</small><button id="legacy-macroScrollToggle" aria-controls="legacy-macroScroll" aria-pressed="false">Pause scrolling</button></div><div id="legacy-macroScroll" class="scroll-window" tabindex="0" role="region" aria-label="Macro & Event Watch scrolling content"><div id="legacy-macro"></div></div></section>
 <section class="panel"><h2>News</h2><div class="scroll-tools"><small>Auto-scroll · hover or focus to pause</small><button id="legacy-newsScrollToggle" aria-controls="legacy-newsScroll" aria-pressed="false">Pause scrolling</button></div><div id="legacy-newsScroll" class="scroll-window" tabindex="0" role="region" aria-label="News scrolling content"><ul id="legacy-news" class="news"></ul></div></section>
 <!-- F&O universe scanning continues in the background. -->
@@ -768,7 +769,7 @@ window.__kadimaCasCard={render:render,setData:function(j){var c=findCas(j,0);if(
 })();
 </script>
 <!-- KADIMA CAS-BEST CARD script - end -->
-<script src="celestial_forecast_embed.js?v=9"></script><!-- HOURLY FORECAST v1 -->
+<script src="celestial_forecast_embed.js?v=12"></script><!-- HOURLY FORECAST v1 -->
 <!-- KADIMA READ-ONLY DESK v1 -->
 <style>
 #login,#logout,.controls,#positionTools,[data-buy],[data-exit],#positions button,#exitMessage,
@@ -856,4 +857,127 @@ load();setInterval(load,20000);
 #gbAlert{animation:none}
 @media (prefers-reduced-motion:reduce){#candidates tr.gb-confirmed td{animation:none;background:#22c55e;color:#04210f}}
 </style>
+<style>
+/* PULSE-ALL-INDICES 2-Nov (display only) */
+.pc-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:12px}
+.pc-card{background:#0f1626;border:1px solid #26324b;border-radius:12px;padding:10px 12px;cursor:pointer;transition:box-shadow .2s}
+.pc-card.pe{border-color:#ff5c6c}.pc-card.ce{border-color:#2fd08a}
+.pc-card.alarm{animation:pcedge 1s ease-in-out infinite}
+@keyframes pcedge{50%{box-shadow:0 0 18px var(--pcc,#ffd400)}}
+.pc-card.pe{--pcc:#ff5c6c}.pc-card.ce{--pcc:#2fd08a}
+.pc-card.big{grid-column:1/-1}
+.pc-h{display:flex;align-items:baseline;gap:10px;flex-wrap:wrap}
+.pc-h b{font:800 15px system-ui,sans-serif;letter-spacing:.03em;color:#e6ebf5}
+.pc-h .px{font:800 20px ui-monospace,Menlo,monospace;color:#fff}
+.pc-h .bd{margin-left:auto;font:800 12px ui-monospace,Menlo,monospace;padding:2px 8px;border-radius:999px;background:#1b2438;color:#8b97b0}
+.pc-h .bd.pe{background:rgba(255,92,108,.2);color:#ff5c6c}.pc-h .bd.ce{background:rgba(47,208,138,.18);color:#2fd08a}
+.pc-card.alarm .pc-h .bd{animation:pcblink 1s steps(2,start) infinite}
+@keyframes pcblink{50%{opacity:.3}}
+.pc-card svg{width:100%;height:auto;display:block;margin:4px 0}
+.pc-r{font-size:12px;color:#aeb8cc;line-height:1.5}
+.pc-r b{color:#e6ebf5;font-family:ui-monospace,Menlo,monospace}
+.pc-r .sl{color:#ff5c6c}.pc-r .tg{color:#2fd08a}.pc-r .al{color:#ffd400;font-weight:800}
+.pc-r .dim{color:#6b7790}
+.pc-r a{color:#8fb4ff}
+@media (prefers-reduced-motion:reduce){.pc-card.alarm,.pc-card.alarm .pc-h .bd{animation:none}}
+</style>
+<script>
+(() => {
+  'use strict';
+  const IDX = ['NIFTY', 'BANKNIFTY', 'SENSEX', 'MIDCPNIFTY', 'BANKEX'];
+  const D = {}, BIG = new Set();
+  const fmt = (x, d = 0) => (x == null || !isFinite(x)) ? '—' : Number(x).toLocaleString('en-IN', {minimumFractionDigits: d, maximumFractionDigits: d});
+  const hm = s => s ? String(s).slice(11, 16) : '';
+  const esc = t => String(t).replace(/[&<>"]/g, c => ({'&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;'})[c]);
+  function boltD(pts) {
+    const out = [pts[0]];
+    for (let i = 1; i < pts.length; i++) {
+      const len = Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]) || 1;
+      let seg = [pts[i - 1], pts[i]], amp = Math.min(9, len * 0.16 + 2);
+      for (let l = 0; l < 4; l++) { const nx = [seg[0]];
+        for (let k = 1; k < seg.length; k++) { const a = seg[k - 1], b = seg[k], dx = b[0] - a[0], dy = b[1] - a[1], ll = Math.hypot(dx, dy) || 1, off = (Math.random() - .5) * amp;
+          nx.push([(a[0] + b[0]) / 2 - dy / ll * off, (a[1] + b[1]) / 2 + dx / ll * off], b); }
+        seg = nx; amp *= .58; }
+      out.push(...seg.slice(1));
+    }
+    return out.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join(' ');
+  }
+  function chart(L, big) {
+    const P = L.pulse || {}, W = big ? 900 : 420, H = big ? 260 : 150, Lm = 44, Rm = big ? 96 : 62, T = 8, B = 16;
+    const tNow = Date.parse(L.ts), a = tNow - (big ? 30 : 20) * 60000, b = tNow + 15 * 60000;
+    const tape = (L.tape || []).map(([t, v]) => [Date.parse(t), v]).filter(([t]) => t >= a);
+    const fwd = (P.line || []).map(p => [Date.parse(p.ts), p.v]).filter(([t]) => t > tNow && t <= b);
+    const pl = P.plan || {}, ms = P.max_sl;
+    const vs = [L.spot, ...tape.map(x => x[1]), ...fwd.map(x => x[1])];
+    if (ms) vs.push(ms.level); if (pl.target != null && pl.side !== 'WAIT') vs.push(pl.target);
+    let lo = Math.min(...vs), hi = Math.max(...vs); const pad = (hi - lo) * .08 || 3; lo -= pad; hi += pad;
+    const xs = t => Lm + (t - a) / (b - a) * (W - Lm - Rm), ys = v => T + (hi - v) / (hi - lo) * (H - T - B);
+    let g = `<defs><filter id="pcg${L.index}" x="-10%" y="-40%" width="120%" height="180%"><feGaussianBlur stdDeviation="3"/></filter></defs>`;
+    for (let k = 0; k <= 2; k++) { const v = lo + (hi - lo) * k / 2; g += `<line x1="${Lm}" x2="${W - Rm}" y1="${ys(v)}" y2="${ys(v)}" stroke="#1e2940"/><text x="${Lm - 4}" y="${ys(v) + 3}" fill="#6b7790" font-size="10" text-anchor="end">${fmt(v)}</text>`; }
+    g += `<line x1="${xs(tNow)}" x2="${xs(tNow)}" y1="${T}" y2="${H - B}" stroke="#2a3654" stroke-dasharray="2 3"/><text x="${xs(tNow)}" y="${H - 4}" fill="#6b7790" font-size="10" text-anchor="middle">${hm(L.ts)}</text>`;
+    if (tape.length > 1) g += `<path d="${tape.map((p, i) => (i ? 'L' : 'M') + xs(p[0]).toFixed(1) + ' ' + ys(p[1]).toFixed(1)).join(' ')}" fill="none" stroke="#f5f7fb" stroke-width="1.3" opacity=".8"/>`;
+    const tags = [];
+    if (pl.side && pl.side !== 'WAIT') {
+      if (pl.target != null) { g += `<line x1="${xs(tNow)}" x2="${W - Rm}" y1="${ys(pl.target)}" y2="${ys(pl.target)}" stroke="#2fd08a" stroke-dasharray="4 3"/>`; tags.push([ys(pl.target), 'T ' + fmt(pl.target), '#2fd08a']); }
+      if (ms) { g += `<line x1="${xs(tNow)}" x2="${W - Rm}" y1="${ys(ms.level)}" y2="${ys(ms.level)}" stroke="#ff3b52" stroke-width="1.6" stroke-dasharray="6 3"/>`; tags.push([ys(ms.level), (ms.hit ? 'SL hit ' : 'SL ') + fmt(ms.level), '#ff3b52']); }
+    }
+    const scr = [[xs(tNow), ys(L.spot)], ...fwd.map(([t, v]) => [xs(t), ys(v)])];
+    if (scr.length > 1) {
+      const allUp = scr[scr.length - 1][1] <= scr[0][1];
+      for (let i = 1; i < scr.length; i++) {
+        const dy = scr[i][1] - scr[i - 1][1], up = Math.abs(dy) < 1.5 ? allUp : dy < 0, c = up ? '#22e38c' : '#ff3b52', cc = up ? '#e6fff3' : '#ffe3e7';
+        const pp = JSON.stringify([scr[i - 1].map(v => +v.toFixed(1)), scr[i].map(v => +v.toFixed(1))]), d = boltD([scr[i - 1], scr[i]]);
+        g += `<path class="pc-bolt" data-p='${pp}' d="${d}" fill="none" stroke="${c}" stroke-width="9" opacity=".35" filter="url(#pcg${L.index})"/>` +
+             `<path class="pc-bolt" data-p='${pp}' d="${d}" fill="none" stroke="${c}" stroke-width="2.4"/>` +
+             `<path class="pc-bolt" data-p='${pp}' d="${d}" fill="none" stroke="${cc}" stroke-width="1"/>`;
+      }
+    }
+    g += `<circle cx="${xs(tNow)}" cy="${ys(L.spot)}" r="4" fill="#fff"><animate attributeName="r" values="3;6;3" dur=".9s" repeatCount="indefinite"/></circle>`;
+    tags.sort((p, q) => p[0] - q[0]); for (let k = 1; k < tags.length; k++) if (tags[k][0] - tags[k - 1][0] < 12) tags[k][0] = tags[k - 1][0] + 12;
+    tags.forEach(([y, t, c]) => { g += `<text x="${W - Rm + 4}" y="${y + 4}" fill="${c}" font-size="11" font-weight="700">${t}</text>`; });
+    return `<svg viewBox="0 0 ${W} ${H}" role="img" aria-label="${L.index} PULSE forecast">${g}</svg>`;
+  }
+  function card(name) {
+    const L = D[name];
+    if (!L || L.available === false || !L.pulse) return `<div class="pc-card" data-i="${name}"><div class="pc-h"><b>${name}</b><span class="bd">no data</span></div><div class="pc-r dim">${esc((L && L.reason || 'waiting for live ticks').replace(/_/g, ' '))}</div></div>`;
+    const P = L.pulse, pl = P.plan || {}, ms = P.max_sl, c = P.circuit, open = L.market_open !== false;
+    const side = pl.side && pl.side !== 'WAIT' ? pl.side : null, alarm = open && P.mode === 'circuit' && c;
+    const st = P.alarm_stats || {}, s30 = P.alarm_stats_30d;
+    const cls = 'pc-card' + (side ? ' ' + side.toLowerCase() : '') + (alarm ? ' alarm' : '') + (BIG.has(name) ? ' big' : '');
+    const badge = side ? `<span class="bd ${side.toLowerCase()}">${open ? '' : 'LAST · '}${side} ${side === 'PE' ? '▼' : '▲'}</span>` : `<span class="bd">WAIT</span>`;
+    const planTxt = side ? `Plan <b>${side}</b> entry <b>${fmt(pl.entry)}</b> · <span class="sl">Max SL <b>${ms ? fmt(ms.level, 1) : fmt(pl.stop)}</b>${ms ? ' (' + (ms.hit ? 'hit' : fmt(ms.room, 0) + ' away') + ')' : ''}</span> · <span class="tg">T <b>${fmt(pl.target)}</b></span>` : `<span class="dim">${esc(pl.note || 'no clear leg ahead')}</span>`;
+    const alTxt = alarm ? `<span class="al">⚡ MOVE ALARM ${c.dir === 'UP' ? '▲ +' : '▼ −'}${fmt(c.move)} (stretch ${fmt(c.stretch || c.move)})</span> · ` : '';
+    const sc = `Alarms today ${st.n || 0}: ✓${st.right || 0} ✗${st.wrong || 0} ·${st.expired || 0} · 30 days ${s30 && s30.n ? Math.round(s30.precision * 100) + '% of ' + s30.n : 'being measured'}`;
+    const foot = (open ? '' : `<span class="dim">Market closed · as of ${hm(L.ts)} · </span>`) + (L.models === 'pulse_only' ? '<span class="dim">PULSE only (no hourly/day model yet)</span>' :
+      '<a href="/forecast.html?index=' + name + '" target="_blank" rel="noopener" onclick="event.stopPropagation()">Open full forecast ↗</a>');
+    return `<div class="${cls}" data-i="${name}"><div class="pc-h"><b>${name}</b><span class="px">${fmt(L.spot, 2)}</span><span class="pc-r dim">PULSE R${P.rev} · miss ${fmt(P.dev, 1)}/${fmt(P.trigger)}</span>${badge}</div>` +
+      chart(L, BIG.has(name)) + `<div class="pc-r">${alTxt}${planTxt}</div><div class="pc-r">${sc}</div><div class="pc-r">${foot}</div></div>`;
+  }
+  function paint() {
+    const g = document.getElementById('pc-grid'); if (!g) return;
+    g.innerHTML = IDX.map(card).join('');
+    g.querySelectorAll('.pc-card').forEach(el => el.onclick = () => { const i = el.dataset.i; BIG.has(i) ? BIG.delete(i) : BIG.add(i); paint(); });
+    const any = IDX.map(i => D[i]).find(x => x && x.ts);
+    const st = document.getElementById('pc-status');
+    if (st) st.textContent = any ? (any.market_open === false ? 'Market closed · last forecast ' + hm(any.ts) : 'Live · ' + String(any.ts).slice(11, 19) + ' IST') : 'waiting for data';
+  }
+  let busy = false, last = 0;
+  async function poll() {
+    if (busy || document.hidden) return;
+    const closed = IDX.every(i => !D[i] || D[i].market_open === false);
+    if (closed && Date.now() - last < 30000 && last) return;
+    busy = true; last = Date.now();
+    try {
+      await Promise.all(IDX.map(async i => {
+        try { const r = await fetch('/dashboard-api/forecast/live?index=' + i, {credentials: 'same-origin', cache: 'no-store'});
+              D[i] = r.ok ? await r.json() : {index: i, available: false, reason: 'HTTP ' + r.status}; }
+        catch (e) { D[i] = {index: i, available: false, reason: 'not reachable'}; }
+      }));
+      paint();
+    } finally { busy = false; }
+  }
+  setInterval(poll, 2000); poll();
+  setInterval(() => { if (document.hidden) return; document.querySelectorAll('path.pc-bolt').forEach(p => { try { p.setAttribute('d', boltD(JSON.parse(p.dataset.p))); } catch (e) {} }); }, 110);
+})();
+</script>
 </body></html>
