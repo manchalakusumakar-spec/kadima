@@ -14,6 +14,11 @@ from .utils import now_ist
 # Reasons rate_limiter's low-priority poll gives when the shared quote budget is in use.
 BUSY_REASONS=('forecast_foreground_quote_active','forecast_quote_budget_busy')
 BUSY_RETRY_SEC=0.25
+# 02 Nov: the engine's own quotes keep the budget busy all session, so idle capacity never
+# appears and chain_wide/chain_eod stayed empty 27 Oct-02 Nov (76 skips a day). After this many
+# seconds of busy retries, take ONE fair FIFO turn through the normal budgeted quote wrapper.
+FIFO_FALLBACK_AFTER_SEC=6.0
+FIFO_FALLBACK_MIN_LEFT_SEC=14.0  # never queue when the FIFO wait could overrun the window
 
 SCHEMA = '''
 CREATE TABLE IF NOT EXISTS chain_wide (
@@ -190,20 +195,34 @@ class Collector:
                     audit.log('forecast_chain_cycle_skipped',index=name,kind=kind,error_type=type(exc).__name__,
                               error=str(exc)[:80])
 
-    def _poll_when_idle(self,poll,deadline,**kwargs):
+    def _poll_when_idle(self,poll,deadline,fallback=None,**kwargs):
         """Low-priority poll, retried while the shared quote budget is busy, until the deadline.
 
         27 Oct: the poll was tried once per 5-minute mark and a busy budget (engine quotes run
         almost continuously) skipped the whole cycle, so chain_wide/chain_eod never got a row
         since 21 Oct. Retrying only re-asks for idle capacity: foreground quotes still always win.
+
+        02 Nov: idle capacity never appears on the live engine, so retrying alone still skipped
+        every cycle. When `fallback` is the budgeted SDK wrapper (rate_limiter.protect_quote_api),
+        one call goes through its FIFO queue after FIFO_FALLBACK_AFTER_SEC of busy retries: it
+        waits its turn behind queued trading quotes and consumes one normal 1.1 s budget slot.
+        Never the raw SDK, never ahead of the queue.
         """
+        start=now_ist()
         while True:
             try:
                 return poll(**kwargs)
             except TimeoutError as exc:
                 if str(exc) not in BUSY_REASONS:
                     raise
-            if now_ist()>=deadline or self.stop_event.wait(BUSY_RETRY_SEC):
+            now=now_ist()
+            if now>=deadline:
+                raise TimeoutError('quote_budget_busy_until_deadline')
+            if (fallback is not None and getattr(fallback,'_kadima_budgeted',False) and
+                    (now-start).total_seconds()>=FIFO_FALLBACK_AFTER_SEC and
+                    (deadline-now).total_seconds()>=FIFO_FALLBACK_MIN_LEFT_SEC):
+                return fallback(**kwargs)
+            if self.stop_event.wait(BUSY_RETRY_SEC):
                 raise TimeoutError('quote_budget_busy_until_deadline')
 
     def collect(self,name,now,deadline,eod):
@@ -216,6 +235,8 @@ class Collector:
             raise ValueError('fresh_engine_spot_unavailable')
         api=SESSION.api
         poll=getattr(getattr(api,'getMarketData',None),'_kadima_low_priority',None)
+        budgeted=getattr(api,'getMarketData',None)
+        if not getattr(budgeted,'_kadima_budgeted',False):budgeted=None
         if poll is None or SESSION._lock.locked() or SESSION._stale():
             raise ValueError('existing_authenticated_budgeted_session_unavailable')
         requested=contracts(self.engine.scrips,st.chain.index,now.date(),st.spot,eod)
@@ -227,7 +248,7 @@ class Collector:
             if self.stop_event.is_set() or now_ist()>=deadline:
                 raise TimeoutError('snapshot_deadline')
             batch=requested[offset:offset+50]
-            response=self._poll_when_idle(poll,deadline,mode='FULL',
+            response=self._poll_when_idle(poll,deadline,fallback=budgeted,mode='FULL',
                                           exchangeTokens={st.chain.index.opt_exchange:[r['token'] for r in batch]})
             calls+=1
             if not isinstance(response,dict) or response.get('status') is not True:
