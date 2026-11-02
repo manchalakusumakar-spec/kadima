@@ -13,7 +13,7 @@ from .session import SESSION
 from .utils import now_ist, in_market_hours
 
 
-def parse_candles(rows, interval, now):
+def parse_candles(rows, interval, now, *, recent_contiguous=False):
     if not isinstance(rows, list) or len(rows) > 5000:
         raise ValueError('Invalid historical data')
     output = []
@@ -40,9 +40,13 @@ def parse_candles(rows, interval, now):
     if not 0 <= age <= interval * 60 + 60:
         raise ValueError('Stale historical candles')
     today = [r for r in output if datetime.fromisoformat(r['start_ts']).date() == now.date()]
-    if any((datetime.fromisoformat(b['start_ts'])-datetime.fromisoformat(a['start_ts'])).total_seconds()
-           != interval * 60 for a,b in zip(today,today[1:])):
-        raise ValueError('Missing session candles')
+    gaps = [i for i in range(1, len(today))
+            if (datetime.fromisoformat(today[i]['start_ts']) -
+                datetime.fromisoformat(today[i-1]['start_ts'])).total_seconds() != interval*60]
+    if gaps:
+        if not recent_contiguous:
+            raise ValueError('Missing session candles')
+        output = today[gaps[-1]:]
     return output[-300:]
 
 
@@ -66,7 +70,8 @@ class StockExecutionWorker:
                 raise ValueError('Worker stopping')
             self._last_history = time.monotonic()
             SESSION.ensure()
-            response = SESSION.api.getCandleData(dict(exchange=index.exchange,symboltoken=index.token,
+            from . import candle_pacer   # shared Angel historical-API pacing (2026-10-27)
+            response = candle_pacer.get(SESSION.api, dict(exchange=index.exchange,symboltoken=index.token,
                 interval=label,fromdate=(now-timedelta(days=7)).strftime('%Y-%m-%d 09:15'),
                 todate=now.strftime('%Y-%m-%d %H:%M')))
             if not isinstance(response,dict) or response.get('status') is not True:
@@ -86,7 +91,10 @@ class StockExecutionWorker:
         index = config.Index(**data['index'])
         if index.name in config.GAMMA_INDICES:
             raise ValueError('Index is not a stock')
-        chain = OptionChain(index,self.scrips)
+        width = data.get('ladder_width')
+        if width is not None and (type(width) is not int or width != 1):
+            raise ValueError('Unsupported stock ladder width')
+        chain = OptionChain(index,self.scrips, strikes_each_side=width)
         chain.rebuild_ladder(data['spot'])
         expected = set(chain.quotes)
         quotes = [OptionQuote(**q) for q in data['quotes']]
@@ -125,6 +133,10 @@ class StockExecutionWorker:
         # Rechecked inside the serialized executor immediately before order submission.
         chain._entry_guard = lambda: stock_handoff.still_current(
             row['name'],row['signal_id'],row['updated_at'])
+        from . import celestial
+        if celestial.enabled():
+            self.executor.prepare_celestial_context(row['name'],chain,data['spot'],snap,data['days_to_expiry'])
+            return
         self.executor.evaluate_and_enter(row['name'],row['direction'],chain,data['spot'],snap,
             data['days_to_expiry'],'gamma_blast',row['signal_id'],'CONFIRMED',data['score'])
 

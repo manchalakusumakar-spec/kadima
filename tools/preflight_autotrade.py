@@ -1,0 +1,305 @@
+#!/usr/bin/env python3
+"""Read-only readiness evidence. Never logs in, refreshes auth, or submits orders.
+
+Run with the service user's read permissions (sudo -n is used for private env
+files). Optional --broker-json accepts a <=150s authenticated book/RMS capture:
+{captured_at, positions: {status:true,data:[]}, orders:{status:true,data:[]},
+rms:{status:true,data:{availablecash:...,net:...}}}. No capture is assumed flat.
+This checker is deliberately fail-closed on missing broker evidence. It cannot
+certify future quotes, adoption, fills, or a future short-lived session permit.
+"""
+import argparse
+import ast
+from contextlib import contextmanager
+from datetime import datetime, timedelta
+import json
+import math
+import os
+from pathlib import Path
+import re
+import shlex
+import shutil
+import sqlite3
+import subprocess
+import sys
+import time
+import urllib.request
+from unittest.mock import patch
+from types import SimpleNamespace
+
+ROOT = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(ROOT))
+os.environ['PYTHONDONTWRITEBYTECODE'] = '1'
+sys.dont_write_bytecode = True
+from kadima import config, market_session_gate as gate
+
+SWITCHES = ('KADIMA_FAST_MOMENTUM_LIVE', 'KADIMA_CELESTIAL_ENABLED',
+            'KADIMA_SESSION_AUTOTRADE')
+SECRETS = ('KADIMA_API_TOKEN', 'ANGEL_API_KEY', 'ANGEL_CLIENT_ID',
+           'ANGEL_PASSWORD', 'ANGEL_TOTP_SECRET')
+WHITELIST = set(SWITCHES + SECRETS + ('KADIMA_PRIORITY_TRADING',))
+
+
+def run(argv):
+    try:
+        return subprocess.run(argv, capture_output=True, text=True, timeout=30)
+    except (OSError, subprocess.TimeoutExpired):
+        return SimpleNamespace(returncode=1, stdout='', stderr='unavailable')
+
+
+def read_private(path):
+    try:
+        return Path(path).read_text()
+    except PermissionError:
+        result = run(['sudo', '-n', 'cat', str(path)])
+        if result.returncode:
+            raise PermissionError('private environment file unreadable')
+        return result.stdout
+
+
+def parse_environment(text):
+    values = {}
+    for line in text.splitlines():
+        line = line.strip()
+        if not line or line.startswith('#'):
+            continue
+        for entry in shlex.split(line):
+            key, sep, value = entry.partition('=')
+            if sep and key in WHITELIST:
+                values[key] = value
+    return values
+
+
+def service_environment():
+    result = run(['systemctl', 'show', 'kadima', '-p', 'Environment',
+                  '-p', 'EnvironmentFiles'])
+    if result.returncode:
+        raise RuntimeError('systemd unreadable; run with host permissions')
+    values, files = {}, []
+    for line in result.stdout.splitlines():
+        if line.startswith('Environment='):
+            values.update(parse_environment(line.partition('=')[2]))
+        elif line.startswith('EnvironmentFiles='):
+            files.extend(re.findall(r'(/\S+)\s+\(ignore_errors=', line))
+    for filename in files:
+        values.update(parse_environment(read_private(filename)))
+    return values, files
+
+
+def readonly_database(path):
+    connection = sqlite3.connect(Path(path).resolve().as_uri() + '?mode=ro', uri=True)
+    connection.row_factory = sqlite3.Row
+    connection.execute('PRAGMA query_only=ON')
+    return connection
+
+
+def next_trading_day(now, policy):
+    day = now.astimezone(config.IST).date() + timedelta(days=1)
+    for _ in range(370):
+        point = datetime.combine(day, datetime.min.time(), config.IST).replace(hour=9, minute=16)
+        reason = gate.calendar_reason(policy, point, entries=True)
+        if reason is None:
+            return point
+        if reason == 'calendar_update_required':
+            raise ValueError(reason)
+        day += timedelta(days=1)
+    raise ValueError('no_next_trading_day_in_calendar')
+
+
+def broker_capture(path, now):
+    if not path:
+        raise ValueError('no authenticated broker capture; session is engine-memory-only')
+    capture = json.loads(Path(path).read_text())
+    stamp = datetime.fromisoformat(capture['captured_at'])
+    if stamp.tzinfo is None or not 0 <= (now - stamp).total_seconds() <= 150:
+        raise ValueError('broker capture stale or timezone missing')
+    for name in ('positions', 'orders', 'rms'):
+        response = capture[name]
+        expected = dict if name == 'rms' else list
+        if response.get('status') is not True or not isinstance(response.get('data'), expected):
+            raise ValueError('broker capture unsuccessful: ' + name)
+    return capture
+
+
+def funds_value(data, names=('availablecash', 'availableCash', 'net', 'availablemargin')):
+    for name in names:
+        try:
+            value = float(data[name])
+            if math.isfinite(value) and value >= 0:
+                return value
+        except (KeyError, ValueError, TypeError):
+            pass
+    return None
+
+
+@contextmanager
+def read_only_gates(connection, environment):
+    from kadima import audit, celestial
+    # Production connection() performs migrations; replace it with the already
+    # read-only handle. The index gate's audit side effect is suppressed here.
+    with patch.object(celestial, 'connection', return_value=connection), \
+            patch.object(audit, 'log', return_value=None), \
+            patch.dict(os.environ, environment):
+        yield
+
+
+def current_public_ip():
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    base = 'http://169.254.169.254/latest/'
+    req = urllib.request.Request(base + 'api/token', method='PUT',
+        headers={'X-aws-ec2-metadata-token-ttl-seconds': '60'})
+    with opener.open(req, timeout=3) as response:
+        token = response.read(2048).decode()
+    req = urllib.request.Request(base + 'meta-data/public-ipv4',
+        headers={'X-aws-ec2-metadata-token': token})
+    with opener.open(req, timeout=3) as response:
+        return response.read(128).decode().strip()
+
+
+def literal(path, name):
+    for node in ast.parse(Path(path).read_text()).body:
+        if isinstance(node, ast.Assign) and any(isinstance(t, ast.Name) and t.id == name for t in node.targets):
+            return ast.literal_eval(node.value)
+    raise ValueError('literal unavailable: ' + name)
+
+
+def check(args):
+    now = datetime.now(config.IST)
+    rows = []
+    def add(number, status, evidence, fix='none'):
+        rows.append((number, status, evidence, fix))
+        print(f'{number:02d} {status}: {evidence}; fix: {fix}')
+    environment = {}
+    try:
+        environment, files = service_environment()
+        shown = ', '.join(k + '=' + ('1' if environment.get(k) == '1' else 'OFF/MISSING') for k in SWITCHES)
+        good = all(environment.get(k) == '1' for k in SWITCHES) and bool(environment.get('KADIMA_API_TOKEN'))
+        add(1, 'PASS' if good else 'FAIL', shown + '; API token=' + ('present [MASKED]' if environment.get('KADIMA_API_TOKEN') else 'missing') + '; files=' + ', '.join(files),
+            'none' if good else 'verify the named switches/private token in the service environment')
+    except Exception as exc:
+        add(1, 'FAIL', type(exc).__name__ + ': service environment unverified', 'run with read access to systemd and its EnvironmentFiles')
+    add(2, 'PASS' if config.ORDER_PLACEMENT_ENABLED is True else 'FAIL', 'ORDER_PLACEMENT_ENABLED=' + str(config.ORDER_PLACEMENT_ENABLED), 'none' if config.ORDER_PLACEMENT_ENABLED else 'review config.ORDER_PLACEMENT_ENABLED')
+    connection = readonly_database(args.database)
+    with read_only_gates(connection, environment):
+        from kadima import celestial, fast_momentum, index_event_gate, trade_policy, portfolio_capacity
+        cfg = celestial.read_config()
+        good = cfg['auto_trade_enabled'] and not cfg['kill_latched']
+        add(3, 'PASS' if good else 'FAIL', json.dumps({k: cfg[k] for k in ('auto_trade_enabled','kill_latched','score_threshold','revision')}), 'none' if good else 'after verifying broker flat: Celestial Reset kill, then Resume (user action)')
+        killed = Path('/var/lib/kadima/KILL').exists()
+        add(4, 'FAIL' if killed else 'PASS', 'KILL exists=' + str(killed), 'review kill-file cause; do not remove without authorization' if killed else 'none')
+        next_day = None
+        try:
+            policy = gate.validate_policy(gate.read_json(gate.POLICY))
+            next_day = next_trading_day(now, policy)
+            boot = gate.BOOT.read_text().strip()
+            lease = gate.read_json(gate.LEASE)
+            actual = gate.permit_reason(lease, next_day, time.monotonic(), boot)
+            timer = run(['systemctl', 'is-active', 'kadima-session-auto.timer']).stdout.strip()
+            add(5, 'PASS' if actual is None else ('WARN' if timer == 'active' else 'FAIL'),
+                f'next session={next_day.isoformat()}; calendar=None; actual future permit={actual}; issuer timer={timer}; policy/boot/lease readable',
+                'none' if actual is None else 're-run at 09:00 and 09:16 next trading day; issuer must renew a current boot-bound 150s lease (never forge a future lease)')
+        except (OSError, ValueError) as exc:
+            add(5, 'FAIL', 'calendar/lease invalid: ' + str(exc), 'repair the policy/issuer files; preserve boot and expiry validation')
+        pending = [dict(r) for r in connection.execute("SELECT signal_id,side,state FROM execution_orders WHERE state != 'terminal'")]
+        add(6, 'FAIL' if pending else 'PASS', 'nonterminal=' + json.dumps(pending), 'broker-verify final quantities, then audit a terminal reconciliation; never delete records' if pending else 'none')
+        position_rows = [dict(r) for r in connection.execute("SELECT * FROM positions WHERE status IN ('open','entry_pending','exit_pending','order_unknown')")]
+        stuck = [{k: p[k] for k in ('signal_id','symbol','status','remaining_qty')} for p in position_rows if p['status'] != 'open' or p['remaining_qty'] <= 0]
+        historical = connection.execute("SELECT COUNT(*) FROM positions WHERE status='closed' AND remaining_qty>0").fetchone()[0]
+        add(7, 'FAIL' if stuck else 'PASS', 'stuck=' + json.dumps(stuck) + f'; loaded active rows={len(position_rows)}; historical closed rows retaining old quantity={historical} (excluded by storage.load_open_positions)', 'broker-verify and reconcile affected rows' if stuck else 'none')
+        capture = None
+        try:
+            capture = broker_capture(args.broker_json, now)
+            opened = [p for p in capture['positions']['data'] if int(p.get('netqty',0)) != 0]
+            terminal = {'complete','completed','filled','cancelled','canceled','rejected'}
+            orders = [p for p in capture['orders']['data'] if str(p.get('orderstatus',p.get('status',''))).lower() not in terminal]
+            evidence = [{'symbol': p.get('tradingsymbol'), 'quantity': p.get('netqty'), 'product': p.get('producttype')} for p in opened]
+            add(8, 'FAIL' if opened or orders else 'PASS', f'broker open={json.dumps(evidence)}; pending orders={len(orders)}', 'verify protection/intent of open holdings; carryforward blocks its underlying; pending same-contract orders block adoption' if opened or orders else 'none')
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            add(8, 'FAIL', str(exc), 'supply a fresh authenticated position book/order book/RMS capture via --broker-json; no login/refresh is performed by this tool')
+        sizing = []
+        master = json.loads(Path('/var/lib/kadima/scrip_master.json').read_text())
+        lot_map = {str(r.get('token')): int(r['lotsize']) for r in master if str(r.get('lotsize','')).isdigit()}
+        for name in ('BANKNIFTY','NIFTY'):
+            quote = connection.execute('SELECT * FROM oi_snapshots WHERE index_name=? AND ltp>0 ORDER BY ts DESC LIMIT 1', (name,)).fetchone()
+            if quote is None:
+                sizing.append(name + ': no recorded premium'); continue
+            quote = dict(quote)
+            spot = connection.execute('SELECT close FROM candles WHERE token=? ORDER BY start_ts DESC LIMIT 1', (config.GAMMA_INDICES[name].token,)).fetchone()
+            if spot:
+                quote = dict(connection.execute('SELECT * FROM oi_snapshots WHERE index_name=? AND ts=? AND opt_type=? ORDER BY ABS(strike-?) LIMIT 1', (name,quote['ts'],'CE',spot[0])).fetchone() or quote)
+            lot = lot_map.get(quote['token'])
+            sizing.append(f"{name} {quote['symbol']} premium={quote['ltp']}, lot={lot}, one-lot buffered cost=" + (f"{quote['ltp']*(1+trade_policy.ENTRY_BUFFER)*(1+trade_policy.COST_RESERVE)*lot:.2f}" if lot else 'unknown') + f"; sample={quote['ts']}")
+        cash = funds_value(capture['rms']['data']) if capture else None
+        # No invented stop or spread: last OI samples lack bid/ask and a current
+        # setup's structural stop, so full risk_budget cannot be certified here.
+        add(9, 'FAIL' if cash is None else 'WARN', f'RMS cash={cash}; ' + ' | '.join(sizing) + f'; risk fraction={trade_policy.RISK_FRACTION}; max lots={config.MAX_LOTS_PER_SIGNAL}; starting-capital constant unused by available_equity(); no MAX_RISK_PER_TRADE_INR cap in risk_budget', 'verify live RMS plus fresh ATM quote, bid/ask and structural stop; then apply risk_budget/portfolio_capacity (old premiums cannot certify Monday sizing)')
+        from kadima import execution_ledger, exit_manager, external_reconciliation
+        with patch.object(execution_ledger, 'connection', return_value=connection), \
+                patch.object(external_reconciliation, 'connection', return_value=connection), \
+                patch.object(external_reconciliation, 'now_ist', return_value=now), \
+                patch.object(exit_manager, 'now_ist', return_value=now):
+            realized = exit_manager.realized_pnl_today()
+        add(10, 'PASS' if realized > -config.DAILY_LOSS_LIMIT_INR else 'FAIL', f'IST day={now.date()}; exit_manager.realized_pnl_today={realized}; daily limit={config.DAILY_LOSS_LIMIT_INR}; query uses IST-day prefix', 'daily-loss halt must remain until its normal daily reset' if realized <= -config.DAILY_LOSS_LIMIT_INR else 'none')
+        if next_day:
+            point = next_day.replace(hour=9,minute=30)
+            news = {n: index_event_gate.index_event_block(n,point) for n in ('BANKNIFTY','NIFTY','SENSEX')}
+            health = celestial.health('news')
+            add(11, 'PASS' if health and not any(news.values()) else 'FAIL', f'next-day 09:30 index reasons={news}; news health exists={bool(health)}; last health=' + str(health.get('ts') if health else None), 'verify news collector health; preserve real market-wide/event blocks' if not health or any(news.values()) else 'none')
+        else:
+            add(11,'FAIL','next trading date unavailable','repair calendar before checking index event windows')
+        credentials = all(environment.get(k) for k in SECRETS[1:])
+        try:
+            address = current_public_ip()
+            configured = literal(ROOT/'kadima/session.py','_INSTANCE_PUBLIC_IP')
+            good = credentials and address == configured
+            add(12,'PASS' if good else 'FAIL', f'credentials present [MASKED]={credentials}; configured IP={configured}; EC2 IP={address}; authentication itself unverified', 'none' if good else 'rotate missing credentials or repair verified stale IP and SmartAPI static-IP registration')
+        except Exception:
+            add(12,'FAIL', f'credentials present [MASKED]={credentials}; EC2 public IP unverified', 'run checker on EC2 with IMDSv2 access; compare session.py IP and SmartAPI registration')
+        services = {n:run(['systemctl','is-active',n]).stdout.strip() for n in ('kadima','nginx')}
+        disk = shutil.disk_usage('/')
+        used = disk.used/disk.total*100
+        status = 'FAIL' if disk.free <= 1024**3 or any(v!='active' for v in services.values()) else ('WARN' if used>90 else 'PASS')
+        add(13,status, f'services={services}; root free={disk.free/1024**3:.2f} GiB; used={used:.1f}%', 'none' if status=='PASS' else 'investigate inactive services or safely archive old data; retain live trading records')
+        result = run(['du','-ax','--block-size=1','/var/lib/kadima',str(Path.home())])
+        largest=[]
+        for line in result.stdout.splitlines():
+            size,sep,path=line.partition('\t')
+            if sep and size.isdigit():largest.append((int(size),path))
+        print('Largest files/directories (nested directory sizes overlap):')
+        for size,path in sorted(largest,reverse=True)[:10]:print(f'  {size/1024**3:.3f} GiB {path}')
+        if result.returncode:print('  WARN: size inventory incomplete due to read permissions/time limit')
+        add(14,'PASS','config.IST=' + str(config.IST) + '; checker and gate timestamps explicitly IST')
+        matched=[]
+        with Path('/var/lib/kadima/audit/2026-10-09.jsonl').open() as handle:
+            for line in handle:
+                try:e=json.loads(line)
+                except ValueError:continue
+                if e.get('event')=='FAST_CANDIDATE' and e.get('stage')=='SETUP_READY' and e.get('symbol') in ('BANKNIFTY27OCT2655100CE','BANKNIFTY27OCT2655200CE') and e.get('ts','')[11:16] in ('09:30','09:33'):
+                    stamp=datetime.fromisoformat(e['ts'])
+                    blocks=fast_momentum.live_blocks(e['underlying'],e['direction'],stamp,e['score'])
+                    matched.append((e['symbol'],e['ts'],e['score'],blocks))
+        add(15,'FAIL' if not matched or any(r[3] for r in matched) else 'WARN', json.dumps(matched) + '; current persisted config; lane gates only; executor session/freshness/quality/funds also required', 'resolve reported blockers and rerun morning preflight; historical records do not certify live executor eligibility')
+    connection.close()
+    fails=[str(n) for n,status,_,_ in rows if status=='FAIL']
+    unresolved=[str(n) for n,status,_,_ in rows if status=='WARN' and n in (5,9,15)]
+    ready=not fails and not unresolved
+    print('AUTO-TRADE READY: ' + ('YES' if ready else 'NO'))
+    print('Remaining FAILs: ' + (', '.join(fails) or 'none'))
+    print('Unverified readiness checks: ' + (', '.join(unresolved) or 'none'))
+    return 0 if ready else 1
+
+
+def main():
+    parser=argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--database', default='/var/lib/kadima/kadima.db')
+    parser.add_argument('--broker-json', type=Path)
+    args=parser.parse_args()
+    try:return check(args)
+    except Exception as exc:
+        print('FAIL: checker could not complete: ' + type(exc).__name__)
+        print('AUTO-TRADE READY: NO')
+        return 1
+
+
+if __name__=='__main__':
+    sys.exit(main())

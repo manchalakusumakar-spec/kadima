@@ -27,6 +27,10 @@ CACHE = os.path.join(DATA_DIR, "scrip_master.json")
 class ScripMaster:
     def __init__(self, rows: list[dict]) -> None:
         self.rows = rows
+        self._option_rows = {}
+        for row in rows:
+            if row.get('instrumenttype') in ('OPTIDX', 'OPTSTK') and row.get('permitted_to_trade') is not False:
+                self._option_rows.setdefault((row.get('exch_seg'), row.get('name')), []).append(row)
 
     # ------------------------------------------------------------------ load
     @classmethod
@@ -44,6 +48,8 @@ class ScripMaster:
                 audit.log("scrip_master_downloaded", rows=len(data))
             except Exception as exc:                    # noqa: BLE001
                 audit.log("scrip_master_download_failed", error=str(exc))
+                if os.environ.get('KADIMA_CELESTIAL_ENABLED','0')=='1':
+                    raise RuntimeError('Celestial requires a fresh contract master') from exc
                 if not os.path.exists(CACHE):
                     raise RuntimeError(
                         "Cannot start: scrip master unavailable and no cache."
@@ -54,7 +60,7 @@ class ScripMaster:
     # --------------------------------------------------------------- queries
     def _options_for(self, index) -> Iterable[dict]:
         root = index.opt_symbol_root
-        for r in self.rows:
+        for r in self._option_rows.get((index.opt_exchange, root), []):
             if (r.get("exch_seg") == index.opt_exchange
                     and r.get("instrumenttype", "").startswith("OPT")
                     and r.get("name") == root):
@@ -127,7 +133,7 @@ class ScripMaster:
     # scanner can query any underlying without a config.py entry for each.
 
     def _options_for_name(self, name: str, opt_exchange: str) -> Iterable[dict]:
-        for r in self.rows:
+        for r in self._option_rows.get((opt_exchange, name), []):
             if (r.get("exch_seg") == opt_exchange
                     and r.get("instrumenttype", "").startswith("OPT")
                     and r.get("name") == name):
@@ -152,7 +158,7 @@ class ScripMaster:
         return sorted(expiries)[0][1]
 
     def infer_strike_step(self, name: str, opt_exchange: str,
-                          expiry: str | None = None) -> int | None:
+                          expiry: str | None = None) -> float | None:
         """Strike intervals aren't a fixed constant per stock the way they
         are for the 4 indices -- this infers it from the actual listed
         strikes. Uses the MINIMUM gap between distinct sorted strikes,
@@ -179,7 +185,7 @@ class ScripMaster:
         gaps = [round(b - a, 2) for a, b in zip(ordered, ordered[1:]) if b > a]
         if not gaps:
             return None
-        return int(round(min(gaps)))
+        return min(gaps)
 
     def strikes_for_underlying(self, name: str, opt_exchange: str, atm: float,
                                n: int, strike_step: int,
@@ -210,5 +216,4 @@ class ScripMaster:
                         "expiry": expiry,
                         "lotsize": int(r["lotsize"]) if r.get("lotsize") else None})
         return out
-
 

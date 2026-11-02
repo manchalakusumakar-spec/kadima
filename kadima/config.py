@@ -112,6 +112,11 @@ GAMMA_EXTRA_INDICES: dict[str, Index] = {
 GAMMA_EXPIRY_ONLY: set[str] = {"FINNIFTY", "NIFTYNXT50", "BANKEX", "SENSEX50"}
 GAMMA_INDICES: dict[str, Index] = {**INDICES, **GAMMA_EXTRA_INDICES}
 
+# Stored-data OI confirmation: opt in only after reviewing offline replay.
+OI_CONFIRM_MODE = os.environ.get('OI_CONFIRM_MODE', 'shadow').lower()
+if OI_CONFIRM_MODE not in ('shadow', 'live'):
+    OI_CONFIRM_MODE = 'shadow'
+
 # ---------------------------------------------------------------- cadences
 WS_HEARTBEAT_SEC = 10          # expect at least one tick per this, else reconnect
 WS_RECONNECT_BASE_SEC = 2      # exponential backoff base
@@ -180,9 +185,26 @@ KILL_SWITCH_FILE = os.path.join(DATA_DIR, "KILL")
 MAX_CONCURRENT_POSITIONS = 1
 MAX_LOTS_PER_SIGNAL = 2
 DAILY_LOSS_LIMIT_INR = 10_000      # set to your real number
+# Manual long options are protected independently of new automatic entries.
+# Set MANUAL_PROTECT_ENABLED=False to opt out of manual adoption/protection.
+# Stops are engine-monitored SELL limits, not broker-hosted stop orders.
+MANUAL_PROTECT_ENABLED = True
+MANUAL_HARD_STOP_PCT = 0.30
+MANUAL_TRAIL_ACTIVATE_PCT = 0.10  # thereafter retain 50% via trade_policy.ratchet
 NO_NEW_SIGNALS_AFTER_HOUR = 13     # non-expiry days, per your own rule
 ORDER_PLACEMENT_ENABLED = True     # LIVE since 2026-08-21, trader's explicit decision
 
+
+
+# --------------------------------------------------------------- timing module
+# Gamma entry/exit timing, phase 1 (record only). When True, every Gamma
+# entry evaluation writes one line to DATA_DIR/timing/{day}.jsonl for the
+# after-market outcome job. Changes no trading decision. Set False to stop
+# recording without a code change.
+TIMING_RECORDER_ENABLED = True
+# End of the measuring window for the outcome job. Matches the live
+# auto_executor EOD_FORCE_CLOSE_HHMM (15:18 on the box as of 2026-09-29).
+TIMING_WINDOW_END = (15, 18)
 
 
 # --------------------------------------------------------------- no-auto-exit window
@@ -203,3 +225,16 @@ def in_no_auto_exit_window() -> bool:
     start_h, start_m = NO_AUTO_EXIT_WINDOW_START
     end_h, end_m = NO_AUTO_EXIT_WINDOW_END
     return (start_h * 60 + start_m) <= (now.hour * 60 + now.minute) <= (end_h * 60 + end_m)
+
+
+# HOURLY FORECAST v1
+# ---------------------------------------------------------------- hourly forecast panel
+# 2026-10-09, trader's decisions: NIFTY only to start (KADIMA_FORECAST_INDICES
+# env var, comma-separated, adds SENSEX/BANKNIFTY later), display only, plus
+# human-clicked CE/PE BUY buttons with a confirm step. Each click goes through
+# auto_executor.forecast_manual_buy(), which keeps every existing entry gate.
+FORECAST_MANUAL_TRADE_ENABLED = True
+FORECAST_MANUAL_MAX_LOTS = MAX_LOTS_PER_SIGNAL
+FORECAST_MANUAL_FALLBACK_SL_PCT = 0.30   # used only when no confirmed swing stop exists
+# Reserved for a possible future auto-trade mode from the forecast. Nothing reads it.
+FORECAST_AUTOTRADE_ENABLED = False

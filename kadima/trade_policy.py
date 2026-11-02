@@ -4,12 +4,16 @@ The option stop is a model mapping of confirmed underlying structure, not a
 guaranteed fill price. Cost reserves below are estimates, not broker tariffs.
 """
 import math
+from dataclasses import replace
 from datetime import datetime, timedelta
 from .greeks import bs_price, implied_vol_and_greeks
 
+from .shield_confirmation import SHIELD_MIN_SCORE, ShieldEvidence, is_shield_confirmed
+GAMMA_MIN_SCORE = 70.0
+
 RISK_FRACTION = 0.15
-ACTIVATION = 0.05
-RETAIN_PROFIT = 0.50
+ACTIVATION = 0.15     # 2026-10-19: was 0.05 - trail armed on noise and exited near breakeven
+RETAIN_PROFIT = 0.50  # base retain; widens with gain via retain_for_gain()
 ENTRY_BUFFER = 0.025
 EXIT_BUFFER = 0.025
 COST_RESERVE = 0.01  # round-trip reserve as a fraction of purchase premium
@@ -22,9 +26,22 @@ def positive(*values):
         return False
 
 
-def eligible(kind, tier, score, direction, snap, spot):
-    if kind == 'gamma_blast' and (tier != 'CONFIRMED' or not positive(score) or score < 70):
+def eligible(kind, tier, score, direction, snap, spot, minimum=None, shield_evidence=None, now=None):
+    threshold = {'bull_shield': SHIELD_MIN_SCORE, 'bear_shield': SHIELD_MIN_SCORE,
+                 'gamma_blast': GAMMA_MIN_SCORE}.get(kind)
+    if minimum is not None:
+        if type(minimum) is not int or minimum not in (50,55,60,65,70,75,80,85,90):  # must match celestial.THRESHOLDS
+            return False
+        threshold = minimum if threshold is not None else None
+    valid_tier = tier in ('ACTIVE','CONFIRMED') if minimum is not None else tier == 'CONFIRMED'
+    if (threshold is None or not valid_tier or not positive(score)
+            or not threshold <= score <= 100):
         return False
+    if kind in ('bull_shield', 'bear_shield'):
+        if (tier != 'CONFIRMED' or not isinstance(shield_evidence, ShieldEvidence) or now is None
+                or shield_evidence.direction != direction or shield_evidence.score != score):
+            return False
+        return is_shield_confirmed(replace(shield_evidence, snap=snap, spot=spot), now, threshold)
     if direction not in ('CE', 'PE') or snap is None:
         return False
     values = [spot] + [getattr(snap, k, None) for k in ('vwap', 'ema_fast', 'ema_slow', 'rsi')]
@@ -38,7 +55,8 @@ def eligible(kind, tier, score, direction, snap, spot):
 def swing(rows, direction, spot, now):
     """Latest unbroken 2-left/2-right confirmed pivot in fresh closed 5m bars.
 
-    No future bars, previous-day pivots, missing bars or intra-bar guesses.
+    No future bars, previous-day pivots, intra-bar guesses, or pivots whose
+    five-bar window has a missing bar. Gaps elsewhere in the day are allowed.
     start_ts denotes bar OPEN; five minutes are added for its close.
     """
     if direction not in ('CE', 'PE') or not positive(spot):
@@ -53,10 +71,14 @@ def swing(rows, direction, spot, now):
         age = (now - (bars[-1][0] + timedelta(minutes=5))).total_seconds()
         if not 0 <= age <= 360:
             return None
-        if any((b[0] - a[0]).total_seconds() != 300 for a, b in zip(bars, bars[1:])):
-            return None
+        # 2026-09-29: only the five bars forming a pivot must be contiguous.
+        # Requiring the WHOLE day to be gap-free meant one missing bar (feed
+        # drop, restart, deploy) blocked every entry until the next session.
         idx = 1 if direction == 'CE' else 2
         for i in range(len(bars) - 3, 1, -1):
+            window = bars[i-2:i+3]
+            if any((b[0] - a[0]).total_seconds() != 300 for a, b in zip(window, window[1:])):
+                continue
             level = bars[i][idx]
             neighbours = [bars[j][idx] for j in (i-2, i-1, i+1, i+2)]
             later = [b[idx] for b in bars[i+1:]] + [spot]
@@ -99,10 +121,15 @@ def lots_within_allocation(allocation, entry_limit, stop, lot_size, maximum):
                       int(allocation // (entry_limit * (1 + COST_RESERVE) * lot_size))))
 
 
-def ratchet(entry, peak, previous, structural):
+def retain_for_gain(gain):
+    """Fraction of peak gain kept once the trail is armed (2026-10-19 ladder)."""
+    return 0.75 if gain >= 1.0 else 0.65 if gain >= 0.35 else RETAIN_PROFIT
+
+
+def ratchet(entry, peak, previous, structural, activation=None):
     """Both CE and PE are long premiums: their protection prices only rise."""
     if not positive(entry, peak, structural):
         raise ValueError('Missing position protection')
-    active = peak >= entry * (1 + ACTIVATION)
-    trail = entry + (peak - entry) * RETAIN_PROFIT if active else structural
+    active = peak >= entry * (1 + (activation or ACTIVATION))
+    trail = entry + (peak - entry) * retain_for_gain(peak / entry - 1) if active else structural
     return max(previous or 0, structural, trail), active

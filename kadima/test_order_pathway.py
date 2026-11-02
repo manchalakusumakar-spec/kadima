@@ -49,11 +49,14 @@ def main() -> int:
     print("own live premium (virtually unfillable), verify Angel One accepted")
     print("it, then cancel it.")
     print()
-    producttype = input("Product type to test [NRML/INTRADAY]: ").strip().upper()
-    if producttype not in ("NRML", "INTRADAY"):
+    # CARRYFORWARD is SmartAPI's carry-forward value (used by CAS trades);
+    # "NRML" is not a documented SmartAPI producttype, which likely explains
+    # the 2026-08-23 rejection. Kept selectable only to reproduce that test.
+    producttype = input("Product type to test [CARRYFORWARD/INTRADAY/NRML]: ").strip().upper()
+    if producttype not in ("CARRYFORWARD", "INTRADAY", "NRML"):
         print(f"FAILED: '{producttype}' is not a valid choice (must be exactly")
-        print("NRML or INTRADAY). Not silently defaulting -- rerun and enter")
-        print("one of those two exactly. Nothing was done.")
+        print("CARRYFORWARD, INTRADAY or NRML). Not silently defaulting -- rerun")
+        print("and enter one exactly. Nothing was done.")
         return 1
     print(f"Testing with producttype={producttype}")
     print()

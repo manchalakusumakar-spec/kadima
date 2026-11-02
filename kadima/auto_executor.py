@@ -19,8 +19,11 @@ from typing import Optional
 
 from . import (alerts, audit, capital_guard, entry_quality, exit_manager,
               killswitch, risk_budget, storage, strike_selector)
-from . import angel_orders, forecast_trail, execution_ledger, trade_policy
-from .config import (DAILY_LOSS_LIMIT_INR, IST, MAX_CONCURRENT_POSITIONS,
+from . import angel_orders, forecast_trail, execution_ledger, manual_protection, trade_policy
+from . import timing_recorder
+from . import celestial
+from . import fast_momentum, gap_and_go, cas_engine, cas_orders
+from .config import (DAILY_LOSS_LIMIT_INR, IST,
                      MAX_LOTS_PER_SIGNAL, ORDER_PLACEMENT_ENABLED)
 from .instrument_master import get_lot_size
 from . import config
@@ -37,7 +40,7 @@ GIVEBACK_TRAIL_PCT = exit_manager.GIVEBACK_PCT * 100.0          # exit once this
 FIXED_STOPLOSS_PCT = exit_manager.INITIAL_SL_PCT * 100.0        # legacy restored positions only
 
 # Existing settings retained; these are not exchange-calendar assertions.
-EOD_FORCE_CLOSE_HHMM = (15, 38)
+EOD_FORCE_CLOSE_HHMM = (15, 38)  # 2026-09-29: trader set back to 15:38 (was 15:18)
 LIMIT_ORDER_BUFFER_PCT = 2.5
 POSITION_MONITOR_INTERVAL_SEC = 10
 
@@ -98,6 +101,16 @@ class PremiumTracker:
                     break
             return h.day_high, h.day_low, base
 
+    def latest(self, token: str, max_age_sec: float = 60.0) -> Optional[float]:
+        """Most recent recorded premium if it is no older than max_age_sec."""
+        with self._lock:
+            h = self._hist.get(token)
+            if h is None or not h.samples:
+                return None
+            ts, ltp = h.samples[-1]
+            age = (now_ist() - ts).total_seconds()
+            return ltp if 0 <= age <= max_age_sec else None
+
 
 # ---------------------------------------------------------------- position
 @dataclass
@@ -126,6 +139,7 @@ class Position:
     effective_stop: Optional[float] = None
     allocated_capital: Optional[float] = None
     swing_level: Optional[float] = None  # confirmed underlying pivot
+    product: Optional[str] = None       # explicit broker product for adopted positions
 
 
 class ExecutorState:
@@ -146,13 +160,21 @@ def _poll_ltp(exchange: str, tokens: list[str]) -> dict[str, float]:
     reuse option_chain's polling."""
     if not tokens:
         return {}
-    payload = {"mode": "LTP", "exchangeTokens": {exchange: tokens}}
+    tokens = list(dict.fromkeys(tokens))
+    if len(tokens) > 50:
+        # Preserve the existing shared quote limiter on each bounded batch.
+        result = {}
+        for offset in range(0, len(tokens), 50):
+            result.update(_poll_ltp(exchange, tokens[offset:offset + 50]))
+        return result
+    mode = 'FULL' if celestial.enabled() else 'LTP'
+    payload = {"mode": mode, "exchangeTokens": {exchange: tokens}}
     try:
         SESSION.ensure()
         try:
             resp = SESSION.api.getMarketData(**payload)
         except TypeError:
-            resp = SESSION.api.getMarketData("LTP", {exchange: tokens})
+            resp = SESSION.api.getMarketData(mode, {exchange: tokens})
     except Exception as exc:                        # noqa: BLE001
         audit.log("position_ltp_poll_failed", error=str(exc), tokens=tokens)
         return {}
@@ -161,15 +183,25 @@ def _poll_ltp(exchange: str, tokens: list[str]) -> dict[str, float]:
     out: dict[str, float] = {}
     for row in resp.get("data", {}).get("fetched", []):
         token = str(row.get("symbolToken"))
+        if token not in tokens or row.get('exchange', exchange) != exchange:
+            continue
         ltp = row.get("ltp")
         if ltp is not None:
             try:
                 price = float(ltp)
                 if math.isfinite(price) and price > 0:
                     out[token] = price
+                    if celestial.enabled():
+                        from .celestial_exit import publish_quote
+                        publish_quote(exchange, token, row)
             except (TypeError, ValueError):
                 pass
     return out
+
+
+def _fresh_ltp(exchange: str, token: str) -> Optional[float]:
+    """Single-contract fresh LTP for exit re-pricing (execution_ledger)."""
+    return _poll_ltp(exchange, [token]).get(token)
 
 
 def fetch_broker_positions() -> Optional[list[dict]]:
@@ -230,6 +262,76 @@ class AutoExecutor:
         self._reconcile_blocked = True   # stays True until reconcile_on_startup() runs
         self._stop = threading.Event()
         self._profit_projections: dict[int, forecast_trail.Projection] = {}
+        self.celestial_master = None
+        self._celestial_contexts = {}
+        self._celestial_verified = set()
+        self._celestial_quotes = {}
+        # Verified broker-side manual carry-forward positions are observed but
+        # never adopted into executor state. Their underlyings are entry-blocked
+        # until a later successful reconciliation no longer sees them.
+        self._manual_carryforward_underlyings = set()
+        self._manual_reconciliation = False
+        self._manual_last_audit = {}
+        # Non-Celestial reconciliation (2026-09-29): exits are verified per
+        # position, not globally, so a manual trade in some other contract
+        # can no longer switch off KADIMA's stop-loss monitoring.
+        self._exit_paused = set()            # str(signal_id): broker holds less than local qty
+        self._external_contracts = set()     # (exchange, token) held outside KADIMA
+        self._external_logged = None
+        self.fast_rows = {}
+        self.cas_rows = {}
+        self.entry_diagnostics = deque(maxlen=100)
+
+    @serialized
+    def prepare_celestial_context(self, name, chain, spot, snap, days):
+        if not celestial.enabled():
+            return
+        rows = [r for r in celestial.top20(manual=True) if r['underlying']==name and r['eligible']]
+        clock = time.monotonic()
+        self._celestial_contexts = {k:v for k,v in self._celestial_contexts.items() if clock-v['at']<=30}
+        for row in rows:
+            sid = celestial.signal_for(row)
+            args = dict(index_name=name,direction=row['direction'],chain=chain,spot=spot,
+                snap=snap,days_to_expiry=days,kind='gamma_blast',source_signal_id=sid,
+                tier='ACTIVE',score=row['final_score'],candidate_id=row['id'])
+            self._celestial_contexts[row['id']] = dict(at=clock,args=args)
+            if celestial.read_config()['auto_trade_enabled']:
+                self.evaluate_and_enter(**args)
+
+    @serialized
+    def buy_candidate(self, candidate_id):
+        context = self._celestial_contexts.get(candidate_id)
+        if context is None or not 0 <= time.monotonic()-context['at']<=30:
+            return {'ok':False,'reason':'fresh_execution_context_unavailable'}
+        return self.evaluate_and_enter(**context['args'],manual_request=True)
+
+    @serialized
+    def squareoff(self, reason='squareoff_dashboard'):
+        celestial.update_config({'auto_trade_enabled':False})
+        results = []
+        for pos in list(self.state.positions.values()):
+            if pos.status in ('open','entry_pending'):
+                pos.exit_reason = reason
+                storage.upsert_position(pos)
+                results.append(self.manual_exit(pos.signal_id,reason))
+        unresolved = celestial.health('reconciliation') or {}
+        return {'ok':all(r.get('ok') for r in results) and unresolved.get('ok') is True,
+                'reason':'exit_requests_submitted_not_fill_confirmation','results':results,
+                'reconciliation':unresolved}
+
+    @serialized
+    def tighten_stop(self, signal_id, price):
+        pos = self.state.positions.get(str(signal_id))
+        if not pos or pos.status not in ('open','entry_pending') or pos.remaining_qty<=0:
+            return {'ok':False,'reason':'owned_position_not_found'}
+        if not celestial.finite(price,.000001) or price < (pos.effective_stop or pos.structural_stop or 0):
+            return {'ok':False,'reason':'stop_may_only_tighten'}
+        ltp = _poll_ltp(pos.exchange,[pos.token]).get(pos.token)
+        if ltp is None or price>=ltp:
+            return {'ok':False,'reason':'fresh_quote_required_and_stop_must_be_below_ltp'}
+        pos.effective_stop = price
+        storage.upsert_position(pos)
+        return {'ok':True,'signal_id':signal_id,'effective_stop':price,'protection':'engine_managed_not_broker_hosted'}
 
     def set_profit_projection(self, projection: forecast_trail.Projection) -> None:
         """Called by a 30-minute forecast producer; no order or HTTP endpoint."""
@@ -249,6 +351,13 @@ class AutoExecutor:
         response doesn't carry. Fails closed on an unreadable broker call."""
         self._last_reconcile = time.monotonic()
         self._reconcile_blocked = True
+        self._manual_reconciliation = bool(config.MANUAL_PROTECT_ENABLED and self.celestial_master is not None)
+        managed_book = celestial.enabled() or self._manual_reconciliation
+        if managed_book:
+            self._positions_verified = False
+            self._celestial_verified.clear()
+            self._manual_carryforward_underlyings.clear()
+            celestial.health('reconciliation',dict(ok=False,reason='checking_broker_books'))
         if not self._restored:
             for row in storage.load_open_positions():
                 for key in ('entry_ts', 'exit_ts'):
@@ -256,7 +365,10 @@ class AutoExecutor:
                 row['trail_active'] = bool(row['trail_active'])
                 self.state.positions[str(row['signal_id'])] = Position(**row)
             self._restored = True
-        if not execution_ledger.refresh(self.state.positions):
+        ledger_healthy = execution_ledger.refresh(self.state.positions, _fresh_ltp)
+        # An unrelated unresolved intent still blocks entries, but must not
+        # prevent reading broker holdings and protecting a new manual option.
+        if not ledger_healthy and not managed_book:
             return
         broker_positions = fetch_broker_positions()
         if broker_positions is None:
@@ -266,13 +378,60 @@ class AutoExecutor:
         if book is None:
             return
         pending_rows = execution_ledger.pending()
-        own_ids = {r['order_id'] for r in pending_rows}
-        own_tags = {r['intent'] for r in pending_rows}
-        if any(o.status not in execution_ledger.TERMINAL and
-               o.order_id not in own_ids and o.raw.get('ordertag') not in own_tags for o in book):
-            self._positions_verified = False
-            audit.log('reconcile_external_pending_orders')
+        own_ids = {r['order_id'] for r in pending_rows if r['order_id']}
+        own_tags = {r['intent'] for r in pending_rows if r['intent']}
+        if managed_book:
+            if self.celestial_master is None:
+                celestial.health('reconciliation',dict(ok=False,reason='contract_master_unavailable'))
+                return
+            from . import celestial_adoption
+            from .external_reconciliation import reconcile as reconcile_external
+            unresolved_external = reconcile_external(self, broker_positions, book)
+            live, expected, observations, proposals = celestial_adoption.inspect(
+                self,broker_positions,book,own_ids,own_tags,self.celestial_master)
+            if any(r.get('reason')=='invalid_broker_position' for r in observations):
+                celestial.health('reconciliation',dict(ok=False,positions=observations))
+                return
+            celestial_adoption.adopt(self,proposals)
+            self._manual_carryforward_underlyings = {
+                r.get('underlying') for r in observations
+                if r.get('source') == 'MANUAL_CARRYFORWARD'
+                and r.get('managed') is True and r.get('underlying')
+            }
+            # Capture the existing external book as the adoption baseline.
+            reconcile_external(self, broker_positions, book)
+            if unresolved_external:
+                observations.append(dict(source='BROKER_EXTERNAL', managed=False,
+                    reason='external_fill_history_unresolved', signal_ids=sorted(unresolved_external)))
+            for p in self.state.positions.values():
+                key = p.exchange,p.token,angel_orders.product_for(p)
+                if p.remaining_qty>0 and live.get(key)==p.remaining_qty and str(p.signal_id) not in unresolved_external:
+                    self._celestial_verified.add(str(p.signal_id))
+            healthy = ledger_healthy and all(r.get('managed') is True for r in observations)
+            if any(r.get('reason')=='external_pending_orders' for r in observations):
+                # 2026-09-29: a manual pending order used to clear verification
+                # for EVERY position, switching off all KADIMA stops until it
+                # cleared. Now only positions on the same contract as a manual
+                # pending order are paused (their exit could collide with it);
+                # entries and adoption stay blocked via `healthy` as before.
+                clash = {(str(o.raw.get('exchange')), str(o.raw.get('symboltoken')))
+                         for o in book if o.status not in execution_ledger.TERMINAL
+                         and o.order_id not in own_ids and o.raw.get('ordertag') not in own_tags}
+                for p in list(self.state.positions.values()):
+                    if (p.exchange, str(p.token)) in clash:
+                        self._celestial_verified.discard(str(p.signal_id))
+                if clash:
+                    audit.log('reconcile_external_orders_paused_contracts',
+                              contracts=len(clash), still_monitored=len(self._celestial_verified))
+            self._positions_verified = bool(self._celestial_verified) or healthy
+            self._reconcile_blocked = not healthy
+            celestial.health('reconciliation',dict(ok=healthy,positions=observations,
+                reason='execution_order_unresolved' if not ledger_healthy else 'broker_books_checked'))
             return
+        # Only contracts KADIMA owns are reconciled (2026-09-29). Previously any
+        # manual position or manual pending order anywhere in the account set
+        # _positions_verified=False, which made check_exits() return early and
+        # left KADIMA's own open trades with NO stop-loss monitoring.
         live = {}
         for row in broker_positions:
             qty = float(row.get('netqty') or 0)
@@ -281,22 +440,61 @@ class AutoExecutor:
             key = (str(row.get('exchange')), str(row.get('symboltoken')),
                    str(row.get('producttype') or ''))
             live[key] = live.get(key, 0) + qty
-        expected = {}
+        expected, owners = {}, {}
         for pos in list(self.state.positions.values()):
             if pos.status == 'closed':
                 self.state.positions.pop(str(pos.signal_id), None)
                 continue
             if pos.remaining_qty:
-                key = (pos.exchange, pos.token, 'INTRADAY')
+                key = (pos.exchange, pos.token, angel_orders.product_for(pos))
                 expected[key] = expected.get(key, 0) + pos.remaining_qty
-        if live != expected:
-            # Never turn an external/manual quantity change into an assumed fill.
-            self._positions_verified = False
+                owners.setdefault(key, []).append(pos)
+        owned_contracts = {(k[0], k[1]) for k in expected}
+
+        # Positions/orders on contracts KADIMA does not hold: observe, never act.
+        self._external_contracts = {(k[0], k[1]) for k in live if k not in expected}
+        external_pending = [o for o in book if o.status not in execution_ledger.TERMINAL
+                            and o.order_id not in own_ids and o.raw.get('ordertag') not in own_tags]
+        external_on_owned = [o for o in external_pending
+                             if (str(o.raw.get('exchange')), str(o.raw.get('symboltoken')))
+                             in owned_contracts]
+        self._external_contracts |= {(str(o.raw.get('exchange')), str(o.raw.get('symboltoken')))
+                                     for o in external_pending}
+        signature = (tuple(sorted(self._external_contracts)), len(external_pending))
+        if signature != self._external_logged:
+            self._external_logged = signature
+            if self._external_contracts:
+                audit.log('reconcile_external_ignored', contracts=len(self._external_contracts),
+                          pending_orders=len(external_pending))
+
+        # Per-position exit verification: a SELL of local quantity is safe
+        # only while the broker still holds at least that much of the contract.
+        # Block-list, not allow-list: a position filled after this check is
+        # monitored immediately rather than waiting for the next reconcile.
+        paused, mismatched = set(), []
+        for key, qty in expected.items():
+            held = live.get(key, 0)
+            if held < qty:
+                paused.update(str(p.signal_id) for p in owners[key])
+            if held != qty:
+                mismatched.append(key)
+        self._exit_paused = paused
+        self._positions_verified = True     # broker book was readable; exits filter per position
+
+        if mismatched or external_on_owned:
+            # New entries stay blocked until KADIMA's own contracts reconcile.
+            self._reconcile_blocked = True
             audit.log('reconcile_position_quantity_mismatch',
-                      broker_contracts=len(live), local_contracts=len(expected))
+                      mismatched_contracts=len(mismatched),
+                      external_orders_on_owned=len(external_on_owned),
+                      exits_paused=len(paused))
+            for key in mismatched:
+                if live.get(key, 0) < expected[key]:
+                    alerts.enqueue(f"Broker holds less than KADIMA expects for token {key[1]} - "
+                                   f"exits paused for that position. Check broker now.",
+                                   key=f"reconcile-short:{key[1]}")
             return
         self._reconcile_blocked = False
-        self._positions_verified = True
         audit.log('startup_reconcile_complete', restored=len(self.state.positions))
 
     @serialized
@@ -304,20 +502,24 @@ class AutoExecutor:
         """Manually exit one open position by signal_id, via the dashboard's
         Live Trade panel. Reuses the exact _close_position() path check_exits()
         already uses for automatic exits — no new order logic, no new risk logic."""
-        if self._reconcile_blocked:
+        verified = (str(signal_id) in self._celestial_verified if celestial.enabled() or self._manual_reconciliation
+                    else self._positions_verified and str(signal_id) not in self._exit_paused)
+        if self._reconcile_blocked and not verified:
             return {"ok": False, "reason": "startup_reconcile_not_complete"}
 
         with self._lock:
             pos = self.state.positions.get(str(signal_id))
             if pos is None:
                 return {"ok": False, "reason": "position_not_found", "signal_id": signal_id}
+            if pos.status == "entry_pending":
+                return dict(execution_ledger.request_entry_exit(pos, reason), signal_id=signal_id)
             if pos.status != "open":
                 return {"ok": False, "reason": f"position_not_open (status={pos.status})", "signal_id": signal_id}
 
         ltp_map = _poll_ltp(pos.exchange, [pos.token])
         ltp = ltp_map.get(pos.token)
         if ltp is None:
-            ltp = pos.peak_price or pos.entry_price
+            ltp = self._exit_fallback_price(pos)
             audit.log("manual_exit_ltp_unavailable_fallback", signal_id=signal_id,
                        token=pos.token, fallback_price=ltp)
 
@@ -350,8 +552,16 @@ class AutoExecutor:
         if not 0 <= time.monotonic() - getattr(chain, '_last_poll', 0) <= 30:
             return
         for pos in list(self.state.positions.values()):
-            if pos.index != index_name or pos.status != 'open':
+            if pos.index != index_name or pos.status != 'open' or pos.kind in ('cas','MANUAL_PROTECTED'):
                 continue
+            if getattr(pos, 'kind', None) == 'gamma_blast':
+                from . import trend_rules
+                if trend_rules.mode() != 'off':
+                    try:
+                        trend_rules.update_band_stop(pos, chain, spot, self.state.premium_tracker,
+                                                     trade_policy.COST_RESERVE)
+                    except Exception as exc:  # noqa: BLE001 - never block structure updates
+                        audit.log('band_stop_error', signal_id=pos.signal_id, error=str(exc)[:200])
             result = self._structure(chain, pos.direction, spot)
             quote = chain.quotes.get(pos.token)
             if result is None or quote is None:
@@ -368,15 +578,84 @@ class AutoExecutor:
                 pos.effective_stop = max(pos.effective_stop or 0, pos.structural_stop)
                 storage.upsert_position(pos)
 
+    @serialized
+    def evaluate_cas(self, state, lane, row):
+        return cas_orders.dispatch(self, state, lane, row)
+
     # -------------------------------------------------------- entry
     @serialized
     def evaluate_and_enter(self, index_name: str, direction: str, chain, spot: float,
                            snap, days_to_expiry: float, kind: str,
-                           source_signal_id: int, tier: str, score: float) -> None:
+                           source_signal_id: int, tier: str, score: float,
+                           candidate_id=None, manual_request=False, shield_context=None,
+                           fast_context=None, gap_context=None):
+        """Entry decision, unchanged, plus a record-only timing log line
+        for Gamma signals (timing_recorder.py, phase 1). The recorder
+        never alters the result and never raises."""
+        result = self._evaluate_and_enter_core(
+            index_name, direction, chain, spot, snap, days_to_expiry, kind,
+            source_signal_id, tier, score, candidate_id=candidate_id,
+            manual_request=manual_request, shield_context=shield_context,
+            fast_context=fast_context, gap_context=gap_context)
+        if kind == 'gamma_blast' and not (result or {}).get('ok'):
+            from . import gamma_priority   # 2026-10-20: nothing may block a Gamma Blast
+            gamma_priority.make_room(self, index_name, direction, (result or {}).get('reason'),
+                                     source_signal_id)
+        if kind == 'gamma_blast':
+            timing_recorder.record_evaluation(
+                signal_id=source_signal_id, kind=kind, index_name=index_name,
+                direction=direction, tier=tier, score=score, spot=spot,
+                chain=chain, snap=snap, result=result,
+                source='celestial' if candidate_id is not None else 'engine',
+                candidate_id=candidate_id)
+        return result
+
+    def _evaluate_and_enter_core(self, index_name: str, direction: str, chain, spot: float,
+                                 snap, days_to_expiry: float, kind: str,
+                                 source_signal_id: int, tier: str, score: float,
+                                 candidate_id=None, manual_request=False, shield_context=None,
+                                 fast_context=None, gap_context=None):
         """snap: indicators.Snapshot from the calling IndexState, used for
-        real VWAP (not a stub) in the entry-quality check."""
+        real VWAP (not a stub) in the entry-quality check.
+        Only called from evaluate_and_enter(), which holds the execution lock."""
+        # KADIMA SESSION AUTO ENTRY GUARD v1
+        from . import market_session_gate
+        session_block = market_session_gate.entry_block(chain.index.opt_exchange, underlying=index_name)
+        if session_block:
+            return self._reject(session_block, index_name, direction)
         if not getattr(chain, '_entry_guard', lambda: True)():
             return self._reject('stock_signal_expired_or_replaced', index_name, direction)
+        selected = None
+        minimum = None
+        fast = None
+        gap = None
+        if kind == 'fast_momentum':
+            if not ORDER_PLACEMENT_ENABLED:
+                return self._reject('broker_orders_disabled',index_name,direction)
+            fast = fast_context() if callable(fast_context) else None
+            if (not fast or not fast.get('eligible') or fast.get('strategy')!='fast_momentum'
+                    or fast.get('underlying')!=index_name or fast.get('direction')!=direction
+                    or not celestial.fresh(fast.get('ts'))
+                    or fast_momentum.live_blocks(index_name,direction,now_ist(),fast.get('score',0))):
+                return self._reject('fast_context_or_live_gate_blocked',index_name,direction)
+        if kind == 'gap_and_go':
+            if not ORDER_PLACEMENT_ENABLED:
+                return self._reject('broker_orders_disabled',index_name,direction)
+            gap = gap_context() if callable(gap_context) else None
+            if (not gap or not gap.get('eligible') or gap.get('strategy')!='gap_and_go'
+                    or gap.get('underlying')!=index_name or gap.get('direction')!='CE'
+                    or direction!='CE' or not celestial.fresh(gap.get('ts'))
+                    or gap_and_go.live_blocks(index_name, now_ist())):
+                return self._reject('gap_context_or_live_gate_blocked',index_name,direction)
+        if celestial.enabled() and fast is None and gap is None:
+            if candidate_id is None:
+                return self._reject('legacy_entry_disabled_in_celestial_mode',index_name,direction)
+            selected = celestial.entry_candidate(index_name,direction,manual=manual_request,candidate_id=candidate_id)
+            if selected is None:
+                return self._reject('celestial_top20_gate',index_name,direction)
+            minimum = celestial.read_config()['score_threshold']
+            if kind not in ('bull_shield', 'bear_shield'):
+                score = selected['final_score']
         if self._reconcile_blocked:
             return self._reject("startup_reconcile_not_complete", index_name, direction)
         if killswitch.engaged():
@@ -385,7 +664,7 @@ class AutoExecutor:
             return self._reject("outside_market_hours", index_name, direction)
         if past_signal_cutoff():
             return self._reject("past_signal_cutoff", index_name, direction)
-        if exit_manager.realized_pnl_today() <= -DAILY_LOSS_LIMIT_INR:
+        if exit_manager.realized_pnl_today() <= -_daily_loss_limit():
             # Was never actually wired in until 2026-08-23: config declared
             # this limit, exit_manager had a check function, but nothing
             # called it and nothing fed it real rupee P&L (see
@@ -393,22 +672,82 @@ class AutoExecutor:
             # zero daily-loss enforcement until now.
             return self._reject("daily_loss_limit_breached", index_name, direction)
         if execution_ledger.seen(source_signal_id):
-            return self._reject("signal_already_submitted", index_name, direction)
+            # 2026-10-19: one bounded re-entry path after a loss stop-out.
+            from . import protection
+            try:
+                reentry = protection.reentry_signal(kind, index_name, direction, source_signal_id,
+                                                    tier, score, execution_ledger.seen)
+            except Exception as exc:  # noqa: BLE001
+                audit.log('reentry_error', error=str(exc)[:200])
+                reentry = None
+            if reentry is None:
+                return self._reject("signal_already_submitted", index_name, direction)
+            source_signal_id = reentry
+        if index_name in getattr(self, '_manual_carryforward_underlyings', set()):
+            return self._reject("manual_carryforward_same_underlying", index_name, direction)
         with self._lock:
-            open_count = len(self.state.positions)
-        if open_count >= min(1, MAX_CONCURRENT_POSITIONS):
-            return self._reject("max_concurrent_positions", index_name, direction)
+            same_underlying = any(
+                getattr(p, 'index', None) == index_name
+                and getattr(p, 'status', None) != 'closed'
+                and (kind == 'gap_and_go' or getattr(p, 'kind', None) == 'gap_and_go')
+                for p in self.state.positions.values())
+        if same_underlying:
+            return self._reject("same_underlying_position_exists", index_name, direction)
+        # KADIMA CAPITAL-BASED MULTI-POSITION v1
+        from . import portfolio_capacity
+        portfolio_block = portfolio_capacity.entry_block(
+            self.state.positions, execution_ledger.pending())
+        if portfolio_block:
+            return self._reject(portfolio_block, index_name, direction)
 
         if not 0 <= time.monotonic() - getattr(chain, '_spot_received_at', 0) <= 30:
             return self._reject('underlying_quote_stale', index_name, direction)
-        if not 0 <= time.monotonic() - getattr(chain, '_alignment_at', 0) <= 240:
+        if fast is None and gap is None and not 0 <= time.monotonic() - getattr(chain, '_alignment_at', 0) <= 240:
             return self._reject('alignment_snapshot_stale', index_name, direction)
-        if not trade_policy.eligible(kind, tier, score, direction, snap, spot):
+        evidence = shield_context() if callable(shield_context) else None
+        if kind in ('bull_shield', 'bear_shield') and (
+                evidence is None or evidence.index != index_name):
+            return self._reject('shield_confirmation_evidence_missing', index_name, direction)
+        _confirmed_bypass = _confirmed_gamma(kind, manual_request, selected, minimum,  # BOTTLENECK FIX v1
+                                             index_name, direction)
+        if fast is None and gap is None and not _confirmed_bypass and not trade_policy.eligible(kind, tier, score, direction, snap, spot,minimum=minimum,
+                                                     shield_evidence=evidence, now=now_ist()):
             return self._reject('eligibility_alignment_or_gamma_score', index_name, direction)
-        structure = self._structure(chain, direction, spot)
+        special = fast or gap
+        structure = (special['spot_stop'],special['days']) if special else self._structure(chain, direction, spot)
+        if structure is None and kind == 'gamma_blast':
+            # GAMMA CONFIRM v1 / UNBLOCK: no confirmed 5-min swing yet (a clean one-way move):
+            # use the trend band stop level instead of refusing. 35% hard cap still applies.
+            structure = _gamma_band_structure(chain, index_name, direction, spot, snap)
         if structure is None:
             return self._reject('fresh_structure_or_valid_expiry_unavailable', index_name, direction)
         swing_level, days_to_expiry = structure
+        if kind == 'gamma_blast':
+            # Trader rules 2026-10-19: day trend, gamma with trend, band stop, min-risk entry.
+            from . import trend_rules
+            gate = trend_rules.entry_gate(index_name, chain.index.token, direction, spot,
+                                          snap.vwap if snap is not None else None, now_ist())
+            # SNIPER v1 (2026-10-24): few, early, with-trend, confirmed gamma entries only.
+            from . import sniper
+            _sn = sniper.gate(index_name, chain.index.token, direction, spot,
+                              snap.vwap if snap is not None else None, now_ist(),
+                              gate=gate, selected=selected, manual=manual_request)
+            if _sn.get('block'):
+                return self._reject(_sn['block'], index_name, direction)
+            if _sn.get('override'):
+                gate = {'trend': gate.get('trend'), 'stop_level': _sn.get('stop_level')}
+            # GAMMA CONFIRM v1 (2026-10-25): auto gamma entries only for Celestial CONFIRMED.
+            if not manual_request:
+                from . import gamma_confirm
+                _gc = gamma_confirm.entry_block(
+                    selected, now_ist(),
+                    minimum if minimum is not None else celestial.read_config()['score_threshold'])
+                if _gc:
+                    return self._reject(_gc, index_name, direction)
+            if gate.get('block'):
+                return self._reject(gate['block'], index_name, direction)
+            if gate.get('stop_level') is not None:
+                swing_level = gate['stop_level']
 
         last_poll = getattr(chain, '_last_poll', 0)
         if not last_poll or not 0 <= time.monotonic() - last_poll <= 30:
@@ -417,14 +756,35 @@ class AutoExecutor:
         # The ladder may straddle an expiry refresh; confirm selected tokens
         # against the current instrument-master expiry, not a symbol guess.
         try:
-            current_contracts = chain.scrips.strikes_around(
-                chain.index, chain.atm, config.STRIKES_EACH_SIDE)
+            current_contracts = chain.scrips.strikes_around(   # STOCK BLAST v1.1: chain's own width
+                chain.index, chain.atm, max(config.STRIKES_EACH_SIDE,
+                                            getattr(chain, 'strikes_each_side', 0) or 0))
             valid_tokens = {str(c['token']) for c in current_contracts}
         except (AttributeError, TypeError, KeyError):
             return self._reject('contract_expiry_unverifiable', index_name, direction)
 
-        ranked = [r for r in strike_selector.rank(chain, direction, spot, days_to_expiry)
+        from . import stock_blast   # STOCK BLAST v1: stock rules for stock fast-momentum entries
+        _sb = stock_blast.applies(chain, fast)
+        ranked = [r for r in (stock_blast.rank(chain, direction, spot, days_to_expiry, fast.get('score', 0))
+                              if _sb else strike_selector.rank(chain, direction, spot, days_to_expiry))
                   if not r.rejected and str(r.quote.token) in valid_tokens]
+        if fast:
+            ranked = [r for r in ranked if r.quote.token==fast['token'] and r.quote.symbol==fast['symbol']
+                      and chain.index.opt_exchange==fast['exchange']]
+        if gap:
+            ranked = [r for r in ranked if r.quote.token==gap['token']
+                      and r.quote.symbol==gap['contract_symbol']
+                      and chain.index.opt_exchange==gap['exchange']]
+        if gap:
+            latest_gap = gap_context()
+            if (not latest_gap or not latest_gap.get('eligible')
+                    or not celestial.fresh(latest_gap.get('ts'))
+                    or any(latest_gap.get(k)!=gap.get(k)
+                           for k in ('episode','token','contract_symbol','exchange','direction','spot_stop'))
+                    or gap_and_go.live_blocks(index_name, now_ist())):
+                return self._reject('gap_invalidated_before_submission',index_name,direction)
+        if selected is not None:
+            ranked = [r for r in ranked if chain.index.opt_exchange+':'+r.quote.token == selected['id']]
         if not ranked:
             return self._reject("no_tradeable_strike", index_name, direction)
 
@@ -434,25 +794,46 @@ class AutoExecutor:
                 option_type=r.quote.opt_type, ltp=r.quote.ltp, bid=r.quote.bid,
                 ask=r.quote.ask, delta=r.quote.delta, volume=r.quote.volume,
                 open_interest=r.quote.oi,
-                stop_price=trade_policy.premium_stop(spot, swing_level, r.quote.strike,
-                                                    r.quote.ltp, days_to_expiry, direction))
+                stop_price=_bounded_entry_stop(kind, trade_policy.premium_stop(
+                    spot, swing_level, r.quote.strike, r.quote.ltp, days_to_expiry, direction),
+                    r.quote, self.state.premium_tracker))
             for r in ranked
         ]
 
-        allocation = capital_guard.get_capital_for_signal(kind, tier)
+        # Reuse the existing Shield allocation; do not introduce an unlimited budget.
+        allocation = (capital_guard.get_capital_for_signal('bull_shield','CONFIRMED')
+                      if special else capital_guard.get_capital_for_signal(kind, tier))
+        # GAMMA CONFIRM v1 (trader 2026-10-25): auto gamma may risk up to 30% of cash. Real-cash
+        # limits still apply below (Sniper rule 7, capital_guard 1-lot headroom).
+        if kind == 'gamma_blast' and not manual_request:
+            from . import gamma_confirm
+            allocation = gamma_confirm.scaled_allocation(allocation, trade_policy.RISK_FRACTION)
 
+        _nocap = fast is not None and _scalp_nocap()   # SCALP NO-CAP v1
+        if _nocap:
+            allocation = _scalp_nocap_allocation(allocation)
+        if _sb:   # STOCK BLAST v1: size by trigger confidence
+            allocation = stock_blast.allocation(allocation, fast.get('score', 0), fast)   # STOCK BLAST v1.1
         verdict = risk_budget.select_within_budget(
-            candidates, spot, allocated_capital=allocation, max_lots=MAX_LOTS_PER_SIGNAL)
+            candidates, spot, allocated_capital=allocation,
+            max_lots=min(1, MAX_LOTS_PER_SIGNAL) if gap else (NOCAP_MAX_LOTS if _nocap else MAX_LOTS_PER_SIGNAL),
+            gates=stock_blast.risk_gates(fast.get('score', 0)) if _sb else None)   # STOCK BLAST v1
         if verdict.candidate is None:
             return self._reject(f"risk_budget_{verdict.reason}", index_name, direction)
 
         chosen_quote = next(r.quote for r in ranked
                             if r.quote.token == verdict.candidate.token)
+        # Record-only: remember which contract was chosen for the timing log.
+        timing_recorder.note_choice(source_signal_id, kind, chosen_quote,
+                                    verdict.candidate.stop_price)
+        if (chain.index.opt_exchange, str(chosen_quote.token)) in self._external_contracts:
+            # Never stack an engine position on a contract held/ordered manually.
+            return self._reject('contract_held_outside_kadima', index_name, direction)
 
         proj_return = projected_return_pct(chosen_quote, spot, days_to_expiry)
-        if proj_return is None:
+        if fast is None and gap is None and proj_return is None:
             return self._reject("projected_return_uncomputable", index_name, direction)
-        if proj_return < MIN_PROJECTED_RETURN_PCT:
+        if fast is None and gap is None and proj_return < MIN_PROJECTED_RETURN_PCT:
             return self._reject(
                 f"projected_return_{proj_return:.1f}pct_under_{MIN_PROJECTED_RETURN_PCT:.0f}pct_minimum",
                 index_name, direction)
@@ -470,13 +851,17 @@ class AutoExecutor:
             direction=direction,
             spread_pct=chosen_quote.spread_pct,
             stop_override=verdict.candidate.stop_price,
+            chase_gates=kind != 'gamma_blast',
         )
         eq_verdict = entry_quality.evaluate_entry(ctx)
-        if not eq_verdict.allowed:
+        if fast is None and gap is None and not eq_verdict.allowed:
             return self._reject(f"entry_quality_{eq_verdict.reason}", index_name, direction)
 
         allowed_lots, cap_reason = capital_guard.enforce(
-            self, SimpleNamespace(quote=chosen_quote), direction, verdict.lots)
+            self, SimpleNamespace(quote=chosen_quote), direction,
+            NOCAP_MAX_LOTS if _nocap else verdict.lots)   # SCALP NO-CAP v1: cash decides
+        if gap:
+            allowed_lots = min(1, allowed_lots)
         if allowed_lots == 0:
             return self._reject(f"capital_guard_{cap_reason}", index_name, direction)
 
@@ -491,22 +876,100 @@ class AutoExecutor:
             return self._reject("fresh_entry_quote_unavailable", index_name, direction)
 
         limit_price = round(pricing_ltp * (1 + LIMIT_ORDER_BUFFER_PCT / 100.0), 1)
+        if special:
+            # Bounded entry price, no indefinite chasing after detection.
+            cap = math.floor(special['entry']*1.005*20)/20
+            if pricing_ltp>cap:
+                reason = 'gap_entry_price_ran_away' if gap else 'fast_entry_price_ran_away'
+                return self._reject(reason,index_name,direction)
+            limit_price = min(limit_price,cap)
         stop = verdict.candidate.stop_price
-        allowed_lots = trade_policy.lots_within_allocation(
-            allocation, limit_price, stop, lot_size, allowed_lots)
+        # BEST ENTRY v1: wait for a held pullback; stop below the pullback low (35% cap).
+        _be = _be_decide(kind, manual_request, source_signal_id, chosen_quote, pricing_ltp,
+                         stop, self.state.premium_tracker)
+        if not _be.get('go'):
+            return self._reject(_be['block'], index_name, direction)
+        if _be.get('stop') and 0 < _be['stop'] < pricing_ltp:
+            stop = _be['stop']
+        if not _nocap:   # SCALP NO-CAP v1: scalps skip the 15% stop-risk lot limit
+            allowed_lots = trade_policy.lots_within_allocation(
+                allocation, limit_price, stop, lot_size, allowed_lots)
+        else:
+            allowed_lots = min(allowed_lots, int(allocation // (limit_price * (1 + trade_policy.COST_RESERVE) * lot_size)))
+            if not _sb:   # SCALP CAP v1 (CONFIRMED MERGE v1 deploy): index scalps max N lots
+                allowed_lots = min(allowed_lots, _scalp_max_lots())
+            audit.log('scalp_nocap_sizing', index=index_name, direction=direction, lots=allowed_lots,
+                      allocation=round(allocation, 2), limit=limit_price, lot_size=lot_size)
         if allowed_lots < 1 or pricing_ltp <= stop:
             return self._reject('fresh_quote_exceeds_risk_or_invalidates_stop', index_name, direction)
+        # Final LIMIT-price sizing uses all confirmed open exposure, not a slot count.
+        capacity = portfolio_capacity.affordable_lots(
+            self.state.positions, execution_ledger.pending(),
+            exchange=chain.index.opt_exchange, token=chosen_quote.token,
+            limit_price=limit_price, stop=stop, lot_size=lot_size,
+            requested_lots=allowed_lots,
+            broker_funds=capital_guard.broker_available_funds(),
+            capital_buffer_pct=capital_guard.CAPITAL_SAFETY_BUFFER_PCT,
+            daily_limit=_daily_loss_limit(),
+            realized_pnl=exit_manager.realized_pnl_today(),
+            cost_reserve=trade_policy.COST_RESERVE, exit_buffer=trade_policy.EXIT_BUFFER)
+        if capacity.lots < 1:
+            return self._reject(capacity.reason, index_name, direction)
+        allowed_lots = capacity.lots
+        audit.log('portfolio_capacity_checked', index=index_name, direction=direction,
+                  open_positions=capacity.open_positions, lots=allowed_lots,
+                  cash_committed=capacity.cash_committed,
+                  stop_risk_committed=capacity.stop_risk_committed,
+                  reason=capacity.reason)
         clock = time.monotonic()
         if (not 0 <= clock - chain._last_poll <= 30
                 or not 0 <= clock - chain._spot_received_at <= 30
-                or not 0 <= clock - chain._alignment_at <= 240):
+                or (fast is None and gap is None and not 0 <= clock - chain._alignment_at <= 240)):
             return self._reject('entry_data_expired_before_submission', index_name, direction)
+        # SNIPER v1: 1 lot, skip when stop risk > 15% of available cash.
+        from . import sniper
+        allowed_lots, _sn_block = sniper.size(kind, manual_request, limit_price, stop, lot_size,
+                                              allowed_lots, capital_guard.broker_available_funds())
+        if _sn_block or allowed_lots < 1:
+            return self._reject(_sn_block or 'sniper_no_lots', index_name, direction)
+        from . import best_entry  # BEST ENTRY v1: half size on a no-pullback entry
+        allowed_lots = best_entry.scale_lots(allowed_lots, _be)
         quantity = allowed_lots * lot_size
 
         if killswitch.engaged() or not in_market_hours() or past_signal_cutoff():
             return self._reject('entry_gate_changed_before_submission', index_name, direction)
         if not getattr(chain, '_entry_guard', lambda: True)():
             return self._reject('stock_signal_changed_before_submission', index_name, direction)
+        if fast:
+            latest = fast_context()
+            if (not latest or not latest.get('eligible') or not celestial.fresh(latest.get('ts'))
+                    or any(latest.get(k)!=fast.get(k) for k in ('episode','token','symbol','exchange','direction','spot_stop'))
+                    or fast_momentum.live_blocks(index_name,direction,now_ist(),latest.get('score',0))):
+                return self._reject('fast_invalidated_before_submission',index_name,direction)
+        if gap:
+            latest_gap = gap_context()
+            if (not latest_gap or not latest_gap.get('eligible')
+                    or not celestial.fresh(latest_gap.get('ts'))
+                    or any(latest_gap.get(k)!=gap.get(k)
+                           for k in ('episode','token','contract_symbol','exchange','direction','spot_stop'))
+                    or gap_and_go.live_blocks(index_name, now_ist())):
+                return self._reject('gap_invalidated_before_submission',index_name,direction)
+        if selected is not None:
+            latest = celestial.entry_candidate(index_name,direction,manual=manual_request,candidate_id=selected['id'])
+            if latest is None or latest['last_updated'] != selected['last_updated']:
+                return self._reject('celestial_candidate_changed_before_submission',index_name,direction)
+        if kind in ('bull_shield', 'bear_shield'):
+            latest_evidence = shield_context()
+            if (latest_evidence is None or latest_evidence.index != index_name
+                    or latest_evidence.direction != direction or latest_evidence.score != score
+                    or not trade_policy.is_shield_confirmed(latest_evidence, now_ist(),
+                                                            minimum or trade_policy.SHIELD_MIN_SCORE)):
+                return self._reject('shield_invalidated_before_submission', index_name, direction)
+        # KADIMA SESSION AUTO ENTRY GUARD v1
+        from . import market_session_gate
+        session_block = market_session_gate.entry_block(chain.index.opt_exchange, underlying=index_name)
+        if session_block:
+            return self._reject(session_block, index_name, direction)
         pos = Position(
             signal_id=source_signal_id, kind=kind, index=index_name, direction=direction,
             symbol=chosen_quote.symbol, token=chosen_quote.token,
@@ -517,70 +980,192 @@ class AutoExecutor:
         with self._lock:
             self.state.positions[str(source_signal_id)] = pos
         result = execution_ledger.submit(pos, 'BUY', quantity, limit_price)
+        # SNIPER v1
+        from . import sniper
+        sniper.after_submit(kind, manual_request, pos)
+        best_entry.after_submit(source_signal_id)  # BEST ENTRY v1
+        self._last_reconcile = 0.0
         if pos.status == 'closed':
             self.state.positions.pop(str(source_signal_id), None)
         audit.log('entry_order_result', signal_id=source_signal_id, **result)
+        self.entry_diagnostics.append(dict(ts=now_ist().isoformat(),index=index_name,
+            direction=direction,signal_id=source_signal_id,stage='SUBMISSION_RESULT',**result))
         alerts.enqueue(f"ENTRY order {pos.symbol}: {result['reason']} | signal #{source_signal_id}",
                        key=f'entry:{source_signal_id}')
+        return result
 
-    def _reject(self, reason: str, index_name: str, direction: str) -> None:
+    def _reject(self, reason: str, index_name: str, direction: str) -> dict:
+        self.entry_diagnostics.append(dict(ts=now_ist().isoformat(),index=index_name,
+                                          direction=direction,stage='BLOCKED',reason=reason))
         audit.log("auto_executor_entry_rejected", reason=reason,
                   index=index_name, direction=direction)
+        return {'ok':False,'reason':reason}
 
     # -------------------------------------------------------- exit
     @serialized
-    def check_exits(self) -> None:
+    def check_exits(self, kinds=None) -> None:
         """Call periodically (e.g. every POSITION_MONITOR_INTERVAL_SEC)
-        from a dedicated thread. Independent of any OptionChain's ladder."""
+        from a dedicated thread. Independent of any OptionChain's ladder.
+        kinds: optional set of Position.kind values to check (the CAS
+        watcher calls this every few seconds for its own positions only)."""
+        if config.MANUAL_PROTECT_ENABLED:
+            for p in self.state.positions.values():
+                if p.kind!='MANUAL_PROTECTED' or p.status!='open' or p.remaining_qty<=0:
+                    continue
+                verified = (str(p.signal_id) in self._celestial_verified
+                            if celestial.enabled() or self._manual_reconciliation
+                            else self._positions_verified and str(p.signal_id) not in self._exit_paused)
+                if not self._positions_verified or not verified:
+                    manual_protection.warn_once(manual_protection.warning_key(
+                        p.exchange,p.token,p.product),p.symbol,'broker_position_unverified')
         if not self._positions_verified:
             return
         with self._lock:
             open_positions = [p for p in self.state.positions.values()
-                              if p.status == "open"]
+                              if p.status in ("open", "entry_pending") and p.remaining_qty > 0
+                              and (kinds is None or getattr(p, 'kind', None) in kinds)
+                              and (str(p.signal_id) in self._celestial_verified if celestial.enabled() or self._manual_reconciliation
+                                   else str(p.signal_id) not in self._exit_paused)]
         if not open_positions:
             return
 
         by_exchange: dict[str, list[str]] = {}
         for p in open_positions:
+            if getattr(p, 'kind', None) == 'cas':
+                continue
             by_exchange.setdefault(p.exchange, []).append(p.token)
 
-        ltp_by_token: dict[str, float] = {}
+        ltp_by_contract: dict[tuple[str,str], float] = {}
         for exch, tokens in by_exchange.items():
-            ltp_by_token.update(_poll_ltp(exch, tokens))
+            ltp_by_contract.update({(exch,token):price for token,price in _poll_ltp(exch,tokens).items()})
 
         now = now_ist()
         eod_hh, eod_mm = EOD_FORCE_CLOSE_HHMM
-        force_close = now.hour > eod_hh or (now.hour == eod_hh and now.minute >= eod_mm)
+        equity_force_close = now.hour > eod_hh or (now.hour == eod_hh and now.minute >= eod_mm)
         # Computed once per cycle, not per position -- same realized_pnl_today()
         # query the entry gate uses. Checked with top priority below: if the
         # day's loss limit is breached, that overrides even an active trail,
         # matching exit_manager's original documented intent ("refuse new
         # entries and flatten open positions") which was written but never
         # actually connected to anything until 2026-08-23.
-        daily_loss_breached = exit_manager.realized_pnl_today() <= -DAILY_LOSS_LIMIT_INR
+        daily_loss_breached = exit_manager.realized_pnl_today() <= -_daily_loss_limit()
+        try:   # GAMMA V2 LIVE (2026-11-02): gv2-managed positions use their own exits
+            from . import gv2_live
+            _gv2_ids = gv2_live.managed_ids()
+        except Exception:  # noqa: BLE001
+            _gv2_ids = set()
 
         for pos in open_positions:
-            ltp = ltp_by_token.get(pos.token)
+            is_mcx = getattr(pos,'kind',None) == 'mcx_momentum'
+            from .priority_sessions import exit_due
+            force_close = exit_due('MCX', now) if is_mcx else equity_force_close
+            manual = pos.kind == 'MANUAL_PROTECTED'
+            carryforward_manual = manual and angel_orders.product_for(pos) in ('CARRYFORWARD','NRML')
+            if carryforward_manual:
+                force_close = False
+            ltp = ltp_by_contract.get((pos.exchange,pos.token))
+            if manual and not manual_protection.positive(ltp):
+                ltp = None
+            cas_row = None
+            if getattr(pos, 'kind', None) == 'cas':
+                cas_row = next((r for r in self.cas_rows.get(pos.index, [])
+                                if r.get('token') == pos.token and r.get('direction') == pos.direction), None)
+                # CAS exits use a source-timestamped executable bid. LTP may lag.
+                q = cas_orders.fetch_quote(pos.exchange, pos.token, pos.symbol,
+                                           (cas_row or {}).get('strike', 0), pos.direction, for_exit=True)
+                ltp = q.bid if q else None
+                if q:
+                    cas_row = dict(cas_row or {}, option_vwap=q.option_vwap,
+                                   quote_at=cas_engine.source_time(q.quote_at).isoformat())
+                if ltp is None:
+                    audit.log('cas_exit_quote_unavailable', signal_id=pos.signal_id)
+                    urgent = ('daily_loss_limit_breached' if daily_loss_breached else
+                              cas_engine.exit_reason(pos, 0, None, now) or
+                              ('eod_force_close' if force_close else pos.exit_reason))
+                    if urgent:
+                        # Persist/cancel an outstanding BUY even with no quote.
+                        pos.exit_reason = urgent
+                        storage.upsert_position(pos)
+                        if pos.status == 'entry_pending':
+                            execution_ledger.request_entry_exit(pos, pos.exit_reason)
+                    alerts.enqueue(f'CAS exit quote unavailable: {pos.symbol}; owned quantity '
+                                   f'{pos.remaining_qty}, protection awaits a fresh bid.',
+                                   key=f'cas-exit-quote:{pos.signal_id}')
+                    continue
+            if celestial.enabled() and ltp is not None:
+                self._celestial_quotes[pos.exchange+':'+pos.token] = dict(ltp=ltp,ts=now.isoformat())
             if ltp is None:
                 audit.log("position_ltp_unavailable", signal_id=pos.signal_id,
                           token=pos.token)
+                if manual:
+                    manual_protection.warn_once(manual_protection.warning_key(
+                        pos.exchange,pos.token,pos.product),pos.symbol,'fresh_quote_unavailable')
+                    continue
                 if force_close or daily_loss_breached:
                     # EOD close must not silently skip just because this
-                    # cycle's LTP poll came back empty -- fall back to
-                    # last known peak_price so the position still exits.
-                    ltp = pos.peak_price or pos.entry_price
+                    # cycle's LTP poll came back empty. Fall back to a recent
+                    # real quote, never the peak (a peak-priced SELL limit sits
+                    # above a falling market and does not fill).
+                    ltp = self._exit_fallback_price(pos)
                 else:
                     continue
 
+            if str(pos.signal_id) in _gv2_ids:   # GAMMA V2 LIVE
+                _urgent = bool(force_close or daily_loss_breached)
+                try:
+                    from . import gv2_live
+                    _g = gv2_live.exit_reason(self, pos, ltp, now, _urgent)
+                except Exception as exc:  # noqa: BLE001
+                    audit.log('gv2_exit_error', signal_id=pos.signal_id, error=str(exc)[:200])
+                    _g = 'gv2_exit_error_flatten' if _urgent else None
+                if _g:
+                    self._close_position(pos, ltp, _g)
+                continue
+
+            if manual:
+                if not config.MANUAL_PROTECT_ENABLED:
+                    continue
+                try:
+                    peak,stop,active,reason = manual_protection.evaluate(pos,ltp)
+                    if not reason:   # MANUAL FORECAST STOP v1: exit before the hard stop
+                        reason = _mf_check(pos, ltp, now, self.state.premium_tracker)
+                except ValueError as exc:
+                    manual_protection.warn_once(manual_protection.warning_key(
+                        pos.exchange,pos.token,pos.product),pos.symbol,str(exc))
+                    continue
+                pos.peak_price,pos.effective_stop,pos.trail_active = peak,stop,active
+                storage.upsert_position(pos)
+                # Manual stops/trails apply throughout the no-auto-exit window.
+                if not reason and not carryforward_manual and (daily_loss_breached or force_close):
+                    reason = 'daily_loss_limit_breached' if daily_loss_breached else 'eod_force_close'
+                manual_protection.clear_warning(manual_protection.warning_key(
+                    pos.exchange,pos.token,pos.product))
+                stamp = (now.replace(second=0,microsecond=0),reason)
+                if self._manual_last_audit.get(pos.signal_id)!=stamp:
+                    manual_protection.record_event('manual_protection_evaluated',signal_id=pos.signal_id,
+                              symbol=pos.symbol,product=pos.product,ltp=ltp,
+                              stop=stop,peak=peak,trail_active=active,reason=reason)
+                    self._manual_last_audit[pos.signal_id] = stamp
+                if reason:
+                    self._close_position(pos,ltp,reason)
+                continue
             previous_peak = pos.peak_price
             pos.peak_price = ltp if pos.peak_price is None else max(pos.peak_price, ltp)
             if pos.peak_price != previous_peak:
                 storage.upsert_position(pos)
+            if getattr(pos, 'kind', None) == angel_orders.CAS_KIND:
+                # CAS positions follow only their own rules (trader, 2026-09-29):
+                # no stop-loss at entry, peak-trailing exit, loss limit, EOD.
+                from . import cas_executor
+                reason = cas_executor.exit_reason(pos, ltp, daily_loss_breached, force_close)
+                if reason:
+                    self._close_position(pos, ltp, reason)
+                continue
             gain_pct = ((ltp - pos.entry_price) / pos.entry_price * 100.0
                        if pos.entry_price else 0.0)
             peak_gain = (pos.peak_price - pos.entry_price) if pos.peak_price else 0.0
 
-            if not pos.trail_active and gain_pct >= GIVEBACK_FLOOR_PCT:
+            if getattr(pos, 'kind', None) != 'cas' and not pos.trail_active and gain_pct >= GIVEBACK_FLOOR_PCT:
                 pos.trail_active = True
                 storage.upsert_position(pos)
                 audit.log("trail_activated", signal_id=pos.signal_id,
@@ -589,20 +1174,78 @@ class AutoExecutor:
             # Flat-only installer prevents introducing unprotected legacy positions.
             # Keep legacy emergency protection for a pre-amendment restore only.
             structural = pos.structural_stop or pos.entry_price * (1 - FIXED_STOPLOSS_PCT / 100)
-            pos.effective_stop, active = trade_policy.ratchet(
-                pos.entry_price, pos.peak_price, pos.effective_stop, structural)
+            if getattr(pos, 'kind', None) == 'cas':
+                structural = max(structural, pos.entry_price*(1-cas_engine.POLICY.stop_fraction))
+                active = pos.peak_price >= pos.entry_price*1.25
+                trail = pos.entry_price+(pos.peak_price-pos.entry_price)*.75 if active else structural
+                pos.effective_stop = max(pos.effective_stop or 0, structural, trail)
+            else:
+                pos.effective_stop, active = trade_policy.ratchet(
+                    pos.entry_price, pos.peak_price, pos.effective_stop, structural)
+                if celestial.enabled():
+                    pos.effective_stop, active = celestial.trail_stop(pos.entry_price,pos.peak_price,
+                        pos.effective_stop,structural,celestial.retain_fraction(pos.signal_id))
             pos.trail_active = pos.trail_active or active
+            from . import trend_rules
+            managed = trend_rules.managed_stop(
+                pos, ltp, self.state.premium_tracker,
+                celestial.retain_fraction(pos.signal_id) if celestial.enabled() else None, now)
+            if managed is not None:
+                band_base, band_eff, band_active, band_reason = managed
+                if band_reason and not pos.exit_reason and _be_filter(  # BEST ENTRY v1
+                        pos, ltp, band_reason, now, self.state.premium_tracker):
+                    pos.exit_reason = band_reason
+                elif band_base is not None:
+                    structural = pos.structural_stop = band_base
+                    pos.effective_stop, pos.trail_active = band_eff, bool(band_active)
+            if getattr(pos, 'kind', None) == 'fast_momentum':
+                from . import scalp_v2   # v2 scalps: +1R breakeven, +12% lock +6%, ATR trail, +20% exit
+                v2_stop = scalp_v2.managed_stop(pos, ltp)
+                if v2_stop is not None:
+                    v2_base, v2_eff, v2_active, v2_reason = v2_stop
+                    if v2_reason and not pos.exit_reason and _be_filter(  # BEST ENTRY v1
+                            pos, ltp, v2_reason, now, self.state.premium_tracker):
+                        pos.exit_reason = v2_reason
+                    else:
+                        structural = pos.structural_stop = v2_base
+                        pos.effective_stop, pos.trail_active = v2_eff, bool(v2_active)
+                if not pos.exit_reason:
+                    scalp_v2.maybe_partial(self, pos, ltp)   # spec Scalp T1: book half at +12%
+                if v2_stop is None:   # STOCK BLAST v1: -35% hard stop, +12% locks +3%, peak runner
+                    from . import stock_blast
+                    sb_stop = stock_blast.managed_stop(pos, ltp)
+                    if sb_stop is not None:
+                        sb_base, sb_eff, sb_active, sb_reason = sb_stop
+                        if sb_reason and not pos.exit_reason:
+                            pos.exit_reason = sb_reason
+                        else:
+                            structural = pos.structural_stop = max(structural or 0, sb_base)
+                            pos.effective_stop, pos.trail_active = sb_eff, bool(sb_active)
             storage.upsert_position(pos)
-            reason = None
+            try:
+                from . import protection
+                protection.broker_stop_plan(pos, ltp, self.state.premium_tracker, now)
+            except Exception as exc:  # noqa: BLE001 - shadow logging only
+                audit.log('broker_stop_shadow_error', error=str(exc)[:200])
+            # A queued exit remains binding after cancellation, restart or rebound.
+            reason = pos.exit_reason
             if daily_loss_breached:
                 reason = 'daily_loss_limit_breached'
             elif force_close:
-                reason = 'eod_force_close'
+                reason = 'mcx_session_exit' if is_mcx else 'eod_force_close'
+            elif reason:
+                pass
+            elif getattr(pos, 'kind', None) == 'cas' and cas_engine.exit_reason(pos, ltp, cas_row, now):
+                reason = cas_engine.exit_reason(pos, ltp, cas_row, now)
+            elif getattr(pos,'kind',None)=='fast_momentum' and fast_momentum.timeout_reason(pos,now):
+                reason = fast_momentum.timeout_reason(pos,now)
+            elif getattr(pos, 'kind', None) == 'gamma_blast' and _sniper_no_progress(pos, now):  # SNIPER v1
+                reason = 'sniper_no_progress'
             elif ltp <= structural:
                 reason = 'structural_stop_breached'
-            elif pos.trail_active and ltp <= pos.effective_stop:
+            elif (pos.trail_active or celestial.enabled()) and ltp <= pos.effective_stop:
                 reason = 'dynamic_profit_trail_breached'
-                if getattr(config, 'FORECAST_TRAIL_ENABLED', False):
+                if not celestial.enabled() and getattr(config, 'FORECAST_TRAIL_ENABLED', False):
                     projection = self._profit_projections.get(pos.signal_id)
                     decision = forecast_trail.evaluate(
                         entry=pos.entry_price, peak=pos.peak_price,
@@ -615,17 +1258,55 @@ class AutoExecutor:
                               should_exit=decision.should_exit)
                     reason = decision.reason if decision.should_exit else None
 
+            if not reason and celestial.enabled() and not is_mcx and pos.kind != 'cas':
+                from .celestial_exit import evaluate, SOFT_REASONS
+                reason = evaluate(pos, ltp, now)
+                # 2026-10-19: in profit, an adverse signal only locks breakeven;
+                # the trail / structural stop decides the actual exit.
+                if reason in SOFT_REASONS and ltp > pos.entry_price:
+                    lock = pos.entry_price * (1 + trade_policy.COST_RESERVE)
+                    if lock < ltp and lock > (pos.effective_stop or 0):
+                        pos.effective_stop = lock
+                        storage.upsert_position(pos)
+                        from . import trend_rules
+                        trend_rules.note_lock(pos.signal_id, lock)
+                        audit.log('celestial_exit_softened', signal_id=pos.signal_id,
+                                  signal=reason, stop=round(lock, 2), ltp=ltp)
+                    reason = None
+
+            if reason and reason != pos.exit_reason:   # BEST ENTRY v1: loss-side hold rules
+                reason = _be_filter(pos, ltp, reason, now, self.state.premium_tracker)
             if reason:
                 self._close_position(pos, ltp, reason)
 
+    def _exit_fallback_price(self, pos) -> float:
+        """Exit pricing when no fresh LTP is available (2026-09-29).
+        Prefer the latest chain-poll sample under 60s old; otherwise the lower
+        of the stop and the entry price. Exit re-pricing walks it down further
+        once a fresh quote returns."""
+        recent = self.state.premium_tracker.latest(pos.token, 60.0)
+        if recent is not None:
+            return recent
+        candidates = [p for p in (pos.effective_stop, pos.structural_stop, pos.entry_price)
+                      if p is not None and p > 0]
+        return min(candidates) if candidates else pos.entry_price
+
     @serialized
     def _close_position(self, pos: Position, ltp: float, reason: str) -> dict:
+        if pos.status == 'entry_pending':
+            return execution_ledger.request_entry_exit(pos, reason)
         if pos.status != 'open' or pos.remaining_qty <= 0:
             return {'ok': False, 'reason': 'position_not_open_or_order_pending'}
         if execution_ledger.pending(pos.signal_id):
             return {'ok': False, 'reason': 'order_already_pending'}
         pos.exit_reason = reason
-        limit_price = round(ltp * (1 - LIMIT_ORDER_BUFFER_PCT / 100.0), 1)
+        raw_exit = ltp * (1 - LIMIT_ORDER_BUFFER_PCT / 100.0)
+        # 2026-09-30: a collapsed Rs 0.05 premium used to round to Rs 0.0 here and
+        # the exit was rejected as invalid_price. Never below one Rs 0.05 tick.
+        if angel_orders.product_for(pos) == angel_orders.CAS_PRODUCT_TYPE:
+            limit_price = angel_orders.to_tick(raw_exit, 'SELL')
+        else:
+            limit_price = max(0.05, round(raw_exit, 1))
         result = execution_ledger.submit(pos, 'SELL', pos.remaining_qty, limit_price)
         if pos.status == 'closed':
             self.state.positions.pop(str(pos.signal_id), None)
@@ -634,7 +1315,7 @@ class AutoExecutor:
 
     @serialized
     def refresh_orders(self):
-        healthy = execution_ledger.refresh(self.state.positions)
+        healthy = execution_ledger.refresh(self.state.positions, _fresh_ltp)
         if not healthy:
             self._reconcile_blocked = True
         for key, pos in list(self.state.positions.items()):
@@ -646,6 +1327,11 @@ class AutoExecutor:
     def start_monitor_thread(self) -> None:
         threading.Thread(target=self._monitor_loop, daemon=True,
                          name="auto-executor-monitor").start()
+        try:   # GAMMA V2 LIVE (2026-11-02)
+            from . import gv2_live
+            gv2_live.start(self)
+        except Exception as exc:  # noqa: BLE001
+            audit.log('gv2_live_start_error', error=str(exc)[:200])
 
     def _monitor_loop(self) -> None:
         while not self._stop.is_set():
@@ -659,12 +1345,271 @@ class AutoExecutor:
                 self.check_exits()
             except Exception as exc:                    # noqa: BLE001
                 audit.log("position_monitor_loop_error", error=str(exc))
-            self._stop.wait(max(0.1, POSITION_MONITOR_INTERVAL_SEC - (time.monotonic() - started)))
+            interval = POSITION_MONITOR_INTERVAL_SEC
+            try:
+                # 2026-10-19: rejected-order alerts and faster checks near a stop.
+                from . import protection
+                protection.watch_rejections()
+                interval = min(interval, protection.monitor_interval(self))
+                from . import scalp_runner   # PEAK RUNNER v1: 2-s checks while a runner is open
+                interval = min(interval, scalp_runner.interval(self))
+            except Exception as exc:                    # noqa: BLE001
+                audit.log("protection_loop_error", error=str(exc)[:200])
+            self._stop.wait(max(0.1, interval - (time.monotonic() - started)))
 
     def stop(self) -> None:
         self._stop.set()
 
 
+# HOURLY FORECAST v1 - manual buy from the forecast panel
+def _hf_forecast_manual_buy(self, index_name: str, direction: str, strike: float, lots: int,
+                        chain, spot: float) -> dict:
+    """One human-clicked BUY of a strike the trader picked on the hourly-forecast panel.
+
+    The strike and lot count are the trader's choice; everything else is the
+    existing entry machinery: session gate, reconciliation, kill switch,
+    market hours, signal cutoff, daily loss limit, carry-forward and external
+    contract checks, portfolio cash/loss capacity, fresh LIMIT pricing, the
+    durable execution ledger, and the same software stop/trail monitoring as
+    every other position. Nothing here runs without a click.
+    """
+    import json
+    from . import market_session_gate, portfolio_capacity
+    if not getattr(config, 'FORECAST_MANUAL_TRADE_ENABLED', False):
+        return self._reject('forecast_manual_trade_disabled', index_name, direction)
+    if not ORDER_PLACEMENT_ENABLED:
+        return self._reject('broker_orders_disabled', index_name, direction)
+    if direction not in ('CE', 'PE'):
+        return self._reject('direction_must_be_CE_or_PE', index_name, str(direction))
+    max_lots = getattr(config, 'FORECAST_MANUAL_MAX_LOTS', MAX_LOTS_PER_SIGNAL)
+    if isinstance(lots, bool) or not isinstance(lots, int) or not 1 <= lots <= max_lots:
+        return self._reject(f'lots_must_be_1_to_{max_lots}', index_name, direction)
+    session_block = market_session_gate.entry_block(chain.index.opt_exchange, underlying=index_name, manual=True)
+    if session_block:
+        return self._reject(session_block, index_name, direction)
+    if self._reconcile_blocked:
+        return self._reject('startup_reconcile_not_complete', index_name, direction)
+    if killswitch.engaged():
+        return self._reject('killswitch_engaged', index_name, direction)
+    if not in_market_hours():
+        return self._reject('outside_market_hours', index_name, direction)
+    if past_signal_cutoff():
+        return self._reject('past_signal_cutoff', index_name, direction)
+    if exit_manager.realized_pnl_today() <= -_daily_loss_limit():
+        return self._reject('daily_loss_limit_breached', index_name, direction)
+    if index_name in getattr(self, '_manual_carryforward_underlyings', set()):
+        return self._reject('manual_carryforward_same_underlying', index_name, direction)
+    block = portfolio_capacity.entry_block(self.state.positions, execution_ledger.pending())
+    if block:
+        return self._reject(block, index_name, direction)
+    clock = time.monotonic()
+    if not 0 <= clock - getattr(chain, '_spot_received_at', 0) <= 30:
+        return self._reject('underlying_quote_stale', index_name, direction)
+    if not 0 <= clock - getattr(chain, '_last_poll', 0) <= 30:
+        return self._reject('option_chain_stale', index_name, direction)
+
+    quote = next((q for q in chain.quotes.values()
+                  if q.strike == strike and q.opt_type == direction), None)
+    if quote is None:
+        return self._reject('strike_not_in_tracked_ladder', index_name, direction)
+    try:
+        valid = {str(c['token']) for c in chain.scrips.strikes_around(
+            chain.index, chain.atm, config.STRIKES_EACH_SIDE)}
+    except (AttributeError, TypeError, KeyError):
+        return self._reject('contract_expiry_unverifiable', index_name, direction)
+    if str(quote.token) not in valid:
+        return self._reject('contract_expiry_unverifiable', index_name, direction)
+    if (chain.index.opt_exchange, str(quote.token)) in getattr(self, '_external_contracts', set()):
+        return self._reject('contract_held_outside_kadima', index_name, direction)
+    lot_size = get_lot_size(quote.symbol, quote.token)
+    if lot_size is None:
+        return self._reject('lot_size_unresolvable_at_order_time', index_name, direction)
+    pricing_ltp = _poll_ltp(chain.index.opt_exchange, [quote.token]).get(quote.token)
+    if pricing_ltp is None:
+        return self._reject('fresh_entry_quote_unavailable', index_name, direction)
+    limit_price = round(pricing_ltp * (1 + LIMIT_ORDER_BUFFER_PCT / 100.0), 1)
+
+    # Stop: the same structure-based premium stop as engine entries when a
+    # confirmed swing exists, otherwise a flat fallback below the fill price.
+    swing_level, stop = None, None
+    structure = self._structure(chain, direction, spot)
+    if structure is not None:
+        swing_level, days = structure
+        stop = trade_policy.premium_stop(spot, swing_level, quote.strike, pricing_ltp,
+                                         days, direction)
+    if stop is None:
+        stop = round(pricing_ltp * (1 - getattr(config, 'FORECAST_MANUAL_FALLBACK_SL_PCT', 0.30)), 2)
+    if pricing_ltp <= stop:
+        return self._reject('fresh_quote_invalidates_stop', index_name, direction)
+
+    capacity = portfolio_capacity.affordable_lots(
+        self.state.positions, execution_ledger.pending(),
+        exchange=chain.index.opt_exchange, token=quote.token,
+        limit_price=limit_price, stop=stop, lot_size=lot_size, requested_lots=lots,
+        broker_funds=capital_guard.broker_available_funds(),
+        capital_buffer_pct=capital_guard.CAPITAL_SAFETY_BUFFER_PCT,
+        daily_limit=_daily_loss_limit(), realized_pnl=exit_manager.realized_pnl_today(),
+        cost_reserve=trade_policy.COST_RESERVE, exit_buffer=trade_policy.EXIT_BUFFER)
+    if capacity.lots < lots:
+        return self._reject(f'only_{capacity.lots}_lots_affordable_{capacity.reason}',
+                            index_name, direction)
+    if killswitch.engaged() or not in_market_hours() or past_signal_cutoff():
+        return self._reject('entry_gate_changed_before_submission', index_name, direction)
+    session_block = market_session_gate.entry_block(chain.index.opt_exchange, underlying=index_name, manual=True)
+    if session_block:
+        return self._reject(session_block, index_name, direction)
+
+    quantity = lots * lot_size
+    signal_id = storage.insert_signal(index_name, 'MANUAL', 0.0, direction, json.dumps(dict(
+        source='hourly_forecast_panel', strike=strike, lots=lots, limit_price=limit_price,
+        stop=stop, spot=spot)), kind='forecast_manual')
+    pos = Position(
+        signal_id=signal_id, kind='forecast_manual', index=index_name, direction=direction,
+        symbol=quote.symbol, token=quote.token, exchange=chain.index.opt_exchange,
+        entry_price=0.0, entry_ts=now_ist(), lots=lots, lot_size=lot_size,
+        remaining_qty=0, status='entry_pending', swing_level=swing_level,
+        structural_stop=stop, effective_stop=stop, allocated_capital=quantity * limit_price)
+    with self._lock:
+        self.state.positions[str(signal_id)] = pos
+    result = execution_ledger.submit(pos, 'BUY', quantity, limit_price)
+    self._last_reconcile = 0.0
+    if pos.status == 'closed':
+        self.state.positions.pop(str(signal_id), None)
+    result = dict(result, signal_id=signal_id, symbol=quote.symbol, quantity=quantity,
+                  limit_price=limit_price, stop=stop)
+    audit.log('forecast_manual_entry_result', index=index_name, direction=direction,
+              strike=strike, lots=lots, **result)
+    self.entry_diagnostics.append(dict(result, ts=now_ist().isoformat(), index=index_name,
+        direction=direction, stage='FORECAST_MANUAL_SUBMISSION'))
+    alerts.enqueue(f"MANUAL forecast-panel BUY {quote.symbol} x{quantity} @ {limit_price}: "
+                   f"{result.get('reason')} | signal #{signal_id}", key=f'entry:{signal_id}')
+    return result
+
+
+
+AutoExecutor.forecast_manual_buy = (serialized(_hf_forecast_manual_buy)
+                                     if 'serialized' in globals() else _hf_forecast_manual_buy)
+
+
 EXECUTOR = AutoExecutor()
 
 
+def _bounded_entry_stop(kind, stop, quote, tracker):
+    """Trader rules 2026-10-19: gamma entry stop gets the 35% hard cap and is kept
+    outside the premium's own noise. Other kinds unchanged."""
+    if kind != 'gamma_blast' or stop is None:
+        return stop
+    from . import trend_rules
+    return trend_rules.entry_stop(stop, quote.ltp,
+                                  trend_rules.tracker_samples(tracker, quote.token))
+
+
+def _sniper_no_progress(pos, now):  # SNIPER v1
+    from . import sniper
+    return sniper.no_progress(pos, now)
+
+
+def _gamma_band_structure(chain, index_name, direction, spot, snap):  # GAMMA CONFIRM v1
+    """(spot stop level, days to expiry) from the trend band, or None."""
+    try:
+        from . import trend_rules
+        now = now_ist()
+        expiry = datetime.strptime(chain.scrips.nearest_expiry(chain.index), '%d%b%Y')
+        expiry = expiry.replace(tzinfo=now.tzinfo, hour=config.MARKET_CLOSE[0],
+                                minute=config.MARKET_CLOSE[1])
+        days = (expiry - now).total_seconds() / 86400
+        vwap = snap.vwap if snap is not None else None
+        b = trend_rules.band(index_name, chain.index.token, spot, vwap, now)
+        if days <= 0 or b is None:
+            return None
+        level = trend_rules.stop_level(direction, b)
+        if not trade_policy.positive(level) or (direction == 'CE' and level >= spot) \
+                or (direction == 'PE' and level <= spot):
+            return None
+        audit.log('gamma_band_structure', index=index_name, direction=direction, spot=spot,
+                  level=round(level, 2), source=b.get('source'))
+        return level, days
+    except Exception as exc:  # noqa: BLE001 - fall back to the old refusal
+        audit.log('gamma_band_structure_error', index=index_name, error=str(exc)[:200])
+        return None
+
+
+def _daily_loss_limit():  # LOSS CONTROLS v1 (2026-10-25)
+    from . import daily_limit
+    return daily_limit.limit()
+
+
+def _confirmed_gamma(kind, manual, selected, minimum, index_name=None, direction=None):
+    """BOTTLENECK FIX v1: auto gamma entry whose Celestial row is CONFIRMED (v2 rule)."""
+    if kind != 'gamma_blast' or manual or not selected:
+        return False
+    try:
+        from . import gamma_confirm
+        ok = gamma_confirm.is_confirmed(selected, now_ist(), minimum)
+    except Exception:  # noqa: BLE001 - no bypass on any error
+        return False
+    if ok:
+        try:
+            audit.log('confirmed_bypass', check='trade_policy_eligible', index=index_name,
+                      direction=direction, symbol=selected.get('symbol'))
+        except Exception:  # noqa: BLE001
+            pass
+    return ok
+
+
+def _be_samples(tracker, token):  # BEST ENTRY v1
+    from . import trend_rules
+    return trend_rules.tracker_samples(tracker, token)
+
+
+def _be_decide(kind, manual, sid, quote, ltp, stop, tracker):  # BEST ENTRY v1
+    from . import best_entry
+    return best_entry.decide(kind=kind, manual=manual, signal_id=sid, token=quote.token,
+                             ltp=ltp, stop=stop, delta=getattr(quote, 'delta', None),
+                             samples=_be_samples(tracker, quote.token))
+
+
+def _mf_check(pos, ltp, now, tracker):  # MANUAL FORECAST STOP v1
+    from . import manual_forecast
+    return manual_forecast.check(pos, ltp, _be_samples(tracker, pos.token), now)
+
+
+def _be_filter(pos, ltp, reason, now, tracker):  # BEST ENTRY v1
+    from . import best_entry
+    return best_entry.filter_exit(pos, ltp, reason, now, _be_samples(tracker, pos.token))
+
+
+NOCAP_MAX_LOTS = 100   # SCALP NO-CAP v1: effectively "as many as the cash buys"
+
+
+def _scalp_nocap():  # SCALP NO-CAP v1
+    import json, os
+    from .config import DATA_DIR
+    try:
+        with open(os.path.join(DATA_DIR, 'scalp_capital.json')) as f:
+            return json.load(f).get('mode') == 'live'
+    except (OSError, ValueError, AttributeError):
+        return False
+
+
+def _scalp_nocap_allocation(fallback):  # SCALP NO-CAP v1
+    funds = capital_guard.broker_available_funds()
+    if funds is None or not funds > 0:
+        return fallback
+    return funds * (1 - capital_guard.CAPITAL_SAFETY_BUFFER_PCT / 100)
+
+
+SCALP_MAX_LOTS_DEFAULT = 2   # SCALP CAP v1 (trader 2026-10-28): index scalps at most 2 lots
+
+
+def _scalp_max_lots():  # SCALP CAP v1
+    import json, os
+    from .config import DATA_DIR
+    try:
+        with open(os.path.join(DATA_DIR, 'scalp_capital.json')) as f:
+            v = json.load(f).get('max_lots')
+        if type(v) is int and 1 <= v <= NOCAP_MAX_LOTS:
+            return v
+    except (OSError, ValueError, AttributeError):
+        pass
+    return SCALP_MAX_LOTS_DEFAULT

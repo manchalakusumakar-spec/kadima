@@ -114,6 +114,9 @@ CREATE TABLE IF NOT EXISTS positions (
     exit_order_id TEXT
 );
 CREATE INDEX IF NOT EXISTS idx_positions_status ON positions(status);
+CREATE TABLE IF NOT EXISTS manual_protection_warnings (
+    key TEXT PRIMARY KEY, reason TEXT NOT NULL, queued_at TEXT NOT NULL
+);
 """
 
 
@@ -127,6 +130,8 @@ def _migrate(c: sqlite3.Connection) -> None:
     for name in ('swing_level', 'structural_stop', 'effective_stop', 'allocated_capital'):
         if name not in position_cols:
             c.execute(f'ALTER TABLE positions ADD COLUMN {name} REAL')
+    if 'product' not in position_cols:
+        c.execute('ALTER TABLE positions ADD COLUMN product TEXT')
     cols = {row["name"] for row in c.execute("PRAGMA table_info(signals)")}
     if "kind" not in cols:
         c.execute("ALTER TABLE signals ADD COLUMN kind TEXT DEFAULT 'bull_shield'")
@@ -179,9 +184,10 @@ def insert_oi_snapshot(index_name: str, rows: Iterable[dict]) -> None:
 
 
 def insert_signal(index_name: str, tier: str, score: float,
-                  direction: str, payload: str, kind: str = "bull_shield") -> int:
-    c = conn()
-    with c:
+                  direction: str, payload: str, kind: str = "bull_shield",
+                  _connection=None) -> int:
+    c = _connection if _connection is not None else conn()
+    with (c if _connection is None else nullcontext()):
         cur = c.execute(
             "INSERT INTO signals (ts, index_name, tier, score, direction, "
             "payload, kind) VALUES (?,?,?,?,?,?,?)",
@@ -201,17 +207,18 @@ def upsert_position(pos, _connection=None) -> None:
             "symbol, token, exchange, entry_price, entry_ts, lots, lot_size, "
             "remaining_qty, order_id, status, peak_price, trail_active, "
             "exit_price, exit_ts, exit_reason, exit_order_id, "
-            "swing_level, structural_stop, effective_stop, allocated_capital) "
-            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
+            "swing_level, structural_stop, effective_stop, allocated_capital, product) "
+            "VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) "
             "ON CONFLICT(signal_id) DO UPDATE SET "
             "entry_price=excluded.entry_price, entry_ts=excluded.entry_ts, "
-            "remaining_qty=excluded.remaining_qty, "
+            "remaining_qty=excluded.remaining_qty, lots=excluded.lots, "
             "status=excluded.status, peak_price=excluded.peak_price, "
             "trail_active=excluded.trail_active, exit_price=excluded.exit_price, "
             "exit_ts=excluded.exit_ts, exit_reason=excluded.exit_reason, "
             "exit_order_id=excluded.exit_order_id, order_id=excluded.order_id, "
             "swing_level=excluded.swing_level, structural_stop=excluded.structural_stop, "
-            "effective_stop=excluded.effective_stop, allocated_capital=excluded.allocated_capital",
+            "effective_stop=excluded.effective_stop, allocated_capital=excluded.allocated_capital, "
+            "product=excluded.product",
             (pos.signal_id, pos.kind, pos.index, pos.direction, pos.symbol,
              pos.token, pos.exchange, pos.entry_price,
              pos.entry_ts.isoformat() if pos.entry_ts else None,
@@ -221,7 +228,8 @@ def upsert_position(pos, _connection=None) -> None:
              pos.exit_ts.isoformat() if pos.exit_ts else None,
              pos.exit_reason, pos.exit_order_id,
              getattr(pos, 'swing_level', None), getattr(pos, 'structural_stop', None),
-             getattr(pos, 'effective_stop', None), getattr(pos, 'allocated_capital', None)))
+             getattr(pos, 'effective_stop', None), getattr(pos, 'allocated_capital', None),
+             getattr(pos, 'product', None)))
 
 
 def close_position(signal_id: int, exit_price: float | None, exit_ts: str,
@@ -246,7 +254,7 @@ def load_open_positions() -> list[dict]:
         "token, exchange, entry_price, entry_ts, lots, lot_size, "
         "remaining_qty, order_id, status, peak_price, trail_active, "
         "exit_price, exit_ts, exit_reason, exit_order_id, "
-        "swing_level, structural_stop, effective_stop, allocated_capital "
+        "swing_level, structural_stop, effective_stop, allocated_capital, product "
         "FROM positions WHERE status IN ('open','entry_pending','exit_pending','order_unknown')"
     ).fetchall()
     return [dict(r) for r in rows]

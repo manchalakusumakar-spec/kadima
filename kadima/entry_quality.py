@@ -74,6 +74,10 @@ class EntryContext:
     direction: str                        # "CE" or "PE"
     spread_pct: Optional[float] = None
     stop_override: Optional[float] = None
+    # 2026-09-29: False for gamma_blast entries. A gamma blast IS a premium
+    # that has run and is extended from VWAP, so the three chase gates
+    # rejected exactly the trades that strategy exists for. Stop checks remain.
+    chase_gates: bool = True
 
 
 @dataclass
@@ -150,9 +154,10 @@ def evaluate_entry(ctx: EntryContext) -> EntryVerdict:
     and correct answer.
     """
     rng = _range_position(ctx)
+    chase = ctx.chase_gates
 
     # 1. Is the premium already extended within today's range?
-    if rng is not None and rng > MAX_PREMIUM_RANGE_POSITION:
+    if chase and rng is not None and rng > MAX_PREMIUM_RANGE_POSITION:
         return EntryVerdict(
             False,
             f"premium_at_{rng:.0%}_of_day_range_over_{MAX_PREMIUM_RANGE_POSITION:.0%}",
@@ -161,7 +166,7 @@ def evaluate_entry(ctx: EntryContext) -> EntryVerdict:
 
     # 2. Has the premium already run hard in the last 30 min?
     run = _premium_run_pct(ctx)
-    if run is not None and run > MAX_PREMIUM_RUN_PCT:
+    if chase and run is not None and run > MAX_PREMIUM_RUN_PCT:
         return EntryVerdict(
             False,
             f"premium_already_up_{run:.0f}pct_in_30min",
@@ -170,7 +175,7 @@ def evaluate_entry(ctx: EntryContext) -> EntryVerdict:
 
     # 3. Is the underlying overextended from VWAP?
     ext = _underlying_extension_pct(ctx)
-    if ext is not None and ext > MAX_UNDERLYING_EXT_PCT:
+    if chase and ext is not None and ext > MAX_UNDERLYING_EXT_PCT:
         return EntryVerdict(
             False,
             f"underlying_{ext:.2f}pct_from_vwap_over_{MAX_UNDERLYING_EXT_PCT}",

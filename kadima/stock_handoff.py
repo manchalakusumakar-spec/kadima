@@ -25,6 +25,9 @@ def fresh(timestamp, seconds=30, now=None):
 def publish(name, direction, tier, score, payload):
     """Keep one durable signal ID until the confirmed direction ends, even on restart."""
     active = tier == 'CONFIRMED' and direction in ('CE', 'PE') and math.isfinite(score) and score >= 70
+    from . import celestial
+    if celestial.enabled():
+        active = direction in ('CE','PE') and math.isfinite(score) and 40 <= score <= 100
     encoded = json.dumps(payload, allow_nan=False)
     if len(encoded) > 200_000:
         raise ValueError('Stock payload too large')
