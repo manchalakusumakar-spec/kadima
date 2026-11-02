@@ -15,6 +15,10 @@ that stop-losses follow. Called every second from live_forecast.LiveForecaster.t
    circuit") path toward a projected move sized from the day: 4x today's median closed 5-minute range,
    scaled up by signal strength (meter HIGH score, surge size, Marubozu range), kept within 0.15%-0.6%
    of spot, over ~16 minutes. Both directions.
+5. Dynamic maximum stop-loss (2-Nov night, trader approved): for the plan's side, the worst price the
+   pulse line still allows before its target (line +/- one typical move x sqrt(minutes ahead)) plus 1.5
+   typical 1-minute moves, never closer than 3 typical moves to the price. Recomputed every second;
+   it only tightens (trails), never loosens. A side change must hold 10 s before the stop resets.
 4. Early Marubozu: the forming 5-minute candle, after 2 minutes, with body >= 80% of range, close
    within 15% of the extreme and range >= 1.2x the day's median 5-minute range; the last closed
    5-minute candle with body >= 90% of range is reported too.
@@ -36,6 +40,10 @@ MOVE_MIN_PCT = 0.0015
 MOVE_MAX_PCT = 0.006
 CIRCUIT_MIN = 16
 CIRCUIT_HOLD_SEC = 180
+SL_ROOM_SIG = 1.5           # max SL: room beyond the forecast worst case, in typical 1-min moves
+SL_MIN_SIG = 3.0            # ... and never closer than this many typical moves to the price
+SL_SIDE_HOLD_SEC = 10       # a new plan side must hold this long before the stop resets
+SL_WAIT_KEEP_SEC = 120      # keep showing the stop this long while the plan says WAIT
 
 _S: dict = {}
 
@@ -226,6 +234,75 @@ def move_size(spot, mz, meter, surge):
     return round(min(max(move, MOVE_MIN_PCT * spot), MOVE_MAX_PCT * spot), 1)
 
 
+def sigma_1m(spots, now, spot):
+    """Typical 1-minute move today: 1.25 x median |change| between minute closes (robust), clamped."""
+    closes = {}
+    cut = now.replace(second=0, microsecond=0)
+    for t, p in spots:
+        if t.date() == now.date() and t < cut:
+            closes[t.replace(second=0, microsecond=0)] = p
+    cl = [v for _, v in sorted(closes.items())][-90:]
+    lo, hi = 0.00015 * spot, 0.003 * spot
+    if len(cl) < 6:
+        return 0.0004 * spot
+    d = sorted(abs(b - a) for a, b in zip(cl, cl[1:]))
+    return min(max(1.25 * d[len(d) // 2], lo), hi)
+
+
+def _sl_candidate(now, spot, fwd, side, target_ts, sig):
+    down = side == 'PE'
+    tgt_t = _dt(target_ts) if target_ts else None
+    worst = spot
+    for t, v in fwd:
+        if tgt_t and t > tgt_t:
+            break
+        hw = sig * math.sqrt(max((t - now).total_seconds() / 60.0, 0.0))
+        worst = max(worst, v + hw) if down else min(worst, v - hw)
+    cand = worst + (SL_ROOM_SIG * sig if down else -SL_ROOM_SIG * sig)
+    return max(cand, spot + SL_MIN_SIG * sig) if down else min(cand, spot - SL_MIN_SIG * sig)
+
+
+def trail_sl(st, now, spot, fwd, plan, sig):
+    """Dynamic maximum stop-loss for the plan's side (display only). Returns a dict or None."""
+    side = (plan or {}).get('side')
+    s = st.get('sl')
+    if s and s['hit'] and (now - _dt(s['hit'])).total_seconds() > 300:
+        st['sl'] = s = None                             # 5 minutes after a stop-out, start a fresh stop
+    if side in ('CE', 'PE') and (s is None or s['side'] != side):
+        pend = st.get('sl_pending')
+        if s is None or (pend and pend[0] == side and (now - pend[1]).total_seconds() >= SL_SIDE_HOLD_SEC):
+            lvl = round(_sl_candidate(now, spot, fwd, side, plan.get('target_ts'), sig), 1)
+            s = dict(side=side, level=lvl, init=lvl, since=now.isoformat(), hist=[[now.isoformat(), lvl]],
+                     hit=None, plan_stop=plan.get('stop'))
+            st['sl'], st['sl_pending'] = s, None
+        elif not pend or pend[0] != side:
+            st['sl_pending'] = (side, now)
+    elif side == s_side(s):
+        st['sl_pending'] = None
+    if s is None:
+        return None
+    if side not in ('CE', 'PE'):
+        if (now - _dt(s['hist'][-1][0])).total_seconds() > SL_WAIT_KEEP_SEC and not s['hit']:
+            st['sl'] = None
+            return None
+    elif side == s['side'] and not s['hit']:
+        down = side == 'PE'
+        cand = _sl_candidate(now, spot, fwd, side, plan.get('target_ts'), sig)
+        if (down and cand < s['level'] - 0.5) or (not down and cand > s['level'] + 0.5):
+            s['level'] = round(cand, 1)
+            s['hist'] = (s['hist'] + [[now.isoformat(), s['level']]])[-60:]
+        s['plan_stop'] = plan.get('stop')
+    if not s['hit'] and ((s['side'] == 'PE' and spot >= s['level']) or (s['side'] == 'CE' and spot <= s['level'])):
+        s['hit'] = now.isoformat()
+    return dict(side=s['side'], level=s['level'], init=s['init'], trailed=round(abs(s['init'] - s['level']), 1),
+                room=round(abs(s['level'] - spot), 1), since=s['since'], hit=s['hit'], hist=s['hist'][-30:],
+                plan_stop=s['plan_stop'], pending=(st.get('sl_pending') or (None,))[0])
+
+
+def s_side(s):
+    return s['side'] if s else None
+
+
 def update(name, now, spot, snap, spots):
     """Returns the pulse dict for this index (or None when no spot)."""
     if spot is None:
@@ -312,7 +389,12 @@ def update(name, now, spot, snap, spots):
         plan['reward_risk'] = round(abs(plan['target'] - plan['entry']) / abs(plan['entry'] - plan['stop']), 2)
     else:
         plan = plan_for(now, spot, fwd, [m for m in ms if _dt(m['ts']) >= now], trig)
-    return dict(mode='circuit' if circ else 'smooth', rev=st['rev'], rev_ts=st['rev_ts'].isoformat(),
+    sig = sigma_1m(spots, now, spot)
+    try:
+        msl = trail_sl(st, now, spot, fwd, plan, sig)
+    except Exception:                                   # noqa: BLE001 - display only
+        msl = None
+    return dict(mode='circuit' if circ else 'smooth', rev=st['rev'], max_sl=msl, sigma_1m=round(sig, 2), rev_ts=st['rev_ts'].isoformat(),
                 rev_reason=st['reason'], trigger=trig, dev=None if dev is None else round(dev, 2),
                 line=[dict(ts=t.isoformat(), v=round(v, 2)) for t, v in line],
                 milestones=ms[:8], plan=plan, circuit=circ, marubozu=mz, revs=st['revs'][-10:],

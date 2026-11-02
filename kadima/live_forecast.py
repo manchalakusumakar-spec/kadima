@@ -39,8 +39,14 @@ LOG_SEC = 60.0
 PATH_REFRESH_SEC = 15.0
 SAMPLE_FRESH_SEC = 60.0
 LIVE = {}                      # index -> latest snapshot (read by control_api)
+SAVE_SEC = 60.0                # AFTER-HOURS 2-Nov: last snapshot saved to forecast.db for after the close
+_DB = {}                       # index -> db path used for the saved snapshot
 
 SCHEMA = """
+CREATE TABLE IF NOT EXISTS live_snapshot (
+    day TEXT NOT NULL, index_name TEXT NOT NULL, ts TEXT NOT NULL, snap TEXT NOT NULL,
+    PRIMARY KEY (day, index_name)
+);
 CREATE TABLE IF NOT EXISTS live_meter (
     ts TEXT NOT NULL, index_name TEXT NOT NULL, spot REAL, score REAL, lean TEXT,
     lean_strength REAL, parts TEXT NOT NULL,
@@ -236,6 +242,7 @@ class LiveForecaster:
         self._last_meter = {}
         self._last_log = {}
         self._last_sample = {}
+        self._last_save = {}
         with HF.conn(self.db) as c:
             c.executescript(SCHEMA)
 
@@ -325,6 +332,10 @@ class LiveForecaster:
             except Exception as exc:                    # noqa: BLE001
                 audit.log('pulse_forecast_error', error=str(exc)[:200])
             LIVE[name] = snap
+            _DB[name] = self.db
+            if time.monotonic() - self._last_save.get(name, 0) >= SAVE_SEC or now.hour * 60 + now.minute >= 15 * 60 + 30:
+                self._last_save[name] = time.monotonic()
+                save_snapshot(name, snap, self.db, now)
 
     def _meter(self, name, st, now, spot):
         chain = getattr(st, 'chain', None)
@@ -362,5 +373,37 @@ class LiveForecaster:
         return out
 
 
-def snapshot(name):
-    return LIVE.get(name) or dict(index=name, available=False, reason='not_running_or_outside_market_hours')
+def save_snapshot(name, snap, db, now):
+    try:
+        c = HF.conn(db)
+        with c:
+            c.execute('INSERT OR REPLACE INTO live_snapshot VALUES (?,?,?,?)',
+                      (now.date().isoformat(), name, now.isoformat(), json.dumps(snap, default=str)))
+    except Exception as exc:                            # noqa: BLE001 - display only
+        audit.log('live_snapshot_save_error', error=str(exc)[:200])
+
+
+def _market_open(now):
+    return now.weekday() < 5 and 9 * 60 + 15 <= now.hour * 60 + now.minute < 15 * 60 + 31
+
+
+def snapshot(name, db=None, now=None):
+    """Live snapshot in market hours; after the close (or after a restart) the last one saved today,
+    else the latest saved session, marked closed so the panel keeps showing it."""
+    now = now or datetime.now(IST)
+    live = LIVE.get(name)
+    if live and _market_open(now) and str(live.get('ts', ''))[:10] == now.date().isoformat():
+        return dict(live, market_open=True, day=now.date().isoformat())
+    try:
+        c = HF.conn(db or _DB.get(name) or HF.DB_PATH)
+        r = c.execute('SELECT day, ts, snap FROM live_snapshot WHERE index_name=? ORDER BY day DESC LIMIT 1',
+                      (name,)).fetchone()
+    except Exception:                                   # noqa: BLE001
+        r = None
+    if live and (not r or str(live.get('ts', '')) >= r['ts']):
+        return dict(live, market_open=_market_open(now), day=str(live.get('ts', ''))[:10], saved=False)
+    if r:
+        out = json.loads(r['snap'])
+        out.update(market_open=False, day=r['day'], saved=True, saved_ts=r['ts'])
+        return out
+    return dict(index=name, available=False, reason='not_running_or_outside_market_hours')

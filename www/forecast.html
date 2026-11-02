@@ -121,6 +121,44 @@
     .trade { grid-template-columns: 1fr 1fr; }
     .lots { grid-column: 1 / -1; }
   }
+  /* ELECTRIC PULSE + TRADE CARD + NOW + MAGNIFIER (2-Nov night) */
+  :root { --eup: #22e38c; --eupc: #e6fff3; --edn: #ff3b52; --ednc: #ffe3e7; --el: #ffd400; }
+  .tcard { display: grid; grid-template-columns: auto 1fr; gap: 10px 18px; align-items: center; border-radius: 12px; padding: 12px 16px;
+           margin: 0 0 10px; border: 2px solid var(--tc, var(--line)); background: linear-gradient(90deg, var(--tcbg, transparent), transparent 70%); }
+  .tcard.pe { --tc: var(--down); --tcbg: rgba(255,92,108,.18); } .tcard.ce { --tc: var(--up); --tcbg: rgba(47,208,138,.16); }
+  .tcard.go { animation: tedge 1s ease-in-out infinite; }
+  @keyframes tedge { 50% { box-shadow: 0 0 22px var(--tc); } }
+  .tcard .act { font: 900 25px/1.15 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--tc, var(--text)); white-space: nowrap; }
+  .tcard.go .act { animation: tblink 1s steps(2, start) infinite; }
+  .tcard .act small { display: block; font: 700 12px -apple-system, Segoe UI, Roboto, sans-serif; color: var(--text); }
+  @keyframes tblink { 50% { opacity: .25; } }
+  .tcard .f { display: flex; flex-wrap: wrap; gap: 8px 10px; }
+  .tcard .k { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 5px 9px; }
+  .tcard .k i { display: block; font-style: normal; font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+  .tcard .k b { font: 800 16px ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .tcard .k small { color: var(--muted); }
+  .tcard .k.sl { border-color: var(--down); } .tcard .k.sl b { color: var(--down); } .tcard .k.tg b { color: var(--up); }
+  .tcard .k.sl .tr { color: var(--up); font-weight: 700; }
+  .tcard .k.sl.danger { animation: tblink .5s steps(2, start) infinite; background: rgba(255,92,108,.18); }
+  .tcard .k.now { border-color: var(--el); } .tcard .k.now b { color: var(--el); }
+  .tcard.go .k.now { animation: tblink 1s steps(2, start) infinite; }
+  .tcard .big { color: var(--el); font-weight: 900; }
+  .nowstrip { display: flex; flex-wrap: wrap; gap: 6px 8px; margin: 0 0 10px; }
+  .nowstrip .n { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 4px 10px; }
+  .nowstrip .n i { display: block; font-style: normal; font-size: 10px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
+  .nowstrip .n b { font: 800 17px ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .nowstrip .n.px { border-color: var(--el); } .nowstrip .n.px b { font-size: 20px; }
+  .nowstrip .n.px .ld { display: inline-block; width: 8px; height: 8px; border-radius: 50%; background: var(--el); margin-right: 6px; vertical-align: middle; animation: tblink 1s steps(2, start) infinite; }
+  .nowstrip .n.flash { animation: nflash .7s ease-out; }
+  @keyframes nflash { 0% { background: rgba(255,212,0,.45); } 100% { background: var(--panel); } }
+  .nowstrip .u { color: var(--up); } .nowstrip .d { color: var(--down); }
+  .mag { background: var(--panel); border: 1px solid var(--el); border-radius: 12px; padding: 8px; margin: 0 0 10px; box-shadow: 0 0 16px rgba(255,212,0,.12); }
+  .mag h5 { margin: 2px 6px 4px; font-size: 11px; color: var(--el); text-transform: uppercase; letter-spacing: .08em; }
+  .mag svg { width: 100%; height: auto; display: block; }
+  #magBtn[aria-pressed="true"] { border-color: var(--el); color: var(--el); }
+  .closedtag { color: var(--flat); font-weight: 700; }
+  @media (max-width: 700px) { .tcard { grid-template-columns: 1fr; } .tcard .act { font-size: 20px; white-space: normal; } }
+  @media (prefers-reduced-motion: reduce) { .tcard.go, .tcard.go .act, .tcard.go .k.now, .tcard .k.sl.danger, .nowstrip .n.flash, .nowstrip .n.px .ld { animation: none; } }
 #trade{display:none!important}</style>
 </head>
 <body>
@@ -129,6 +167,7 @@
     <h1>Hourly Forecast <small id="idx">NIFTY</small></h1>
     <span><span class="dot" id="dot"></span><span class="spot" id="spot">—</span></span>
     <span class="grow"></span>
+    <button id="magBtn" aria-pressed="false" title="Zoom on the live price, the next milestones and the stop-loss">🔍 Magnifier</button>
     <select id="day" aria-label="Day"></select>
   </header>
 
@@ -161,13 +200,16 @@
     <span><i style="border-color:var(--rev)"></i>Reforecast (each ≥5 pt miss on a closed candle)</span>
     <span><i style="border-color:var(--flat);border-top-style:dashed"></i>Provisional bar (not scored)</span>
     <span><i style="border-color:var(--lf);border-top-style:dashed"></i>Live forecast: path in force re-anchored on the live price every second (display only, not used by stops)</span>
-    <span><i style="border-color:#00e5ff"></i>PULSE: frozen live path, reforecast the moment price misses it by the trigger (5 pt NIFTY), with milestones and best entry / SL / target</span>
-    <span><i style="border-color:#ffd400"></i>⚡ CIRCUIT: step path shown only when a big move (~0.3% of spot) looks likely</span>
+    <span><i style="border-color:var(--eup);box-shadow:0 0 6px var(--eup)"></i><i style="border-color:var(--edn);box-shadow:0 0 6px var(--edn)"></i>PULSE (electric): GREEN where it rises, RED where it falls; reforecast the moment price misses it by the trigger (5 pt NIFTY); ⚡ step path when a big move looks likely</span>
+    <span><i style="border-color:var(--edn);border-top-style:dashed"></i>MAX SL: dynamic maximum stop-loss, recomputed every second, only tightens (display only)</span>
     <span><i style="border-color:var(--rev)"></i>Day: D = reforecast at each hourly checkpoint, or when two closed candles in a row are 10–20 pts off on the same side (one typical candle)</span>
   </div>
 
   <div class="meter" id="meter" style="display:none"></div>
   <div class="meter" id="pulse" style="display:none"></div>
+  <div class="tcard" id="tcard" style="display:none"></div>
+  <div class="nowstrip" id="nowstrip" style="display:none"></div>
+  <div class="mag" id="magwrap" style="display:none"><h5 id="magTitle">🔍 Magnifier · last 3 min → next 6 min</h5><svg id="mag" viewBox="0 0 960 320" role="img" aria-label="Magnified live view"></svg></div>
   <div id="daycard"></div>
   <div id="dayhcard"></div>
   <div class="grid" id="grid"></div>
@@ -633,6 +675,9 @@
   // ---------------------------------------------------------------- live forecast (28 Oct)
   let LIVEF = null;
   function isToday() { return !!data && data.day === data.now.slice(0, 10); }
+  // AFTER-HOURS 2-Nov: the live snapshot carries its own day; show it whenever that day is on screen
+  function liveDay() { return !!data && !!LIVEF && LIVEF.available !== false && (LIVEF.day || String(LIVEF.ts || '').slice(0, 10)) === data.day; }
+  function liveOpen() { return !!LIVEF && LIVEF.market_open !== false; }
   function liveLineFor(s) {
     if (!LIVEF || !isToday() || s.hourly) return [];
     if (s.slot === 'Day') return (LIVEF.day && LIVEF.day.line) || [];
@@ -641,49 +686,83 @@
   }
   // ---------------------------------------------------------------- PULSE forecast (2 Nov): frozen line, reforecast on a miss >= trigger
   function pulseFor(s) {
-    if (!LIVEF || !LIVEF.pulse || !isToday() || s.hourly) return null;
+    if (!LIVEF || !LIVEF.pulse || !liveDay() || s.hourly) return null;
     if (s.slot === 'Day' || s.status === 'live') return LIVEF.pulse;
+    const t = Date.parse(LIVEF.ts);                           // after the close: the slot the last snapshot falls in
+    if (!liveOpen() && s.start_ts && Date.parse(s.start_ts) <= t && t <= Date.parse(s.end_ts)) return LIVEF.pulse;
     return null;
   }
+  // ---- electric line: jagged midpoint displacement, a new shape ~10x a second (crackle loop below)
+  function boltD(pts, amp0) {
+    const out = [pts[0]];
+    for (let i = 1; i < pts.length; i++) {
+      const len = Math.hypot(pts[i][0] - pts[i - 1][0], pts[i][1] - pts[i - 1][1]) || 1;
+      let seg = [pts[i - 1], pts[i]], amp = Math.min(amp0 || 14, len * 0.16 + 3);
+      for (let lvl = 0; lvl < 5; lvl++) {
+        const nx = [seg[0]];
+        for (let k = 1; k < seg.length; k++) {
+          const a = seg[k - 1], b = seg[k], dx = b[0] - a[0], dy = b[1] - a[1], l = Math.hypot(dx, dy) || 1, off = (Math.random() - .5) * amp;
+          nx.push([(a[0] + b[0]) / 2 - dy / l * off, (a[1] + b[1]) / 2 + dx / l * off], b);
+        }
+        seg = nx; amp *= .58;
+      }
+      out.push(...seg.slice(1));
+    }
+    return out.map((p, i) => (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1)).join(' ');
+  }
+  function boltSvg(scr, wide, big) {            // scr: [[x, y], ...] screen points; one coloured stretch per segment
+    let g = '';
+    const overallUp = scr[scr.length - 1][1] <= scr[0][1];       // flat stretches take the overall direction's colour
+    for (let i = 1; i < scr.length; i++) {
+      const dy = scr[i][1] - scr[i - 1][1], up = Math.abs(dy) < 1.5 ? overallUp : dy < 0;
+      const c = up ? 'var(--eup)' : 'var(--edn)', cc = up ? 'var(--eupc)' : 'var(--ednc)';
+      const pp = JSON.stringify([scr[i - 1].map(v => +v.toFixed(1)), scr[i].map(v => +v.toFixed(1))]), d = boltD([scr[i - 1], scr[i]]);
+      g += `<path class="bolt" data-p='${pp}' d="${d}" fill="none" stroke="${c}" stroke-width="${big ? 14 : wide ? 11 : 8}" opacity=".35" filter="url(#eglow)"/>` +
+           `<path class="bolt" data-p='${pp}' d="${d}" fill="none" stroke="${c}" stroke-width="${big ? 3.8 : wide ? 3 : 2.2}"/>` +
+           `<path class="bolt" data-p='${pp}' d="${d}" fill="none" stroke="${cc}" stroke-width="1.3" stroke-linejoin="miter"/>`;
+    }
+    return g;
+  }
+  const EGLOW = `<defs><filter id="eglow" x="-10%" y="-40%" width="120%" height="180%"><feGaussianBlur stdDeviation="4.5"/></filter></defs>`;
+  function nextMilestone(P, tNow) { return (P.milestones || []).find(m => Date.parse(m.ts) > tNow); }
   function pulseSvg(P, xs, ys, wide, fs, t0, t1) {
     const inR = p => { const t = Date.parse(p.ts); return t >= t0 && t <= t1; };
-    const line = (P.line || []).filter(inR);
-    if (line.length < 2) return '';
-    const circ = P.mode === 'circuit';
-    const col = circ ? '#ffd400' : '#00e5ff';
-    const d = line.map((p, i) => (i ? 'L' : 'M') + xs(p.ts).toFixed(1) + ' ' + ys(p.v).toFixed(1)).join(' ');
-    let g = '';
-    if (circ) {
-      g += `<defs><filter id="pglow" x="-20%" y="-20%" width="140%" height="140%"><feGaussianBlur stdDeviation="2.5" result="b"/>` +
-           `<feMerge><feMergeNode in="b"/><feMergeNode in="SourceGraphic"/></feMerge></filter></defs>`;
-      g += `<path d="${d}" fill="none" stroke="${col}" stroke-width="${wide ? 3.2 : 2.4}" stroke-linejoin="miter" filter="url(#pglow)"><animate attributeName="stroke-opacity" values="1;.55;1" dur="0.9s" repeatCount="indefinite"/></path>`;
-      const a = line[Math.min(1, line.length - 1)], c = P.circuit || {};
-      if (wide) g += `<text x="${xs(a.ts) + 6}" y="${ys(a.v) + (c.dir === 'UP' ? -14 : 24)}" fill="${col}" font-size="${fs + 1}" font-weight="800">⚡ BIG MOVE LIKELY ${c.dir === 'UP' ? '▲ +' : '▼ −'}${fmt(c.move, 0)}</text>`;
-    } else {
-      g += `<path d="${d}" fill="none" stroke="${col}" stroke-width="${wide ? 2.4 : 1.8}"/>`;
-    }
+    const tNow = Date.parse(LIVEF.ts), live = LIVEF.spot;
+    // from the live price forward (the past part of the frozen line is history: drawn faint)
+    const all = (P.line || []).filter(inR);
+    if (all.length < 2) return '';
+    const past = all.filter(p => Date.parse(p.ts) <= tNow), fwd = all.filter(p => Date.parse(p.ts) > tNow);
+    let g = EGLOW;
+    if (past.length > 1) g += `<path d="${past.map((p, i) => (i ? 'L' : 'M') + xs(p.ts).toFixed(1) + ' ' + ys(p.v).toFixed(1)).join(' ')}" fill="none" stroke="var(--muted)" stroke-width="1.2" stroke-dasharray="2 3" opacity=".6"/>`;
+    const head = live != null && tNow >= t0 && tNow <= t1 ? [[xs(LIVEF.ts), ys(live)]] : [];
+    const scr = [...head, ...fwd.map(p => [xs(p.ts), ys(p.v)])];
+    if (scr.length > 1) g += boltSvg(scr, wide, false);
+    const nm = nextMilestone(P, tNow);
     (P.milestones || []).filter(inR).forEach(m => {
-      const x = xs(m.ts), y = ys(m.v), upm = m.kind === 'high' || (m.kind === 'step' && P.circuit && P.circuit.dir === 'UP');
-      g += `<circle cx="${x}" cy="${y}" r="${wide ? 4 : 3}" fill="var(--bg)" stroke="${col}" stroke-width="2"><title>Pulse ${m.kind} ${hhmm(m.ts)} ${fmt(m.v, 1)}</title></circle>`;
-      if (wide) g += `<text x="${x}" y="${upm ? y - 9 : y + 16}" fill="${col}" font-size="${fs - 1}" text-anchor="middle">${m.kind === 'step' ? 'S' + m.k : (upm ? '▲' : '▼')} ${hhmm(m.ts)} ${fmt(m.v, 0)}</text>`;
+      if (Date.parse(m.ts) <= tNow) return;
+      const x = xs(m.ts), y = ys(m.v), nxt = nm && m.ts === nm.ts;
+      const upm = m.kind === 'high' || (m.kind === 'step' && P.circuit && P.circuit.dir === 'UP');
+      const c = upm ? 'var(--eup)' : 'var(--edn)';
+      g += `<circle cx="${x}" cy="${y}" r="${nxt ? 6 : wide ? 4 : 3}" fill="var(--bg)" stroke="${c}" stroke-width="${nxt ? 3 : 2}">` +
+           (nxt ? `<animate attributeName="r" values="5;8;5" dur="1s" repeatCount="indefinite"/>` : '') +
+           `<title>${m.kind === 'step' ? 'S' + m.k : m.kind} ${hhmm(m.ts)} ${fmt(m.v, 1)}</title></circle>`;
+      if (wide && nxt) g += `<text x="${x - 9}" y="${y + 4}" fill="${c}" font-size="${fs}" font-weight="800" text-anchor="end" paint-order="stroke" stroke="var(--panel)" stroke-width="4">NEXT ${m.kind === 'step' ? 'S' + m.k : (upm ? '▲' : '▼')} ${hhmm(m.ts)} ${fmt(m.v, 0)}</text>`;
     });
-    const pl = P.plan;
+    // plan lines without numbers (the numbers are in the trade card, the NOW strip and the magnifier)
+    const pl = P.plan, ms = P.max_sl;
     if (wide && pl && pl.side && pl.side !== 'WAIT') {
-      const xe = pl.entry_ts ? xs(pl.entry_ts) : xs(line[0].ts), xr = xs(line[line.length - 1].ts);
-      const ye = ys(pl.entry), yst = ys(pl.stop), yt = ys(pl.target);
-      g += `<line x1="${xe}" x2="${xr}" y1="${yst}" y2="${yst}" stroke="var(--down)" stroke-width="1.2" stroke-dasharray="4 3"/>` +
-           `<text x="${xr + 3}" y="${yst + 3}" fill="var(--down)" font-size="${fs - 1}">SL ${fmt(pl.stop, 0)}</text>` +
-           `<line x1="${xe}" x2="${xr}" y1="${yt}" y2="${yt}" stroke="var(--up)" stroke-width="1.2" stroke-dasharray="4 3"/>` +
-           `<text x="${xr + 3}" y="${yt + 3}" fill="var(--up)" font-size="${fs - 1}">T ${fmt(pl.target, 0)}</text>` +
-           `<circle cx="${xe}" cy="${ye}" r="5.5" fill="none" stroke="#fff" stroke-width="2"><title>Best entry ${pl.side} ${fmt(pl.entry, 1)} (${pl.entry_is})</title></circle>` +
-           `<text x="${xe + 7}" y="${ye + (pl.side === 'CE' ? 16 : -8)}" fill="#fff" font-size="${fs - 1}" font-weight="700">ENTRY ${pl.side} ${fmt(pl.entry, 0)}</text>`;
+      const xe = Math.max(xs(pl.entry_ts || LIVEF.ts), xs(t0 ? new Date(t0).toISOString() : LIVEF.ts)), xr = xs(all[all.length - 1].ts);
+      const tag = (y, t, c) => `<text x="${xr + 3}" y="${y + 3}" fill="${c}" font-size="${fs - 2}" font-weight="700">${t}</text>`;
+      if (pl.target != null) g += `<line x1="${xe}" x2="${xr}" y1="${ys(pl.target)}" y2="${ys(pl.target)}" stroke="var(--up)" stroke-width="1.2" stroke-dasharray="4 3"/>` + tag(ys(pl.target), 'T', 'var(--up)');
+      if (ms && ms.level != null) g += `<line x1="${xe}" x2="${xr}" y1="${ys(ms.level)}" y2="${ys(ms.level)}" stroke="var(--edn)" stroke-width="1.8" stroke-dasharray="6 3"/>` + tag(ys(ms.level), 'SL', 'var(--edn)');
+      g += `<circle cx="${xs(pl.entry_ts || LIVEF.ts)}" cy="${ys(pl.entry)}" r="5" fill="none" stroke="#fff" stroke-width="2"><title>Best entry ${pl.side} ${fmt(pl.entry, 1)} (${pl.entry_is})</title></circle>`;
     }
     return g;
   }
   function pulseStrip() {
     const el = $('pulse'), P = LIVEF && LIVEF.pulse;
     if (!el) return;
-    if (!P || !isToday()) { el.style.display = 'none'; return; }
+    if (!P || !liveDay()) { el.style.display = 'none'; return; }
     el.style.display = '';
     const circ = P.mode === 'circuit', c = P.circuit || {}, mz = P.marubozu || {}, pl = P.plan || {};
     const mzTxt = mz.state === 'FORMING' ? `<span class="lvl HIGH">Marubozu forming ${mz.dir === 'UP' ? '▲' : '▼'} ${fmt(mz.range_x, 1)}×</span>`
@@ -694,11 +773,12 @@
       `<span>miss <b>${P.dev == null ? '—' : fmt(P.dev, 1)}</b> / ${fmt(P.trigger, 0)} pt</span>` +
       (circ ? `<span class="lvl HIGH">big move ${c.dir === 'UP' ? '▲ +' : '▼ −'}${fmt(c.move, 0)}</span><span style="color:var(--dim)">${esc((c.why || []).join(' · '))}</span>` : '') +
       mzTxt + `<span>${plTxt}</span>` +
-      `<span style="color:var(--dim)">last reforecast ${hhmm(P.rev_ts)} (${esc(P.rev_reason || '')}) · ${P.revs_today} today · display only</span>`;
+      `<span style="color:var(--dim)">last reforecast ${hhmm(P.rev_ts)} (${esc(P.rev_reason || '')}) · ${P.revs_today} today · display only</span>` +
+      (liveOpen() ? '' : `<span class="closedtag">Market closed · as of ${hhmm(LIVEF.ts)}</span>`);
   }
   function meterStrip() {
     const el = $('meter'), m = LIVEF && LIVEF.meter;
-    if (!m || !isToday()) { el.style.display = 'none'; return; }
+    if (!m || !liveDay()) { el.style.display = 'none'; return; }
     el.style.display = '';
     if (!m.available) { el.innerHTML = `<span>Sharp-move meter: ${esc((m.reason || 'waiting').replace(/_/g, ' '))}</span>`; return; }
     const p = m.parts || {}, arrow = {UP: '▲ up', DOWN: '▼ down', NONE: '◆ no lean'}[m.lean] || m.lean;
@@ -714,22 +794,161 @@
       `<span class="bar"><i style="width:${Math.max(2, m.score)}%"></i></span><span>${arrow}${m.lean !== 'NONE' ? ' ' + Math.round(m.lean_strength * 100) + '%' : ''}</span>` +
       `<span style="color:var(--dim)">${bits.map(esc).join(' · ')} · shadow, uncalibrated (being measured)</span>`;
   }
+  // ---------------------------------------------------------------- TRADE CARD + NOW + MAGNIFIER (2-Nov night)
+  const hm2 = ms => new Date(ms + 330 * 60000).toISOString().slice(11, 16);
+  const mmss = ms => { const s = Math.max(0, Math.round(ms / 1000)); return Math.floor(s / 60) + ':' + String(s % 60).padStart(2, '0'); };
+  function tradeInfo() {
+    const P = LIVEF && LIVEF.pulse; if (!P || !liveDay()) return null;
+    const pl = P.plan || {}, ms = P.max_sl || null, spot = LIVEF.spot, tNow = Date.parse(LIVEF.ts);
+    const tr = (data && data.trade && data.trade.strikes) || {};
+    const side = pl.side, atm = tr.atm;
+    const row = side && side !== 'WAIT' ? ((tr[side.toLowerCase()] || []).find(r => r.strike === atm) || {}) : {};
+    const ltp = row.ltp != null && tr.quotes_fresh !== false ? row.ltp : null;
+    const delta = side === 'CE' ? 0.5 : -0.5;                         // ATM ~0.5: premium estimate at a NIFTY level
+    const prem = lvl => ltp == null || lvl == null ? null : Math.max(0.05, ltp + delta * (lvl - spot));
+    const eStart = pl.entry_ts ? Date.parse(pl.entry_ts) : tNow, eEnd = eStart + 120000;
+    const exitT = pl.target_ts ? Date.parse(pl.target_ts) : null;
+    return {P, pl, ms, spot, tNow, side, atm, ltp, prem, eStart, eEnd, exitT, open: liveOpen()};
+  }
+  function tradeCard() {
+    const el = $('tcard'), T = tradeInfo();
+    if (!T) { el.style.display = 'none'; return; }
+    el.style.display = '';
+    const {P, pl, ms, spot, tNow, side, atm, ltp, prem, eStart, eEnd, exitT, open} = T, c = P.circuit;
+    const big = P.mode === 'circuit' && c ? `<span class="big">⚡ BIG MOVE LIKELY ${c.dir === 'UP' ? '▲ +' : '▼ −'}${fmt(c.move, 0)}</span> · ` : '';
+    if (!side || side === 'WAIT') {
+      el.className = 'tcard';
+      el.innerHTML = `<div class="act">WAIT<small>${big}${esc(pl.note || 'no clear leg ahead')} · PULSE R${P.rev}${open ? '' : ' · market closed, as of ' + hhmm(LIVEF.ts)}</small></div><div class="f"></div>`;
+      return;
+    }
+    const hit = ms && ms.hit, inWin = tNow >= eStart && tNow <= eEnd, go = open && !hit && (inWin || tNow < eStart);
+    el.className = 'tcard ' + side.toLowerCase() + (go ? ' go' : '');
+    const status = !open ? `Market closed · last plan ${hhmm(LIVEF.ts)}`
+      : hit ? `STOPPED OUT ${hhmm(ms.hit)}`
+      : tNow < eStart ? `ENTER at ${hm2(eStart)} · in ${mmss(eStart - tNow)}`
+      : inWin ? `ENTER NOW · window closes in ${Math.round((eEnd - tNow) / 1000)} s`
+      : exitT ? `IN TRADE · exit by ${hm2(exitT)}` : 'IN TRADE';
+    const pr = v => v == null ? '' : `₹${fmt(v, 1)} `;
+    const hold = exitT ? Math.max(1, Math.round((exitT - eStart) / 60000)) : null;
+    const room = ms ? Math.abs(ms.level - spot) : null, danger = ms && !hit && open && room < (P.sigma_1m || 4);
+    el.innerHTML =
+      `<div class="act">${open ? 'BUY' : 'LAST PLAN ·'} ${esc(INDEX)} ${atm ? atm : ''} ${side}${ltp != null ? ' @ ₹' + fmt(ltp, 2) : ''}` +
+        `<small>${big}${side === 'PE' ? '▼ fall expected' : '▲ rise expected'} · ${fmt(Math.abs((pl.target ?? spot) - (pl.entry ?? spot)), 0)} pts to target · PULSE R${P.rev}${ltp == null ? ' · premium shown when quotes are live' : ''}</small></div>` +
+      `<div class="f">` +
+        `<div class="k now"><i>Entry · ${esc(pl.entry_is || '')}</i><b>${hm2(eStart)}–${hm2(eEnd)}</b> <small>at ${fmt(pl.entry, 0)}</small></div>` +
+        `<div class="k now"><i>Status</i><b>${status}</b></div>` +
+        (ms ? `<div class="k sl${danger ? ' danger' : ''}"><i>Max stop-loss · dynamic</i><b>${pr(prem(ms.level))}${fmt(ms.level, 1)}</b> <small>${hit ? 'hit' : fmt(room, 1) + ' pts away'}</small>` +
+              (ms.trailed >= 0.5 ? ` <span class="tr">trailed ${side === 'PE' ? '▼' : '▲'} ${fmt(ms.trailed, 1)}</span>` : '') + `</div>` : '') +
+        `<div class="k tg"><i>Target</i><b>${pr(prem(pl.target))}${fmt(pl.target, 0)}</b> <small>${fmt(Math.abs(pl.target - spot), 1)} to go</small></div>` +
+        (exitT ? `<div class="k"><i>Exit by</i><b>${hm2(exitT)}</b></div>` : '') +
+        (hold ? `<div class="k"><i>Hold</i><b>~${hold} min</b></div>` : '') +
+      `</div>`;
+  }
+  const NOWK = {};
+  function nowStrip() {
+    const el = $('nowstrip'), T = tradeInfo();
+    if (!T) { el.style.display = 'none'; return; }
+    el.style.display = '';
+    const {P, pl, ms, spot, tNow, side, ltp, prem} = T, nm = nextMilestone(P, tNow);
+    const sg = v => `<span class="${v >= 0 ? 'u' : 'd'}">${v >= 0 ? '+' : ''}${fmt(v, 1)}</span>`;
+    const items = [
+      ['px', `${esc(INDEX)} ${liveOpen() ? 'now' : 'at ' + hhmm(LIVEF.ts)}`, `<span class="ld"></span>${fmt(spot, 1)}`, null],
+      ['nx', nm ? `Next ${nm.kind === 'step' ? 'S' + nm.k : nm.kind} · ${hhmm(nm.ts)} (in ${mmss(Date.parse(nm.ts) - tNow)})` : 'Next milestone', nm ? `${fmt(nm.v, 0)} ${sg(nm.v - spot)}` : '—', nm ? nm.ts + Math.round(nm.v - spot) : ''],
+      ['sl', 'Max SL · dynamic', ms ? `<span class="d">${fmt(ms.level, 1)}</span> <small>${fmt(Math.abs(ms.level - spot), 1)} away</small>` : '—', ms ? Math.round(ms.level) + '|' + !!ms.hit : ''],
+      ['tg', 'Target', pl.target != null ? `<span class="u">${fmt(pl.target, 0)}</span> <small>${fmt(Math.abs(pl.target - spot), 1)} to go</small>` : '—', Math.round((pl.target || 0) - spot)],
+      ['mi', 'Miss vs PULSE', P.dev == null ? '—' : `${fmt(P.dev, 1)} <small>/ ${fmt(P.trigger, 0)}</small>`, P.dev == null ? '' : Math.round(P.dev)],
+    ];
+    if (side && side !== 'WAIT' && ltp != null) items.push(['op', `${side} option ≈`, `₹${fmt(prem(spot), 1)}`, Math.round(prem(spot))]);
+    el.innerHTML = items.map(([k, l, v]) => `<div class="n ${k === 'px' ? 'px' : ''}" id="nw_${k}"><i>${l}</i><b>${v}</b></div>`).join('');
+    items.forEach(([k, , , key]) => { if (key === null) return; const b = $('nw_' + k);
+      if (NOWK[k] !== undefined && NOWK[k] !== key) { b.classList.add('flash'); } NOWK[k] = key; });
+  }
+  // ---- magnifier: last 3 min to next 6 min around the live price
+  let MAG = false; try { MAG = localStorage.getItem('kadima_mag') === '1'; } catch (e) {}
+  const TAPE = [];                                                    // live prices seen by this page (1 s)
+  function magBtn() { $('magBtn').setAttribute('aria-pressed', MAG ? 'true' : 'false'); }
+  $('magBtn').onclick = () => { MAG = !MAG; try { localStorage.setItem('kadima_mag', MAG ? '1' : '0'); } catch (e) {} magBtn(); magnifier(); };
+  magBtn();
+  function magnifier() {
+    const wrap = $('magwrap'), T = MAG ? tradeInfo() : null;
+    if (!T) { wrap.style.display = 'none'; return; }
+    wrap.style.display = '';
+    const {P, pl, ms, spot, tNow} = T, a = tNow - 180000, b = tNow + 360000;
+    $('magTitle').textContent = `🔍 Magnifier · ${hm2(a)} → ${hm2(b)}` + (liveOpen() ? '' : ' · market closed');
+    const narrow = wrap.clientWidth < 620;                         // phone: taller, narrower drawing so text stays readable
+    const W = narrow ? 520 : 960, H = narrow ? 440 : 320, L = narrow ? 54 : 62, R = narrow ? 158 : 150, Tp = 18, Bt = 26, fs = narrow ? 15 : 13;
+    $('mag').setAttribute('viewBox', `0 0 ${W} ${H}`);
+    const live = slotLive(), act = [];
+    (live ? live.points || [] : []).forEach(p => { if (p.actual != null && Date.parse(p.ts) >= a) act.push([Date.parse(p.ts), p.actual]); });
+    TAPE.forEach(([t, v]) => { if (t >= a && t <= tNow) act.push([t, v]); });
+    act.sort((x, y) => x[0] - y[0]);
+    const line = (P.line || []).map(p => [Date.parse(p.ts), p.v]).filter(([t]) => t > tNow && t <= b + 300000);
+    const vs = [spot, ...act.map(x => x[1]), ...line.filter(([t]) => t <= b).map(x => x[1])];
+    if (ms) vs.push(ms.level); if (pl.entry != null) vs.push(pl.entry);
+    let lo = Math.min(...vs) - 4, hi = Math.max(...vs) + 4;
+    const xs = t => L + (t - a) / (b - a) * (W - L - R), ys = v => Tp + (hi - v) / (hi - lo) * (H - Tp - Bt);
+    let g = EGLOW + `<defs><clipPath id="magclip"><rect x="${L}" y="${Tp - 4}" width="${W - L - R}" height="${H - Tp - Bt + 8}"/></clipPath></defs>`;
+    for (let k = 0; k <= 4; k++) { const v = lo + (hi - lo) * k / 4, y = ys(v);
+      g += `<line x1="${L}" x2="${W - R}" y1="${y}" y2="${y}" stroke="var(--line)"/><text x="${L - 6}" y="${y + 4}" fill="var(--muted)" font-size="${fs - 1}" text-anchor="end">${fmt(v, 0)}</text>`; }
+    for (let t = Math.ceil(a / 60000) * 60000; t <= b; t += (narrow ? 120000 : 60000)) g += `<text x="${xs(t)}" y="${H - 7}" fill="var(--muted)" font-size="${fs - 1}" text-anchor="middle">${hm2(t)}</text>`;
+    let body = '';
+    if (act.length > 1) body += `<path d="${act.map((p, i) => (i ? 'L' : 'M') + xs(p[0]).toFixed(1) + ' ' + ys(p[1]).toFixed(1)).join(' ')}" fill="none" stroke="var(--actual)" stroke-width="1.8" opacity=".8"/>`;
+    const right = [];
+    if (pl.entry != null && pl.side && pl.side !== 'WAIT') { body += `<line x1="${L}" x2="${W - R}" y1="${ys(pl.entry)}" y2="${ys(pl.entry)}" stroke="#fff" stroke-dasharray="6 5" opacity=".6"/>`; right.push([pl.entry, 'ENTRY ' + fmt(pl.entry, 0), '#fff']); }
+    if (pl.target != null && pl.side && pl.side !== 'WAIT') { if (pl.target >= lo && pl.target <= hi) body += `<line x1="${xs(tNow)}" x2="${W - R}" y1="${ys(pl.target)}" y2="${ys(pl.target)}" stroke="var(--up)" stroke-dasharray="6 5"/>`; right.push([pl.target, 'T ' + fmt(pl.target, 0), 'var(--up)']); }
+    if (ms) {
+      const st = []; (ms.hist || []).forEach(([t, v], i) => { const tt = Date.parse(t); if (i) st.push([tt, ms.hist[i - 1][1]]); st.push([tt, v]); }); st.push([tNow, ms.level]);
+      body += `<path d="${st.map((p, i) => (i ? 'L' : 'M') + xs(Math.max(p[0], a)).toFixed(1) + ' ' + ys(p[1]).toFixed(1)).join(' ')}" fill="none" stroke="var(--edn)" stroke-width="2" opacity=".55"/>` +
+              `<line x1="${xs(tNow)}" x2="${W - R}" y1="${ys(ms.level)}" y2="${ys(ms.level)}" stroke="var(--edn)" stroke-width="7" opacity=".2"/>` +
+              `<line x1="${xs(tNow)}" x2="${W - R}" y1="${ys(ms.level)}" y2="${ys(ms.level)}" stroke="var(--edn)" stroke-width="2.2" stroke-dasharray="8 4"/>`;
+      right.push([ms.level, (ms.hit ? 'SL HIT ' : 'MAX SL ') + fmt(ms.level, 1), 'var(--edn)']);
+    }
+    const scr = [[xs(tNow), ys(spot)], ...line.map(([t, v]) => [xs(t), ys(v)])];
+    if (scr.length > 1) body += boltSvg(scr, true, true);
+    const nm = nextMilestone(P, tNow);
+    (P.milestones || []).forEach(m => { const t = Date.parse(m.ts); if (t <= tNow || t > b) return;
+      const upm = m.kind === 'high' || (m.kind === 'step' && P.circuit && P.circuit.dir === 'UP'), c = upm ? 'var(--eup)' : 'var(--edn)', nxt = nm && nm.ts === m.ts;
+      body += `<circle cx="${xs(t)}" cy="${ys(m.v)}" r="${nxt ? 7 : 5}" fill="var(--bg)" stroke="${c}" stroke-width="3"/>` +
+              `<text x="${xs(t) - 10}" y="${ys(m.v) + 5}" fill="${c}" font-size="${fs + (nxt ? 1 : 0)}" font-weight="800" text-anchor="end" paint-order="stroke" stroke="var(--panel)" stroke-width="5">${nxt ? 'NEXT ' : ''}${m.kind === 'step' ? 'S' + m.k : (upm ? '▲' : '▼')} ${hhmm(m.ts)} ${fmt(m.v, 0)}</text>`; });
+    body += `<circle cx="${xs(tNow)}" cy="${ys(spot)}" r="5" fill="var(--eupc)"><animate attributeName="r" values="4;8;4" dur=".8s" repeatCount="indefinite"/></circle>` +
+            `<text x="${xs(tNow)}" y="${ys(spot) - 12}" fill="#fff" font-size="16" font-weight="900" text-anchor="middle" paint-order="stroke" stroke="var(--panel)" stroke-width="5">${fmt(spot, 1)}</text>`;
+    g += `<g clip-path="url(#magclip)">${body}</g>`;
+    const lab = right.map(([v, t, c]) => { let y = ys(v), ar = ''; if (v > hi) { y = Tp + 4; ar = '▲ '; } else if (v < lo) { y = H - Bt - 2; ar = '▼ '; } return {y: y + 4, t: ar + t, c}; }).sort((p, q) => p.y - q.y);
+    for (let k = 1; k < lab.length; k++) if (lab[k].y - lab[k - 1].y < fs + 5) lab[k].y = lab[k - 1].y + fs + 5;
+    lab.forEach(l => { g += `<text x="${W - R + 8}" y="${l.y}" fill="${l.c}" font-size="${fs + 1}" font-weight="800">${l.t}</text>`; });
+    $('mag').innerHTML = g;
+  }
+  function slotLive() {
+    if (!data) return null;
+    const t = LIVEF ? Date.parse(LIVEF.ts) : 0;
+    return data.slots.find(x => x.status === 'live') || data.slots.find(x => x.start_ts && Date.parse(x.start_ts) <= t && t <= Date.parse(x.end_ts)) || null;
+  }
+  // crackle: a fresh lightning shape for every electric stretch, ~10 times a second
+  setInterval(() => {
+    if (document.hidden) return;
+    document.querySelectorAll('path.bolt').forEach(p => { try { const q = JSON.parse(p.dataset.p); p.setAttribute('d', boltD(q)); } catch (e) {} });
+  }, 100);
   function paint() {
     if (!data) return;
     meterStrip();
     pulseStrip();
+    tradeCard(); nowStrip(); magnifier();
     $('daycard').innerHTML = data.day_path && data.day_path.status !== 'error' ? card(data.day_path).replace('class="card ', 'class="card day ') : '';
     const dh = data.day_path && data.day_path.status !== 'error' ? dayHourly(data.day_path) : null;
     $('dayhcard').innerHTML = dh ? card(dh).replace('class="card ', 'class="card day dayh ') : '';
     $('grid').innerHTML = data.slots.map(card).join('');
   }
-  let liveBusy = false;
+  let liveBusy = false, lastPoll = 0;
   async function pollLive() {
-    if (liveBusy || document.hidden || !isToday() || $('modal').classList.contains('open')) return;
-    liveBusy = true;
+    if (liveBusy || document.hidden || $('modal').classList.contains('open')) return;
+    if (LIVEF && LIVEF.market_open === false && Date.now() - lastPoll < 30000) return;   // after the close: every 30 s
+    liveBusy = true; lastPoll = Date.now();
     try {
       LIVEF = await api('/live?index=' + INDEX);
-      if (LIVEF && LIVEF.spot != null) { $('spot').textContent = fmt(LIVEF.spot); $('dot').classList.add('on'); }
+      if (LIVEF && LIVEF.spot != null && LIVEF.market_open !== false) {
+        $('spot').textContent = fmt(LIVEF.spot); $('dot').classList.add('on');
+        TAPE.push([Date.parse(LIVEF.ts), LIVEF.spot]); if (TAPE.length > 1200) TAPE.shift();
+      }
       paint();
     } catch (e) { LIVEF = null; } finally { liveBusy = false; }
   }
@@ -744,6 +963,7 @@
       strip(data); trade(data); tuning(data);
       meterStrip();
       pulseStrip();
+      tradeCard(); nowStrip(); magnifier();
       $('daycard').innerHTML = data.day_path && data.day_path.status !== 'error' ? card(data.day_path).replace('class="card ', 'class="card day ') : '';
       const dh = data.day_path && data.day_path.status !== 'error' ? dayHourly(data.day_path) : null;
       $('dayhcard').innerHTML = dh ? card(dh).replace('class="card ', 'class="card day dayh ') : '';
