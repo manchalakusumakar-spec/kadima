@@ -33,6 +33,29 @@ def publish_structure(chain, spot, spot_at, result, *, vwap=None, shield_score=N
         shield_score=shield_score, shield_direction=shield_direction))
 
 
+def structure_exit_reason(index, direction, now=None):
+    """Read-only structure rules shared by fast entry and position exits.
+
+    Missing/stale evidence is not a confirmed conflict. Other entry freshness
+    gates still apply; this function does not certify complete market coverage.
+    """
+    now = now or now_ist()
+    evidence = celestial.health('structure:' + index)
+    if evidence and celestial.fresh(evidence['ts'], now) and celestial.fresh(evidence.get('spot_at'), now):
+        vwap, spot = evidence.get('vwap'), evidence.get('spot')
+        if celestial.finite(vwap, .000001) and celestial.finite(spot, .000001):
+            if (direction == 'CE' and spot < vwap) or (direction == 'PE' and spot > vwap):
+                return 'underlying_lost_vwap'
+        opposite = 'PE' if direction == 'CE' else 'CE'
+        if evidence.get('direction') == opposite and evidence.get('score', 0) >= 70:
+            return 'opposite_gamma_confirmed'
+        if evidence.get('shield_direction') == opposite and (evidence.get('shield_score') or 0) >= 70:
+            return 'opposite_shield_active'
+        if evidence.get('oi_direction') == opposite:
+            return 'directional_oi_reversed'
+    return None
+
+
 def evaluate(pos, ltp, now=None):
     now = now or now_ist()
     c = connection()
@@ -62,19 +85,9 @@ def evaluate(pos, ltp, now=None):
             return 'spread_widened_above_3pct'
     if state['count'] >= 9 and ltp < state['ema']:
         return 'premium_below_completed_1m_ema9'
-    evidence = celestial.health('structure:' + pos.index)
-    if evidence and celestial.fresh(evidence['ts'], now) and celestial.fresh(evidence.get('spot_at'), now):
-        vwap, spot = evidence.get('vwap'), evidence.get('spot')
-        if celestial.finite(vwap, .000001) and celestial.finite(spot, .000001):
-            if (pos.direction == 'CE' and spot < vwap) or (pos.direction == 'PE' and spot > vwap):
-                return 'underlying_lost_vwap'
-        opposite = 'PE' if pos.direction == 'CE' else 'CE'
-        if evidence.get('direction') == opposite and evidence.get('score', 0) >= 70:
-            return 'opposite_gamma_confirmed'
-        if evidence.get('shield_direction') == opposite and (evidence.get('shield_score') or 0) >= 70:
-            return 'opposite_shield_active'
-        if evidence.get('oi_direction') == opposite:
-            return 'directional_oi_reversed'
+    reason = structure_exit_reason(pos.index, pos.direction, now)
+    if reason:
+        return reason
     news = celestial.news_impact(pos.index, pos.direction, now)
     if news['news_blocked']:
         return 'fresh_catalyst_risk_block'

@@ -142,6 +142,14 @@ OI_VELOCITY_DROP_PCT_BY_INDEX = {
 
 CANDLE_INTERVALS_MIN = (1, 3, 5)
 
+# Fast-entry v1: experimental hypotheses, not calibrated probabilities.
+# Evaluated on existing closed candles; never changes an open position's stop.
+FAST_MIN_DIRECTIONAL_EFFICIENCY = 0.35
+FAST_MIN_BREAKOUT_BODY_FRACTION = 0.50
+FAST_MIN_BREAKOUT_CLOSE_LOCATION = 0.75
+FAST_MAX_EXTENSION_TRUE_RANGE = 1.0
+FAST_STOP_BUFFER_TRUE_RANGE = 0.25
+
 # ---------------------------------------------------------------- option chain
 STRIKES_EACH_SIDE = 5          # ATM +/- N strikes tracked per index
 MIN_DELTA = 0.45
