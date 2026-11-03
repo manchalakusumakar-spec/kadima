@@ -51,6 +51,9 @@
 .tp[data-s="NEAR STOP"]{--tp-c:#ff4d6d;--tp-glow:#ff4d6d77}.tp[data-s="NEAR STOP"] .tp-chip{animation:tp-blink .6s steps(2,start) infinite}
 @keyframes tp-blink{to{opacity:.25}}
 .tp-stale{opacity:.55;filter:saturate(.4)}
+.tp.paper{border-style:dashed;border-color:#4a5f86;background:radial-gradient(120% 140% at 0% 0%,#18233a 0,#0c1322 60%,#0a101e 100%);box-shadow:0 8px 26px #0007}
+.tp.paper .tp-fill{opacity:.8}.tp-tag{font-size:10px;letter-spacing:.14em;font-weight:700;padding:4px 9px;border-radius:999px;border:1px dashed #8fa0bd;color:#c9d6ea}
+.tp[data-s="STOP HIT"]{--tp-c:#ff6b6b;--tp-glow:#0000;filter:saturate(.6)}
 .tp-idle{display:flex;align-items:center;gap:10px;margin:10px 0 12px;padding:9px 14px;border:1px dashed #2f4266;border-radius:12px;color:#8fa0bd;font-size:13px;background:#0d1526}
 .tp-idle i{width:9px;height:9px;border-radius:50%;background:#7fe0ae;box-shadow:0 0 10px #7fe0ae;animation:tp-blink 1.6s ease-in-out infinite alternate}
 @media (prefers-reduced-motion:reduce){.tp *,.tp *:after{animation:none!important;transition:none!important}}
@@ -68,7 +71,7 @@
     c.innerHTML='<div class="tp-head"><span class="tp-chip"></span><span class="tp-sym"></span>'+
       '<span><span class="tp-big"></span> <span class="tp-lab">achieved</span></span>'+
       '<span><span class="tp-rem"></span> <span class="tp-lab">remaining</span></span>'+
-      '<span class="tp-money"></span><span class="tp-meta"></span></div>'+
+      '<span class="tp-money"></span><span class="tp-tag" hidden>SUGGESTED · NOT TRADED</span><span class="tp-meta"></span></div>'+
       '<div class="tp-track"><div class="tp-risk"></div><div class="tp-ghost"></div><div class="tp-fill"></div>'+
       '<div class="tp-mk sl"><span class="dn"></span></div><div class="tp-mk en"><span class="dn"></span></div>'+
       '<div class="tp-mk pk"><span class="up"></span></div><div class="tp-mk tg"><div class="tp-flag"></div><span class="dn"></span></div>'+
@@ -86,9 +89,16 @@
     q('.tp-big').textContent=under?(g.stop_used_pct!=null?g.stop_used_pct.toFixed(0)+'%':'—'):g.achieved_pct.toFixed(0)+'%';
     q('.tp-big').nextElementSibling.textContent=under?'of stop room used':'achieved';
     q('.tp-rem').textContent=under?'0%':g.remaining_pct.toFixed(0)+'%';
-    const m=q('.tp-money');m.className='tp-money '+(g.pnl_inr>=0?'up':'down');
+    const m=q('.tp-money');
+    c.classList.toggle('paper',!!p.paper);q('.tp-tag').hidden=!p.paper;
+    if(p.paper){const pts=g.points;m.className='tp-money '+(pts>=0?'up':'down');
+      m.textContent=(pts>=0?'+':'−')+'₹'+Math.abs(pts).toFixed(2)+' / unit · '+(g.gain_pct>=0?'+':'')+g.gain_pct.toFixed(1)+'%'+
+        (g.t2!=null?' · T1 '+rs(g.t1)+' · T2 '+rs(g.t2):'');
+      q('.tp-meta').textContent='Since signal '+held(g.held_sec)+(g.quote_age_sec!=null?' · quote '+held(g.quote_age_sec)+' old':'')+' · Target: '+({forecast:'live forecast',iv:'option IV',peak_only:'peak so far'}[g.basis]||g.basis);
+      c.classList.toggle('tp-stale',g.quote_age_sec==null||g.quote_age_sec>120);
+    }else{m.className='tp-money '+(g.pnl_inr>=0?'up':'down');
     m.textContent=inr(g.pnl_per_lot_inr)+' / lot · '+inr(g.pnl_inr)+(g.target_pnl_inr!=null?'  →  '+inr(g.target_pnl_inr)+' at target':'');
-    q('.tp-meta').textContent='Held '+held(g.held_sec)+' · Target basis: '+({forecast:'live forecast',iv:'option IV',peak_only:'peak so far'}[g.basis]||g.basis);
+    q('.tp-meta').textContent='Held '+held(g.held_sec)+' · Target basis: '+({forecast:'live forecast',iv:'option IV',peak_only:'peak so far'}[g.basis]||g.basis);}
     q('.tp-risk').style.width=x(g.entry);
     const f=q('.tp-fill');f.classList.toggle('down',under);
     f.style.left=under?x(g.ltp):x(g.entry);f.style.width='calc('+(under?x(g.entry):x(g.ltp))+' - '+(under?x(g.ltp):x(g.entry))+')';
@@ -150,13 +160,30 @@
         attach(h,node);
       });
     }
+    // v1.3 paper cards: today's CONFIRMED suggestions that were not traded
+    const istT=s=>{try{return new Date(s).toLocaleTimeString('en-IN',{timeZone:'Asia/Kolkata',hour12:false})}catch(e){return ''}};
+    for(const p of (last&&last.paper)||[]){
+      if(!p.progress)continue;const key='p:'+p.audit_id;live.add(key);const c=card(key);paint(c,p);
+      const t=istT(p.suggested_at), out=[];
+      const gb=document.querySelector('#gbSuggest table');
+      if(gb)out.push([...gb.tBodies[0].rows].find(r=>!r.classList.contains('tp-row')&&r.cells[2]&&r.cells[0].textContent.includes(p.symbol)&&r.cells[2].textContent.trim()===t));
+      const at=document.getElementById('auditTable');
+      if(at)out.push([...at.tBodies[0].rows].find(r=>!r.classList.contains('tp-row')&&r.cells[2]&&r.cells[0].textContent.includes(p.symbol)&&r.cells[2].textContent.includes(t)));
+      out.filter(Boolean).forEach((h,i)=>{let node=c;
+        if(i>0){node=(h.nextElementSibling&&h.nextElementSibling.classList.contains('tp-row')&&h.nextElementSibling.querySelector('.tp-clone'))||c.cloneNode(true);
+          if(node!==c){node.classList.add('tp-clone');paint(node,p)}}
+        attach(h,node)});
+    }
     for(const k of [...cache.keys()])if(!live.has(k))cache.delete(k);
     document.querySelectorAll('tr.tp-row').forEach(r=>{const n=r.querySelector('.tp');      // trade closed: card goes
-      if(!n||!live.has(Number(n.dataset.sid))&&!live.has(n.dataset.sid))r.remove()});
+      if(!n||!live.has(Number(n.dataset.sid))&&!live.has(n.dataset.sid))r.remove()});   // v1.3 also paper keys
     const gbScroll=document.querySelector('#gbSuggest .scroll');
-    idleLine(gbScroll,'tp-idle-audit',live.size);
+    const real=[...live].filter(k=>!String(k).startsWith('p:')).length;
+    idleLine(gbScroll,'tp-idle-audit',real);
+    const il=document.getElementById('tp-idle-audit');if(il)il.querySelector('span').textContent=
+      'Trade progress is on · No live trade'+((last&&last.paper||[]).length?' · paper progress shown under each suggestion (not traded)':' · the progress card appears under the trade\'s row when it fills');
     const cand=document.getElementById('candidates');
-    idleLine(cand&&(cand.closest('.scroll')||cand),'tp-idle',live.size);
+    idleLine(cand&&(cand.closest('.scroll')||cand),'tp-idle',real);
   }
   const watched=new WeakSet();
   function watch(){
