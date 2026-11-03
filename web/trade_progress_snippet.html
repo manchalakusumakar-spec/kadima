@@ -1,4 +1,4 @@
-<!-- TRADE PROGRESS v1 (trader 2026-11-03): live % achieved / remaining for open trades. Display only. -->
+<!-- TRADE PROGRESS v1 (trader 2026-11-03): live % achieved / remaining for open trades. Display only. v1.2: Trade Audit placement -->
 <style id="tp-style">
 .tp-row>td{padding:0!important;border:0!important;background:transparent!important}
 .tp{position:sticky;left:0;width:min(1120px,calc(100vw - 80px));margin:4px 0 14px;padding:16px 20px 14px;border-radius:16px;
@@ -64,7 +64,7 @@
   const held=s=>s==null?'':s<60?s+'s':Math.floor(s/60)+'m '+String(s%60).padStart(2,'0')+'s';
   function card(sid){
     let c=cache.get(sid);if(c)return c;
-    c=document.createElement('div');c.className='tp';
+    c=document.createElement('div');c.className='tp';c.dataset.sid=String(sid);
     c.innerHTML='<div class="tp-head"><span class="tp-chip"></span><span class="tp-sym"></span>'+
       '<span><span class="tp-big"></span> <span class="tp-lab">achieved</span></span>'+
       '<span><span class="tp-rem"></span> <span class="tp-lab">remaining</span></span>'+
@@ -98,40 +98,77 @@
     const near=(a,b)=>a!=null&&b!=null&&Math.abs(parseFloat(x(a))-parseFloat(x(b)))<14;
     q('.tp-mk.sl span').className=near(g.stop,g.entry)?'up':'dn';            // keep SL and Entry labels apart
     const ob=q('.tp-orb b');ob.style.transform='translateX('+(parseFloat(x(g.ltp))>80?'-85%':parseFloat(x(g.ltp))<20?'-15%':'-50%')+')';
-    mk('pk',g.peak>g.entry&&g.peak>g.ltp*1.003?g.peak:null,'Peak '+rs(g.peak));   // hidden while LTP is the peakmk('tg',g.target,'Target '+rs(g.target));
+    mk('pk',g.peak>g.entry&&g.peak>g.ltp*1.003?g.peak:null,'Peak '+rs(g.peak));   /* hidden while LTP is the peak */mk('tg',g.target,'Target '+rs(g.target));
     const o=q('.tp-orb');o.style.left=x(g.ltp);o.querySelector('b').textContent='LTP '+rs(g.ltp)+' ('+(g.gain_pct>=0?'+':'')+g.gain_pct.toFixed(1)+'%)';
     q('.tp-foot').textContent='Forecast index move still expected: '+(g.index_move_pts??'—')+' pts'+
       (g.delta!=null?' · Δ '+g.delta:'')+(g.iv_pct!=null?' · IV '+g.iv_pct+'%':'')+
       ' · Target moves with the forecast and never sits below the peak · Display only, not an exit order';
   }
+  // TRADE PROGRESS v1.2 (03-Nov 10:21): the card lives in Trade Audit · Plans & actuals (CONFIRMED trades
+  // table + main audit table), and also under the Top 20 / Open Positions rows. Those tables re-render on
+  // their own timers, so a MutationObserver re-attaches the card at once instead of waiting 4 s.
+  let last={positions:[]};
+  const execOf=(tr,i)=>(tr.cells[i]&&tr.cells[i].textContent||'').toUpperCase();
+  function auditRow(tbody,symbol,execCol){
+    if(!tbody)return null;
+    const rows=[...tbody.rows].filter(r=>!r.classList.contains('tp-row')&&r.cells[0]&&r.cells[0].textContent.includes(symbol));
+    return rows.reverse().find(r=>!/CLOSED|SUGGESTED|REJECT|EXPIRED/.test(execOf(r,execCol)))||rows[0]||null;
+  }
+  function hosts(p){
+    const id=p.exchange+':'+p.token, out=[];
+    const gb=document.querySelector('#gbSuggest table');
+    out.push(auditRow(gb&&gb.tBodies[0],p.symbol,11));
+    const at=document.getElementById('auditTable');
+    out.push(auditRow(at&&at.tBodies[0],p.symbol,4));
+    const btn=[...document.querySelectorAll('#candidates tbody button[data-buy]')].find(b=>b.dataset.buy===id);
+    out.push(btn?btn.closest('tr'):null);
+    out.push([...document.querySelectorAll('#positions tbody tr')].find(r=>r.cells[0]&&r.cells[0].textContent===String(p.signal_id))||null);
+    return out.filter(Boolean);
+  }
+  function attach(host,node){
+    const nx=host.nextElementSibling;
+    if(nx&&nx.classList.contains('tp-row')){if(nx.firstChild.firstChild!==node){nx.firstChild.replaceChildren(node)}return}
+    const tr=document.createElement('tr');tr.className='tp-row';const td=document.createElement('td');
+    td.colSpan=host.closest('table').tHead.rows[0].cells.length;td.append(node);tr.append(td);host.after(tr);
+  }
+  function idleLine(anchor,id,liveCount){
+    if(!anchor)return;let idle=document.getElementById(id);
+    if(!idle){idle=document.createElement('div');idle.id=id;idle.className='tp-idle';
+      idle.innerHTML='<i></i><span>Trade progress is on · No live trade · the progress card appears under the trade\'s row when it fills</span>';
+      anchor.parentNode.insertBefore(idle,anchor);}
+    idle.style.display=liveCount?'none':'';
+  }
+  function place(){
+    const live=new Set();
+    for(const p of (last&&last.positions)||[]){
+      if(!p.progress||p.status==='closed')continue;
+      live.add(p.signal_id);const c=card(p.signal_id);paint(c,p);
+      hosts(p).forEach((h,i)=>{
+        let node=c;
+        if(i>0){node=(h.nextElementSibling&&h.nextElementSibling.classList.contains('tp-row')&&h.nextElementSibling.querySelector('.tp-clone'))||c.cloneNode(true);
+          if(node!==c){node.classList.add('tp-clone');paint(node,p)}}
+        attach(h,node);
+      });
+    }
+    for(const k of [...cache.keys()])if(!live.has(k))cache.delete(k);
+    document.querySelectorAll('tr.tp-row').forEach(r=>{const n=r.querySelector('.tp');      // trade closed: card goes
+      if(!n||!live.has(Number(n.dataset.sid))&&!live.has(n.dataset.sid))r.remove()});
+    const gbScroll=document.querySelector('#gbSuggest .scroll');
+    idleLine(gbScroll,'tp-idle-audit',live.size);
+    const cand=document.getElementById('candidates');
+    idleLine(cand&&(cand.closest('.scroll')||cand),'tp-idle',live.size);
+  }
+  const watched=new WeakSet();
+  function watch(){
+    for(const sel of ['#gbSuggest tbody','#auditTable tbody','#candidates tbody','#positions tbody']){
+      const tb=document.querySelector(sel);if(!tb||watched.has(tb))continue;watched.add(tb);
+      let busy=false;
+      new MutationObserver(()=>{if(busy)return;busy=true;requestAnimationFrame(()=>{try{place()}finally{busy=false}})})
+        .observe(tb,{childList:true});
+    }
+  }
   window.renderTradeProgress=function(data){
-    try{
-      const live=new Set();
-      for(const p of (data&&data.positions)||[]){
-        if(!p.progress||p.status==='closed')continue;
-        live.add(p.signal_id);const c=card(p.signal_id);paint(c,p);
-        const id=p.exchange+':'+p.token;
-        const btn=[...document.querySelectorAll('#candidates tbody button[data-buy]')].find(b=>b.dataset.buy===id);
-        const posRow=[...document.querySelectorAll('#positions tbody tr')].find(r=>r.cells[0]&&r.cells[0].textContent===String(p.signal_id));
-        const host=btn?btn.closest('tr'):posRow;
-        if(!host)continue;
-        const cols=host.closest('table').tHead.rows[0].cells.length;
-        const tr=document.createElement('tr');tr.className='tp-row';const td=document.createElement('td');td.colSpan=cols;
-        td.append(c);tr.append(td);host.after(tr);
-        if(btn&&posRow){                         // also under the Open Positions row (a light clone)
-          const t2=document.createElement('tr');t2.className='tp-row';const d2=document.createElement('td');
-          d2.colSpan=posRow.closest('table').tHead.rows[0].cells.length;const c2=c.cloneNode(true);c2.classList.add('tp-clone');
-          d2.append(c2);t2.append(d2);posRow.after(t2);
-        }
-      }
-      for(const k of [...cache.keys()])if(!live.has(k))cache.delete(k);
-      const table=document.getElementById('candidates');               // TRADE PROGRESS v1.1: idle line
-      if(table){let idle=document.getElementById('tp-idle');
-        if(!idle){idle=document.createElement('div');idle.id='tp-idle';idle.className='tp-idle';
-          idle.innerHTML='<i></i><span>Trade progress is on · No live trade · the progress card appears under the trade\'s row when it fills</span>';
-          const host=table.closest('.scroll')||table;host.parentNode.insertBefore(idle,host);}
-        idle.style.display=live.size?'none':'';}
-    }catch(e){console.warn('trade progress',e)}
+    try{last=data||{positions:[]};watch();place()}catch(e){console.warn('trade progress',e)}
   };
 })();
 </script>
