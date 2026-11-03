@@ -318,3 +318,8 @@ Files: `tools/install_dashboard_rules_20261025.py`, `deploy/deploy_dashboard_rul
   solved from the live premium. Achieved/remaining %, stop room used below entry, status chips.
 - Animated card under the trade's Top 20 row and Open Positions row; nothing trades from it.
 - tools/install_trade_progress_20261103.py (--rollback); deploy after 15:30 (needs a restart).
+
+## 2026-11-04 00:40 IST — PULSE LINE LOG v1 (trader: "deploy")
+- Display-only: once a minute per index, store the PULSE line's forecast for +5/+15/+30/+60 min with
+  spot and revision (forecast.db pulse_line_log) so the after-market PULSE audit can score the line.
+- tools/install_pulse_line_log_20261104.py (--rollback); restart only when flat.
