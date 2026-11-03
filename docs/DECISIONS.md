@@ -309,3 +309,12 @@ Files: `tools/install_dashboard_rules_20261025.py`, `deploy/deploy_dashboard_rul
   no 15% stop-risk lot limit. Kept: real cash checks and the daily loss limit as the cap on total
   stop risk (portfolio_capacity). Gamma / Sniper / Shield / CAS / manual unchanged.
 - 26-Oct example: 3 lots of the 22450 CE instead of 1. scalp_capital.json mode off|shadow|live.
+
+## 2026-11-03 09:18 IST — TRADE PROGRESS v1 (Celestial, display only)
+- Trader: "while a trade is live, provide a realtime status of the percentage of trade achieved and
+  remaining; this may be dynamic" + "should be a visual wonder"; approved the forecast-based target.
+- Target premium = ltp + |delta| x move + 0.5 x gamma x move^2, move = the PULSE live-forecast line's
+  furthest favourable point (fallback: 60-min 1-sigma IV move); never below the peak. IV/greeks are
+  solved from the live premium. Achieved/remaining %, stop room used below entry, status chips.
+- Animated card under the trade's Top 20 row and Open Positions row; nothing trades from it.
+- tools/install_trade_progress_20261103.py (--rollback); deploy after 15:30 (needs a restart).
