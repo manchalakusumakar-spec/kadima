@@ -31,7 +31,7 @@ DAY_START = (9, 15)
 DAY_END = (15, 30)
 STEPS = M.BARS_PER_DAY                       # 75 five-minute points, 09:20 ... 15:30
 MILESTONES = tuple(s for s, _ in M.SLOTS if s != DAY_START)   # 10:15 ... 15:15
-DEV_MIN_PTS, DEV_MAX_PTS = 10.0, 20.0
+DEV_MIN_PTS, DEV_MAX_PTS = 5.0, 5.0  # 04-Nov: Kusumakar's 5-pt reforecast rule (was 10..20)
 ATR_BARS = 12
 ON_TIME_SEC = 120
 GIVE_UP_SEC = 900                            # score by 15:45 with what is recorded

@@ -140,6 +140,36 @@ def _slot_dt(day, hm):
 
 
 # ---------------------------------------------------------------- candles
+def _sanitize(rows):
+    """04-Nov: drop junk prints from 5-min candles (e.g. broker-backfilled 15:20 bars whose
+    open/high sit hundreds of points off the previous close). A same-day open more than the limit
+    away from the previous close is pulled back to that close; a wick longer than the limit beyond
+    the body is cut at the limit. Limit = max(40, 4 x median range of the previous 12 bars).
+    Closes are never changed."""
+    out, ranges, prev = [], [], None
+    for start, o, h, lo, c in rows:
+        try:
+            ok = all(x is not None and x == x for x in (o, h, lo, c))
+        except TypeError:
+            ok = False
+        if not ok:
+            out.append((start, o, h, lo, c))
+            prev = None
+            continue
+        last = sorted(ranges[-12:])
+        med = last[len(last) // 2] if last else 0.0
+        lim = max(40.0, 4.0 * med)
+        if prev is not None and prev[0].date() == start.date() and abs(o - prev[1]) > lim:
+            o = prev[1]
+        top, bot = max(o, c), min(o, c)
+        h = min(max(h, top), top + lim)
+        lo = max(min(lo, bot), bot - lim)
+        out.append((start, o, h, lo, c))
+        ranges.append(h - lo)
+        prev = (start, c)
+    return out
+
+
 def history_rows(token, until, days=HISTORY_DAYS, db=None):
     """Closed 5-minute candles strictly before `until`: the engine's own candles, plus the
     broker history backfilled into forecast.db for days the engine did not record."""
@@ -158,7 +188,7 @@ def history_rows(token, until, days=HISTORY_DAYS, db=None):
         start = _dt(ts)
         if start + timedelta(minutes=5) <= until:
             out.append((start, r['open'], r['high'], r['low'], r['close']))
-    return out
+    return _sanitize(out)
 
 
 # ---------------------------------------------------------------- option chain
@@ -507,9 +537,34 @@ class HourlyForecaster:
             iv, shield_dir, shield_score = None, None, None
             if anchor is None:
                 return None
-        return self.generate(name, token, day, slot, anchor, late, now,
+        made = self.generate(name, token, day, slot, anchor, late, now,
                              atm_iv=iv, shield_dir=shield_dir, shield_score=shield_score,
                              day_move=None if late else self._day_move(name, day, slot, anchor))
+        if not late:
+            self._orb_shadow(name, token, day, label, t0, now)
+        return made
+
+    def _orb_shadow(self, name, token, day, label, t0, now):
+        """05-Nov (shadow only): record the opening-range breakout / closing-fade lean for this
+        slot in its own table so it can be scored live. It never changes the forecast, its band,
+        the weights or anything trading reads, and any error here is logged and ignored."""
+        try:
+            from . import forecast_orb as ORB
+            if name != 'NIFTY' or (label not in ORB.ORB_SLOTS and label != ORB.FADE_SLOT):
+                return None
+            o, h, lo, c = ([None] * M.BARS_PER_DAY for _ in range(4))
+            for start, bo, bh, bl, bc in history_rows(token, t0, days=1, db=self.db):
+                j = ((start.hour * 60 + start.minute) - (9 * 60 + 15)) // M.STEP_MIN
+                if start.date() == day and 0 <= j < M.BARS_PER_DAY:
+                    o[j], h[j], lo[j], c[j] = bo, bh, bl, bc
+            ln = ORB.lean_for(label, o, h, lo, c)
+            if ORB.record(conn(self.db), day.isoformat(), name, ln, now.isoformat()):
+                audit.log('hourly_forecast_orb_shadow', index=name, slot=label, lean=ln.lean,
+                          rule=ln.rule, ref=round(ln.ref, 2), why=ln.why, version=ORB.VERSION)
+            return ln
+        except Exception as exc:                        # noqa: BLE001 - shadow only, never block
+            audit.log('hourly_forecast_orb_shadow_error', index=name, slot=label, error=str(exc)[:200])
+            return None
 
     def _day_move(self, name, day, slot, anchor):
         """Expected move of the day path in force over this slot (None if there is no day path)."""
