@@ -476,7 +476,7 @@ def celestial_top20(authorization: Optional[str] = Header(None)):
             row['action']='EXIT' if p['exit_reason'] or p['status']=='exit_pending' else 'TRAIL' if p['trail_active'] else 'ENTERED'
     return dict(ts=now_ist().isoformat(),candidates=rows,positions=positions,
         config=celestial_config(authorization),system={name:celestial.health(name) for name in
-            ('index_universe','stock_universe','reconciliation','news','mcx_live')},
+            ('index_universe','stock_universe','reconciliation','news','news_index','mcx_live')},
         readiness_note='Candidate prechecks only; execution rechecks alignment, structure, sizing, slots and broker state.',
         score_note='Heuristic scores, not win probabilities. No guaranteed 5% capture or fills.')
 
@@ -564,8 +564,9 @@ def celestial_resume(authorization: Optional[str] = Header(None)):
         ex.reconcile_on_startup()
         if ex._reconcile_blocked:
             raise HTTPException(409,'broker_reconciliation_required')
-        h = celestial.health('news')
-        if not h or h.get('ok') is not True or not celestial.fresh(h['ts'],seconds=300):
+        coverage = [celestial.health(name) for name in ('news', 'news_index')]
+        if not any(h and h.get('ok') is True and h.get('covered_symbols')
+                   and celestial.fresh(h['ts'],seconds=300) for h in coverage):
             raise HTTPException(409,'fresh_news_coverage_required')
         try:
             return celestial.update_config({'auto_trade_enabled':True})
@@ -597,10 +598,12 @@ def celestial_reset_kill(authorization: Optional[str] = Header(None)):
 def celestial_news(body: dict = Body(...), authorization: Optional[str] = Header(None)):
     _check_auth(authorization)
     from .news_catalysts import ingest
-    if set(body)!={'events','source','observed_at','covered_symbols'}:
+    required = {'events','source','observed_at','covered_symbols'}
+    if not required <= set(body) or set(body) - required - {'scope'}:
         raise HTTPException(422,'events_source_observed_at_covered_symbols_required')
     try:
         return ingest(body['events'],source=body['source'],observed_at=body['observed_at'],
-                      covered_symbols=body['covered_symbols'])
+                      covered_symbols=body['covered_symbols'], scope=body.get('scope', 'stocks'))
     except (ValueError,TypeError,KeyError) as exc:
         raise HTTPException(422,str(exc))
+

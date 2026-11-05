@@ -150,7 +150,8 @@ def publish(producer, rows):
 
 def news_impact(symbol, direction, now=None):
     now = now or now_ist()
-    h = health('news')
+    from .config import GAMMA_INDICES
+    h = health('news_index' if symbol in GAMMA_INDICES else 'news')
     available = bool(h and h.get('ok') is True and fresh(h['ts'], now, 300)
                      and symbol in h.get('covered_symbols',[]))
     events = []
@@ -270,3 +271,4 @@ def trail_stop(entry, peak, previous, structural, retain=.5):
                    .7 if gain >= .2 else .6 if gain >= .1 else .5)
     stop = entry + (peak-entry) * fraction if active else structural
     return max(previous or 0, structural, stop), active
+

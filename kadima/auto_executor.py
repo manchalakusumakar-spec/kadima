@@ -281,7 +281,24 @@ class AutoExecutor:
     def prepare_celestial_context(self, name, chain, spot, snap, days):
         if not celestial.enabled():
             return
-        rows = [r for r in celestial.top20(manual=True) if r['underlying']==name and r['eligible']]
+        candidates = [r for r in celestial.top20(manual=True) if r['underlying']==name]
+        cfg = celestial.read_config()
+        blockers = {r['id']: list(r.get('blocked_reasons', [])) for r in candidates
+                    if not r['eligible']}
+        controls = []
+        if not cfg['auto_trade_enabled']:
+            controls.append('auto_paused')
+        if cfg['kill_latched']:
+            controls.append('kill_latched')
+        if not candidates:
+            controls.append('no_fresh_top20_candidate')
+        diagnostic = dict(controls=controls, candidates=blockers)
+        previous = getattr(self, '_celestial_entry_diagnostics', {})
+        if previous.get(name) != diagnostic:
+            audit.log('celestial_entry_readiness', index=name, **diagnostic)
+            previous[name] = diagnostic
+            self._celestial_entry_diagnostics = previous
+        rows = [r for r in candidates if r['eligible']]
         clock = time.monotonic()
         self._celestial_contexts = {k:v for k,v in self._celestial_contexts.items() if clock-v['at']<=30}
         for row in rows:
@@ -1024,3 +1041,4 @@ class AutoExecutor:
 
 
 EXECUTOR = AutoExecutor()
+

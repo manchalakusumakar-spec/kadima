@@ -11,7 +11,9 @@ from . import celestial
 from .utils import now_ist
 
 
-def ingest(events, *, source, observed_at, covered_symbols):
+def ingest(events, *, source, observed_at, covered_symbols, scope="stocks"):
+    if scope not in ("stocks", "indices"):
+        raise ValueError("Explicit stocks or indices news scope required")
     if (not isinstance(source, str) or not 1 <= len(source) <= 100
             or not celestial.fresh(observed_at, seconds=300)
             or not isinstance(events, list) or len(events) > 500):
@@ -45,6 +47,10 @@ def ingest(events, *, source, observed_at, covered_symbols):
             c.execute('INSERT OR REPLACE INTO celestial_news VALUES (?,?,?,?)',
                       (e['id'],e['published_at'],e['expires_at'],json.dumps(e,allow_nan=False)))
         c.execute('DELETE FROM celestial_news WHERE expires_at < ?', (now.isoformat(),))
-    celestial.health('news',dict(ok=True,source=source,event_count=len(validated),
+    # Independent health prevents a stock collector refresh from overwriting
+    # explicitly checked index coverage (and vice versa).
+    celestial.health('news_index' if scope == 'indices' else 'news',
+                     dict(ok=True,source=source,scope=scope,event_count=len(validated),
                                 covered_symbols=covered_symbols),timestamp=observed_at)
     return {'ok':True,'accepted':len(validated)}
+
