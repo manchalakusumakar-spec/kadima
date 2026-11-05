@@ -72,7 +72,8 @@ def main():
         dfc.tick('NIFTY', None, DF.ts_of(today, k) + timedelta(seconds=10))
     check('no reforecast while candles stay on the path', not DF.revisions(today.isoformat(), 'NIFTY', db))
     thr = DF.threshold_pts(TOKEN, DF.ts_of(today, 9), db)
-    check('threshold is one typical candle, held to 10..20', 10 <= thr <= 20)
+    # 04-Nov: Kusumakar's 5-pt reforecast rule set the clamp to DEV_MIN_PTS..DEV_MAX_PTS (was 10..20).
+    check(f'threshold is one typical candle, held to {DF.DEV_MIN_PTS:g}..{DF.DEV_MAX_PTS:g}', DF.DEV_MIN_PTS <= thr <= DF.DEV_MAX_PTS)
 
     # Provisional (unclosed) bar far away: never triggers.
     bar(9, fc[9] + 40, closed=False)
@@ -92,7 +93,7 @@ def main():
     check('reforecast starts from the second candle and runs to 15:30',
           revs and json.loads(revs[0]['points'])[0]['k'] == 11 and json.loads(revs[0]['points'])[-1]['k'] == 75)
     check('reforecast records deviation, limit and receipt',
-          revs and abs(revs[0]['deviation_pts'] - 40) < 0.01 and revs[0]['threshold_pts'] >= 10 and len(revs[0]['receipt']) == 16)
+          revs and abs(revs[0]['deviation_pts'] - 40) < 0.01 and revs[0]['threshold_pts'] >= DF.DEV_MIN_PTS and len(revs[0]['receipt']) == 16)
 
     # 10:10 back on the new path, then the 10:15 checkpoint.
     p0 = {q['k']: q['forecast'] for q in json.loads(revs[0]['points'])}
