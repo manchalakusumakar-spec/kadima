@@ -140,6 +140,36 @@ def _slot_dt(day, hm):
 
 
 # ---------------------------------------------------------------- candles
+def _sanitize(rows):
+    """04-Nov: drop junk prints from 5-min candles (e.g. broker-backfilled 15:20 bars whose
+    open/high sit hundreds of points off the previous close). A same-day open more than the limit
+    away from the previous close is pulled back to that close; a wick longer than the limit beyond
+    the body is cut at the limit. Limit = max(40, 4 x median range of the previous 12 bars).
+    Closes are never changed."""
+    out, ranges, prev = [], [], None
+    for start, o, h, lo, c in rows:
+        try:
+            ok = all(x is not None and x == x for x in (o, h, lo, c))
+        except TypeError:
+            ok = False
+        if not ok:
+            out.append((start, o, h, lo, c))
+            prev = None
+            continue
+        last = sorted(ranges[-12:])
+        med = last[len(last) // 2] if last else 0.0
+        lim = max(40.0, 4.0 * med)
+        if prev is not None and prev[0].date() == start.date() and abs(o - prev[1]) > lim:
+            o = prev[1]
+        top, bot = max(o, c), min(o, c)
+        h = min(max(h, top), top + lim)
+        lo = max(min(lo, bot), bot - lim)
+        out.append((start, o, h, lo, c))
+        ranges.append(h - lo)
+        prev = (start, c)
+    return out
+
+
 def history_rows(token, until, days=HISTORY_DAYS, db=None):
     """Closed 5-minute candles strictly before `until`: the engine's own candles, plus the
     broker history backfilled into forecast.db for days the engine did not record."""
@@ -158,7 +188,7 @@ def history_rows(token, until, days=HISTORY_DAYS, db=None):
         start = _dt(ts)
         if start + timedelta(minutes=5) <= until:
             out.append((start, r['open'], r['high'], r['low'], r['close']))
-    return out
+    return _sanitize(out)
 
 
 # ---------------------------------------------------------------- option chain
