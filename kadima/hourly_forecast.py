@@ -537,9 +537,34 @@ class HourlyForecaster:
             iv, shield_dir, shield_score = None, None, None
             if anchor is None:
                 return None
-        return self.generate(name, token, day, slot, anchor, late, now,
+        made = self.generate(name, token, day, slot, anchor, late, now,
                              atm_iv=iv, shield_dir=shield_dir, shield_score=shield_score,
                              day_move=None if late else self._day_move(name, day, slot, anchor))
+        if not late:
+            self._orb_shadow(name, token, day, label, t0, now)
+        return made
+
+    def _orb_shadow(self, name, token, day, label, t0, now):
+        """05-Nov (shadow only): record the opening-range breakout / closing-fade lean for this
+        slot in its own table so it can be scored live. It never changes the forecast, its band,
+        the weights or anything trading reads, and any error here is logged and ignored."""
+        try:
+            from . import forecast_orb as ORB
+            if name != 'NIFTY' or (label not in ORB.ORB_SLOTS and label != ORB.FADE_SLOT):
+                return None
+            o, h, lo, c = ([None] * M.BARS_PER_DAY for _ in range(4))
+            for start, bo, bh, bl, bc in history_rows(token, t0, days=1, db=self.db):
+                j = ((start.hour * 60 + start.minute) - (9 * 60 + 15)) // M.STEP_MIN
+                if start.date() == day and 0 <= j < M.BARS_PER_DAY:
+                    o[j], h[j], lo[j], c[j] = bo, bh, bl, bc
+            ln = ORB.lean_for(label, o, h, lo, c)
+            if ORB.record(conn(self.db), day.isoformat(), name, ln, now.isoformat()):
+                audit.log('hourly_forecast_orb_shadow', index=name, slot=label, lean=ln.lean,
+                          rule=ln.rule, ref=round(ln.ref, 2), why=ln.why, version=ORB.VERSION)
+            return ln
+        except Exception as exc:                        # noqa: BLE001 - shadow only, never block
+            audit.log('hourly_forecast_orb_shadow_error', index=name, slot=label, error=str(exc)[:200])
+            return None
 
     def _day_move(self, name, day, slot, anchor):
         """Expected move of the day path in force over this slot (None if there is no day path)."""
