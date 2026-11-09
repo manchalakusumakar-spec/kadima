@@ -725,6 +725,12 @@ class AutoExecutor:
             return self._reject('shield_confirmation_evidence_missing', index_name, direction)
         _confirmed_bypass = _confirmed_gamma(kind, manual_request, selected, minimum,  # BOTTLENECK FIX v1
                                              index_name, direction)
+        if not manual_request:   # CAPITAL BUILDER v1 (2026-11-08): % limits, 1 auto entry/day
+            from . import capital_builder
+            _cb_block = capital_builder.entry_block(kind, index_name, direction, score,
+                                                    bool(_confirmed_bypass), now_ist())
+            if _cb_block:
+                return self._reject(_cb_block, index_name, direction)
         if fast is None and gap is None and not _confirmed_bypass and not trade_policy.eligible(kind, tier, score, direction, snap, spot,minimum=minimum,
                                                      shield_evidence=evidence, now=now_ist()):
             return self._reject('eligibility_alignment_or_gamma_score', index_name, direction)
@@ -787,8 +793,23 @@ class AutoExecutor:
                               if _sb else strike_selector.rank(chain, direction, spot, days_to_expiry))
                   if not r.rejected and str(r.quote.token) in valid_tokens]
         if fast:
-            ranked = [r for r in ranked if r.quote.token==fast['token'] and r.quote.symbol==fast['symbol']
+            _exact = [r for r in ranked if r.quote.token==fast['token'] and r.quote.symbol==fast['symbol']
                       and chain.index.opt_exchange==fast['exchange']]
+            try:   # 2026-11-08 GAP-NEWS v1: focus names let sizing choose the strike or its neighbours
+                from . import focus_list
+                _wide = bool(_exact) and focus_list.is_focus(index_name)
+            except Exception:  # noqa: BLE001
+                _wide = False
+            if _wide:
+                _t = _exact[0].quote.opt_type
+                _ks = sorted({r.quote.strike for r in ranked if r.quote.opt_type == _t})
+                _i = _ks.index(_exact[0].quote.strike)
+                _near = set(_ks[max(0, _i - 1):_i + 2])
+                ranked = [r for r in ranked if r.quote.opt_type == _t and r.quote.strike in _near]
+                audit.log('GAP_NEWS_STRIKE_WIDEN', index=index_name, direction=direction,
+                          strikes=sorted(_near), handoff=fast.get('symbol'))
+            else:
+                ranked = _exact
         if gap:
             ranked = [r for r in ranked if r.quote.token==gap['token']
                       and r.quote.symbol==gap['contract_symbol']
@@ -896,7 +917,10 @@ class AutoExecutor:
         limit_price = round(pricing_ltp * (1 + LIMIT_ORDER_BUFFER_PCT / 100.0), 1)
         if special:
             # Bounded entry price, no indefinite chasing after detection.
-            cap = math.floor(special['entry']*1.005*20)/20
+            _ref = special['entry']
+            if str(chosen_quote.token) != str(special.get('token', chosen_quote.token)):
+                _ref = chosen_quote.ltp   # GAP-NEWS v1: neighbour strike is capped on its own price
+            cap = math.floor(_ref*1.005*20)/20
             if pricing_ltp>cap:
                 reason = 'gap_entry_price_ran_away' if gap else 'fast_entry_price_ran_away'
                 return self._reject(reason,index_name,direction)
@@ -1210,11 +1234,17 @@ class AutoExecutor:
                 trail = pos.entry_price+(pos.peak_price-pos.entry_price)*.75 if active else structural
                 pos.effective_stop = max(pos.effective_stop or 0, structural, trail)
             else:
+                try:   # CAPITAL BUILDER v1: trail arms from +30% on auto index trades
+                    from . import capital_builder
+                    _cb_act = capital_builder.trail_activation(pos)
+                except Exception:  # noqa: BLE001
+                    _cb_act = None
                 pos.effective_stop, active = trade_policy.ratchet(
-                    pos.entry_price, pos.peak_price, pos.effective_stop, structural)
+                    pos.entry_price, pos.peak_price, pos.effective_stop, structural, activation=_cb_act)
                 if celestial.enabled():
                     pos.effective_stop, active = celestial.trail_stop(pos.entry_price,pos.peak_price,
-                        pos.effective_stop,structural,celestial.retain_fraction(pos.signal_id))
+                        pos.effective_stop,structural,celestial.retain_fraction(pos.signal_id),
+                        activation=_cb_act)
             pos.trail_active = pos.trail_active or active
             from . import trend_rules
             managed = trend_rules.managed_stop(
@@ -1231,12 +1261,12 @@ class AutoExecutor:
             if getattr(pos, 'kind', None) == 'fast_momentum':
                 from . import scalp_v2   # v2 scalps: +1R breakeven, +12% lock +6%, ATR trail, +20% exit
                 v2_stop = scalp_v2.managed_stop(pos, ltp)
+                from . import runner_hold   # RUNNER HOLD v1 (trader 2026-11-04, option B)
+                v2_stop = runner_hold.apply(pos, ltp, v2_stop, self.state.premium_tracker, now)
                 if v2_stop is not None:
                     v2_base, v2_eff, v2_active, v2_reason = v2_stop
-                    if v2_reason and not pos.exit_reason and (
-                            v2_reason.startswith('window_exit_')   # WINDOW EXIT v1: time/T2/entry exits are not loss-side
-                            or _be_filter(  # BEST ENTRY v1
-                            pos, ltp, v2_reason, now, self.state.premium_tracker)):
+                    if v2_reason and not pos.exit_reason and _be_filter(  # BEST ENTRY v1
+                            pos, ltp, v2_reason, now, self.state.premium_tracker):
                         pos.exit_reason = v2_reason
                     else:
                         structural = pos.structural_stop = v2_base
@@ -1253,16 +1283,6 @@ class AutoExecutor:
                         else:
                             structural = pos.structural_stop = max(structural or 0, sb_base)
                             pos.effective_stop, pos.trail_active = sb_eff, bool(sb_active)
-            if getattr(pos, 'kind', None) == 'gamma_blast':
-                from . import window_exit   # WINDOW EXIT v1: T1 lock, 25% trail after T2, 13:00
-                w_stop = window_exit.gamma_managed(pos, ltp, now)
-                if w_stop is not None:
-                    w_base, w_eff, w_active, w_reason = w_stop
-                    if w_reason and not pos.exit_reason:
-                        pos.exit_reason = w_reason
-                    else:
-                        structural = pos.structural_stop = w_base
-                        pos.effective_stop, pos.trail_active = w_eff, bool(w_active)
             try:   # MANUAL SL v1: the trader's dragged stop is applied last
                 from . import manual_sl
                 _adj = manual_sl.adjust(pos, max(structural or 0, pos.effective_stop or 0) or None)
@@ -1291,11 +1311,9 @@ class AutoExecutor:
                 pass
             elif getattr(pos, 'kind', None) == 'cas' and cas_engine.exit_reason(pos, ltp, cas_row, now):
                 reason = cas_engine.exit_reason(pos, ltp, cas_row, now)
-            elif (getattr(pos,'kind',None)=='fast_momentum' and not _window_holds(pos)
-                  and fast_momentum.timeout_reason(pos,now)):
+            elif getattr(pos,'kind',None)=='fast_momentum' and fast_momentum.timeout_reason(pos,now):
                 reason = fast_momentum.timeout_reason(pos,now)
-            elif (getattr(pos, 'kind', None) == 'gamma_blast' and not _window_holds(pos)
-                  and _sniper_no_progress(pos, now)):  # SNIPER v1
+            elif getattr(pos, 'kind', None) == 'gamma_blast' and _sniper_no_progress(pos, now):  # SNIPER v1
                 reason = 'sniper_no_progress'
             elif ltp <= structural:
                 reason = 'structural_stop_breached'
@@ -1561,14 +1579,6 @@ def _bounded_entry_stop(kind, stop, quote, tracker):
     from . import trend_rules
     return trend_rules.entry_stop(stop, quote.ltp,
                                   trend_rules.tracker_samples(tracker, quote.token))
-
-
-def _window_holds(pos):  # WINDOW EXIT v1: live window trades skip the no-progress timeouts
-    try:
-        from . import window_exit
-        return window_exit.holds(pos)
-    except Exception:  # noqa: BLE001
-        return False
 
 
 def _sniper_no_progress(pos, now):  # SNIPER v1
