@@ -23,7 +23,7 @@ git -C "$AUDIT" fetch -q origin main
 git -C "$AUDIT" worktree add -q --detach "$WT" origin/main
 git -C "$WT" checkout -q --orphan "$BR"
 git -C "$WT" rm -rq --cached . >/dev/null 2>&1 || true
-find "$WT" -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
+find "$WT" -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} + || true
 mkdir -p "$WT/live"
 cd "$ROOT"
 { find . \( -path ./venv -o -path ./.git -o -name __pycache__ -o -path ./data -o -path ./logs \
