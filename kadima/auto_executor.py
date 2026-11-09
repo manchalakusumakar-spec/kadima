@@ -1233,8 +1233,10 @@ class AutoExecutor:
                 v2_stop = scalp_v2.managed_stop(pos, ltp)
                 if v2_stop is not None:
                     v2_base, v2_eff, v2_active, v2_reason = v2_stop
-                    if v2_reason and not pos.exit_reason and _be_filter(  # BEST ENTRY v1
-                            pos, ltp, v2_reason, now, self.state.premium_tracker):
+                    if v2_reason and not pos.exit_reason and (
+                            v2_reason.startswith('window_exit_')   # WINDOW EXIT v1: time/T2/entry exits are not loss-side
+                            or _be_filter(  # BEST ENTRY v1
+                            pos, ltp, v2_reason, now, self.state.premium_tracker)):
                         pos.exit_reason = v2_reason
                     else:
                         structural = pos.structural_stop = v2_base
@@ -1251,6 +1253,16 @@ class AutoExecutor:
                         else:
                             structural = pos.structural_stop = max(structural or 0, sb_base)
                             pos.effective_stop, pos.trail_active = sb_eff, bool(sb_active)
+            if getattr(pos, 'kind', None) == 'gamma_blast':
+                from . import window_exit   # WINDOW EXIT v1: T1 lock, 25% trail after T2, 13:00
+                w_stop = window_exit.gamma_managed(pos, ltp, now)
+                if w_stop is not None:
+                    w_base, w_eff, w_active, w_reason = w_stop
+                    if w_reason and not pos.exit_reason:
+                        pos.exit_reason = w_reason
+                    else:
+                        structural = pos.structural_stop = w_base
+                        pos.effective_stop, pos.trail_active = w_eff, bool(w_active)
             try:   # MANUAL SL v1: the trader's dragged stop is applied last
                 from . import manual_sl
                 _adj = manual_sl.adjust(pos, max(structural or 0, pos.effective_stop or 0) or None)
@@ -1279,9 +1291,11 @@ class AutoExecutor:
                 pass
             elif getattr(pos, 'kind', None) == 'cas' and cas_engine.exit_reason(pos, ltp, cas_row, now):
                 reason = cas_engine.exit_reason(pos, ltp, cas_row, now)
-            elif getattr(pos,'kind',None)=='fast_momentum' and fast_momentum.timeout_reason(pos,now):
+            elif (getattr(pos,'kind',None)=='fast_momentum' and not _window_holds(pos)
+                  and fast_momentum.timeout_reason(pos,now)):
                 reason = fast_momentum.timeout_reason(pos,now)
-            elif getattr(pos, 'kind', None) == 'gamma_blast' and _sniper_no_progress(pos, now):  # SNIPER v1
+            elif (getattr(pos, 'kind', None) == 'gamma_blast' and not _window_holds(pos)
+                  and _sniper_no_progress(pos, now)):  # SNIPER v1
                 reason = 'sniper_no_progress'
             elif ltp <= structural:
                 reason = 'structural_stop_breached'
@@ -1547,6 +1561,14 @@ def _bounded_entry_stop(kind, stop, quote, tracker):
     from . import trend_rules
     return trend_rules.entry_stop(stop, quote.ltp,
                                   trend_rules.tracker_samples(tracker, quote.token))
+
+
+def _window_holds(pos):  # WINDOW EXIT v1: live window trades skip the no-progress timeouts
+    try:
+        from . import window_exit
+        return window_exit.holds(pos)
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _sniper_no_progress(pos, now):  # SNIPER v1

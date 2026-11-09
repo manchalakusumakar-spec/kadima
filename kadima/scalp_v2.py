@@ -551,6 +551,10 @@ def managed_stop(pos, ltp):
             return None
         base = entry * (1 - plan['stop_pct'])
         peak = max(getattr(pos, 'peak_price', None) or entry, ltp)
+        from . import window_exit   # WINDOW EXIT v1: 09:45-10:10 entries (trader 2026-11-09)
+        window = window_exit.scalp_managed(pos, ltp, base, peak)
+        if window is not None:
+            return window
         stop = ladder(entry, peak, base, plan.get('prem_atr'), plan.get('active_stop'))
         if stop != plan.get('active_stop'):
             plan['active_stop'] = stop
@@ -595,7 +599,12 @@ def maybe_partial(executor, pos, ltp):
     try:
         sw = config()['partial']
         sid = getattr(pos, 'signal_id', None)
-        if sw == 'off' or sid is None or getattr(pos, 'kind', None) != 'fast_momentum':
+        if sid is None or getattr(pos, 'kind', None) != 'fast_momentum':
+            return None
+        from . import window_exit   # WINDOW EXIT v1: half at T2 (+20%), not at +12%
+        if window_exit.holds(pos):
+            return window_exit.scalp_partial(executor, pos, ltp)
+        if sw == 'off':
             return None
         plan = _plan(int(sid))
         entry = getattr(pos, 'entry_price', None)
