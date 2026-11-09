@@ -12,7 +12,8 @@ set -euo pipefail
 ROOT=${KADIMA_ROOT:-$HOME/kadima-py}
 DATA=${KADIMA_DATA_DIR:-/var/lib/kadima}
 AUDIT=${KADIMA_AUDIT_REPO:-$HOME/kadima-audit}
-STAMP=$(TZ=Asia/Kolkata date +%Y%m%d-%H%M)
+STAMP=$(TZ=Asia/Kolkata date +%Y%m%d-%H%M%S)
+trap 'echo "FAILED at line $LINENO; nothing pushed"' ERR
 BR=live-snapshot-$STAMP
 [ -d "$ROOT/kadima" ] || { echo "ABORT: $ROOT/kadima not found"; exit 1; }
 [ -d "$AUDIT/.git" ] || { echo "ABORT: $AUDIT is not the kadima-audit clone"; exit 1; }
@@ -25,13 +26,15 @@ git -C "$WT" rm -rq --cached . >/dev/null 2>&1 || true
 find "$WT" -mindepth 1 -maxdepth 1 ! -name .git -exec rm -rf {} +
 mkdir -p "$WT/live"
 cd "$ROOT"
-find . \( -path ./venv -o -path ./.git -o -name __pycache__ -o -path ./data -o -path ./logs \
+{ find . \( -path ./venv -o -path ./.git -o -name __pycache__ -o -path ./data -o -path ./logs \
           -o -path ./backups -o -name node_modules -o -name '*.bak*' -o -name '.env*' \) -prune -o \
      -type f \( -name '*.py' -o -name '*.html' -o -name '*.js' -o -name '*.css' -o -name '*.md' \
           -o -name '*.yaml' -o -name '*.yml' -o -name '*.toml' -o -name '*.txt' -o -name '*.sh' \
-          -o -name '*.service' -o -name '*.timer' \) -size -3M -print \
+          -o -name '*.service' -o -name '*.timer' \) -size -3M -readable -print 2>/dev/null || true; } \
   | sed 's#^\./##' | sort > "$WT/live/FILES.txt"
-while read -r f; do mkdir -p "$WT/live/$(dirname "$f")"; cp -p "$f" "$WT/live/$f"; done < "$WT/live/FILES.txt"
+SKIPPED=0
+while read -r f; do mkdir -p "$WT/live/$(dirname "$f")"; cp -p "$f" "$WT/live/$f" 2>/dev/null || { echo "skipped (unreadable): $f"; SKIPPED=$((SKIPPED+1)); }; done < "$WT/live/FILES.txt"
+[ -s "$WT/live/FILES.txt" ] || { echo "ABORT: no files found"; exit 1; }
 # credential guard: values after these names, private keys, Angel/Telegram tokens
 if grep -rIlE "(ANGEL_(API_KEY|CLIENT_ID|PASSWORD|TOTP_SECRET)|TELEGRAM_BOT_TOKEN|KADIMA_API_TOKEN|AWS_SECRET_ACCESS_KEY)[\"']?[[:space:]]*[=:][[:space:]]*[\"']?[A-Za-z0-9/+_-]{8,}|BEGIN [A-Z ]*PRIVATE KEY|[0-9]{9,10}:AA[A-Za-z0-9_-]{30,}" "$WT/live" > "$WT/flagged.txt"; then
   echo "ABORT: these files look like they contain a credential; nothing pushed:"; cat "$WT/flagged.txt"; exit 1
@@ -47,11 +50,11 @@ fi
     true
   done
   echo "== other top-level json names in $DATA (contents not copied)"; ls "$DATA"/*.json 2>/dev/null | xargs -n1 basename || true
-  echo "== sha256 of every copied file"; (cd "$WT/live" && sha256sum $(cat FILES.txt))
+  echo "== sha256 of every copied file"; (cd "$WT/live" && while read -r f; do [ -f "$f" ] && sha256sum "$f"; done < FILES.txt; true)
 } > "$WT/live/MANIFEST.txt"
 cd "$WT"
 git add -A live
 git -c user.name=KADIMA-EC2 -c user.email=kadima-ec2@noreply commit -qm "live snapshot $STAMP IST"
 git push -q origin "$BR"
-echo "PUSHED: kadima-audit branch $BR ($(wc -l < live/FILES.txt) files)."
+echo "PUSHED: kadima-audit branch $BR ($(wc -l < live/FILES.txt) files, $SKIPPED unreadable skipped)."
 grep -E "kadima/(scalp_v2|auto_executor|window_exit|execution_ledger|storage|fast_momentum)\.py$" live/MANIFEST.txt || true
