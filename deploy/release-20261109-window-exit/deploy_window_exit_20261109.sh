@@ -19,16 +19,18 @@ DATA=${KADIMA_DATA_DIR:-/var/lib/kadima}
 BRANCH=claude/window-exit-20261109
 PY=$ROOT/venv/bin/python
 SV=$ROOT/kadima/scalp_v2.py; AE=$ROOT/kadima/auto_executor.py; WE=$ROOT/kadima/window_exit.py
-# Live versions this patch was written against (EC2 snapshot 04-Nov 00:40 IST).
+# Live versions this patch was written against (EC2 snapshot 10-Nov 00:03 IST, kadima-audit live-snapshot-20261110-000309).
 OLD_SV=e0e81a12c6d931c31d55ef9ce9fc34a32cd6d1d55a09484e4e0e589bf984aa2a
-OLD_AE=8ad2d4fb3e4bee6c086508792d23be1ed2d8ae128f1b1205187097bbbb0abc0c
+OLD_AE=36bfd4330042de1c0c99afbeace7b37f9c1711c9ad5719277548155088b88cfc
 NEW_SV=910a881176a75d69878ee871e0c4547e4960a565168a3be8b7d3d48eab0a6264
-NEW_AE=950dea20cefed7ed130a847d1eb0820fc0b206ad584c455c96cd7198ec298eda
+NEW_AE=192338467176e7ae38ba84af2b6279ad232577a9b0733c0a5c75d988c9c74757
 NEW_WE=6ef02f16e9e5bfcbb4550beda20fdef58570d2e5d7f0c05602094c87aaf55b64
 # Modules the new code calls into must be the same versions it was tested against.
 LIVE_EL=de4770027c7ee1638d2714181b59e8f0d7dc33d056170431b4eee09300e6eabb   # execution_ledger.py
 LIVE_ST=234da3afc344c999a45757d57e5ff56e487d46103ee21cdce016f78ef879de87   # storage.py
-LIVE_FM=f5d92b3b8303780c48396941258eb8e6e18a6d158eb29149af3727609d098ff9   # fast_momentum.py
+LIVE_FM=771b7d9fdf331a82f68799fac642764b7f01fea3909a1e36118e92f50e53e29c   # fast_momentum.py
+LIVE_RH=0b45f592b25889e1caf5eb4e95e84d2342913c0704281d0747386d954186b7d7   # runner_hold.py
+LIVE_CB=8fb391f3f0de9fdb8420372fbfd345ef013da9f3a5a3a54566da3832e99b8eb9   # capital_builder.py
 MARK=$ROOT/.window-exit-20261109-backup
 h() { sha256sum "$1" 2>/dev/null | cut -c1-64; }
 st() { [ "$(h "$1")" = "$2" ] && echo "expected" || { [ "$(h "$1")" = "$3" ] && echo "already-patched" || echo "DIFFERENT ($(h "$1" | cut -c1-12))"; }; }
@@ -56,6 +58,8 @@ echo "live window_exit.py   : $([ -e $WE ] && st $WE none $NEW_WE || echo absent
 echo "execution_ledger.py   : $([ "$(h $ROOT/kadima/execution_ledger.py)" = "$LIVE_EL" ] && echo expected || echo DIFFERENT)"
 echo "storage.py            : $([ "$(h $ROOT/kadima/storage.py)" = "$LIVE_ST" ] && echo expected || echo DIFFERENT)"
 echo "fast_momentum.py      : $([ "$(h $ROOT/kadima/fast_momentum.py)" = "$LIVE_FM" ] && echo expected || echo DIFFERENT)"
+echo "runner_hold.py        : $([ "$(h $ROOT/kadima/runner_hold.py)" = "$LIVE_RH" ] && echo expected || echo DIFFERENT)"
+echo "capital_builder.py    : $([ "$(h $ROOT/kadima/capital_builder.py)" = "$LIVE_CB" ] && echo expected || echo DIFFERENT)"
 case "${1:-}" in
   --check) exit 0 ;;
   --mode) setmode "${2:-}"; exit ;;
@@ -65,8 +69,9 @@ MODE=${WINDOW_EXIT_MODE:?set WINDOW_EXIT_MODE=shadow or live}
 case "$MODE" in shadow|live) ;; *) echo "WINDOW_EXIT_MODE must be shadow or live"; exit 1;; esac
 echo "== 1. gates"
 if [ "$(h $SV)" = "$NEW_SV" ] && [ "$(h $AE)" = "$NEW_AE" ] && [ "$(h $WE)" = "$NEW_WE" ]; then echo "already installed"; setmode "$MODE"; exit; fi
-[ "$(h $SV)" = "$OLD_SV" ] && [ "$(h $AE)" = "$OLD_AE" ] && [ ! -e "$WE" ] || { echo "ABORT: live scalp_v2.py/auto_executor.py are not the 04-Nov versions this patch was written against (or window_exit.py exists); nothing changed. Push a fresh live snapshot and ask for a re-base."; exit 1; }
-[ "$(h $ROOT/kadima/execution_ledger.py)" = "$LIVE_EL" ] && [ "$(h $ROOT/kadima/storage.py)" = "$LIVE_ST" ] && [ "$(h $ROOT/kadima/fast_momentum.py)" = "$LIVE_FM" ] || { echo "ABORT: execution_ledger/storage/fast_momentum changed since 04-Nov; nothing changed"; exit 1; }
+[ "$(h $SV)" = "$OLD_SV" ] && [ "$(h $AE)" = "$OLD_AE" ] && [ ! -e "$WE" ] || { echo "ABORT: live scalp_v2.py/auto_executor.py are not the 10-Nov 00:03 versions this patch was written against (or window_exit.py exists); nothing changed. Push a fresh live snapshot and ask for a re-base."; exit 1; }
+[ "$(h $ROOT/kadima/execution_ledger.py)" = "$LIVE_EL" ] && [ "$(h $ROOT/kadima/storage.py)" = "$LIVE_ST" ] && [ "$(h $ROOT/kadima/fast_momentum.py)" = "$LIVE_FM" ] \
+  && [ "$(h $ROOT/kadima/runner_hold.py)" = "$LIVE_RH" ] && [ "$(h $ROOT/kadima/capital_builder.py)" = "$LIVE_CB" ] || { echo "ABORT: execution_ledger/storage/fast_momentum/runner_hold/capital_builder changed since 10-Nov 00:03; nothing changed"; exit 1; }
 HM=$(TZ=Asia/Kolkata date +%H%M); DOW=$(TZ=Asia/Kolkata date +%u)
 if [ "$DOW" -le 5 ] && [ "$HM" -ge 0900 ] && [ "$HM" -lt 1545 ]; then echo "ABORT: market hours (IST $HM); run after 15:45"; exit 1; fi
 TMP=$(mktemp -d)

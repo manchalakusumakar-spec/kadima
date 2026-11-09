@@ -45,13 +45,17 @@ fi
   echo "== git status --short (uncommitted live changes)"; git -C "$ROOT" status --short 2>&1 | head -400 || true
   echo "== kadima.service"; systemctl show kadima -p ActiveState -p SubState -p ActiveEnterTimestamp 2>&1 || true
   echo "== strategy switch files in $DATA"
-  for j in scalp_v2.json scalp_runner.json scalp_capital.json scalp_max_lots.json window_exit.json celestial.json; do
+  for j in scalp_v2.json scalp_runner.json scalp_capital.json scalp_max_lots.json window_exit.json celestial.json \
+           runner_hold.json capital_builder.json gamma_confirm.json gamma_priority.json sniper.json trend_rules.json best_entry.json move_capture.json stock_blast.json; do
     [ -f "$DATA/$j" ] && [ "$(stat -c %s "$DATA/$j")" -lt 4096 ] && echo "$j: $(tr -d '\n' < "$DATA/$j")"
     true
   done
   echo "== other top-level json names in $DATA (contents not copied)"; ls "$DATA"/*.json 2>/dev/null | xargs -n1 basename || true
   echo "== sha256 of every copied file"; (cd "$WT/live" && while read -r f; do [ -f "$f" ] && sha256sum "$f"; done < FILES.txt; true)
 } > "$WT/live/MANIFEST.txt"
+if grep -IqE "(ANGEL_|TELEGRAM_BOT_TOKEN|KADIMA_API_TOKEN|AWS_SECRET|token|secret|password|totp)" "$WT/live/MANIFEST.txt"; then
+  sed -i -E '/^[a-z_]+\.json: .*(token|secret|password|totp)/Id' "$WT/live/MANIFEST.txt"; echo "note: a switch file mentioning a credential word was left out of MANIFEST"
+fi
 cd "$WT"
 git add -A live
 git -c user.name=KADIMA-EC2 -c user.email=kadima-ec2@noreply commit -qm "live snapshot $STAMP IST"
