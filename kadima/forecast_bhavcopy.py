@@ -22,6 +22,7 @@ ARCHIVE='https://nsearchives.nseindia.com'
 UA='Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 Chrome/131.0.0.0 Safari/537.36'
 MAX_ZIP=8*1024*1024
 MAX_CSV=80*1024*1024
+RETRY_SESSIONS=3  # latest session + the two before it (retried until 'ok')
 
 
 def urls(day):
@@ -143,7 +144,11 @@ def run_nightly(c,now,day=None,sleeper=time.sleep,opener=urllib.request.urlopen)
     else:
         first=c.execute("SELECT 1 FROM nightly_status WHERE step='bhavcopy_backfill' AND status='ok' LIMIT 1").fetchone() is None
         end=now.date() if now.hour>=16 else now.date()-timedelta(days=1)
-        days=trading_days(end,30 if first else 1)
+        # 09 Nov: NSE publishes the F&O bhavcopy in the evening, after this 16:05 run, so the
+        # day's fetch is always 'both_archives_404' and was never asked again (every session
+        # 29 Oct-09 Nov missing; 06 Nov was on the archive by 16:47 the same day). Ask the
+        # previous sessions again: ingest() skips days already 'ok' or checked today.
+        days=trading_days(end,30 if first else RETRY_SESSIONS)
     results=[]
     for i,point in enumerate(days):
         if i:sleeper(2)
