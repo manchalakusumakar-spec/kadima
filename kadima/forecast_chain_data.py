@@ -19,6 +19,13 @@ BUSY_RETRY_SEC=0.25
 # seconds of busy retries, take ONE fair FIFO turn through the normal budgeted quote wrapper.
 FIFO_FALLBACK_AFTER_SEC=6.0
 FIFO_FALLBACK_MIN_LEFT_SEC=14.0  # never queue when the FIFO wait could overrun the window
+# 09 Nov: the closing (EOD) chain is ~460 contracts = 10 quote calls, each taking a fair FIFO turn
+# behind trading quotes. The old 15:30-15:32 window was too short: 'quote_budget_busy_until_deadline'
+# at 15:32:00 on 03, 05 and 09 Nov (the good days finished at 15:31:45, 15 s from the deadline), so
+# chain_eod had no rows and the next morning lost its previous-day OI inputs. The market is closed
+# in this window, so the longer wait only delays forecast work, never a trading quote.
+EOD_START=clock(15,30)
+EOD_END=clock(15,40)
 
 SCHEMA = '''
 CREATE TABLE IF NOT EXISTS chain_wide (
@@ -71,7 +78,30 @@ def max_pain(rows):
         (max(0,settlement-r['strike']) if r['opt_type']=='CE' else max(0,r['strike']-settlement)) for r in rows))
 
 
-def previous_chain(c,name,t0):
+# 09 Nov: the live PCR and OI walls come from the 5-minute wide snapshot (nearest expiry, ATM
+# +-15 strikes), but the previous-day values were taken over EVERY strike of the EOD chain. On
+# 06 Nov the all-strike PCR was 1.79 against 0.81 over the same +-15 strikes, so the hourly model
+# read 'PCR collapsed since yesterday' (prev_day_pcr vote -1) all of 09 Nov, and the deep-OTM
+# 23500 PE wall made prev_day_pe_wall +1. Compare like with like: the same strike range around
+# that session's closing spot.
+PREV_DAY_STRIKES=15
+
+
+def _near(rows,spot,step):
+    if not spot or not math.isfinite(spot) or spot<=0:return []
+    atm=round(spot/step)*step
+    return [r for r in rows if abs(r['strike']-atm)<=PREV_DAY_STRIKES*step]
+
+
+def _closing_spot(c,name,day):
+    for sql in ('SELECT spot FROM chain_eod WHERE index_name=? AND day=? LIMIT 1',
+                'SELECT spot FROM chain_wide WHERE index_name=? AND substr(ts,1,10)=? ORDER BY ts DESC LIMIT 1'):
+        row=c.execute(sql,(name,day)).fetchone()
+        if row and row[0]:return float(row[0])
+    return None
+
+
+def previous_chain(c,name,t0,step=50):
     """Latest observed prior session, preferring official bhavcopy for that day.
 
     Never jump back to an older official day when a newer broker EOD exists.
@@ -92,14 +122,14 @@ def previous_chain(c,name,t0):
         row=c.execute(f'SELECT MIN(expiry) FROM {table} WHERE index_name=? AND day=? AND expiry>=?', (name,day,cutoff)).fetchone()
         if row[0]:
             rows=[dict(r) for r in c.execute(f'SELECT strike,opt_type,oi FROM {table} WHERE index_name=? AND day=? AND expiry=?', (name,day,row[0]))]
-            result=aggregate(rows)
+            result=aggregate(_near(rows,_closing_spot(c,name,day),step or 50))
             if result:return dict(result,day=day,source=table)
     return None
 
 
 def extra_features(c,name,t0,step):
     out={}
-    previous=previous_chain(c,name,t0)
+    previous=previous_chain(c,name,t0,step)
     if previous:
         out.update(prev_day_pcr=previous['pcr'],prev_day_ce_wall=previous['ce_wall'],
                    prev_day_pe_wall=previous['pe_wall'],prev_day=previous['day'],prev_day_source=previous['source'])
@@ -183,13 +213,13 @@ class Collector:
         minute=local.replace(second=0,microsecond=0)
         wide=(clock(9,15)<=minute.time().replace(tzinfo=None)<=clock(15,30) and
               minute.minute%5==0 and 20<=local.second<40)
-        eod=clock(15,30)<=local.time().replace(tzinfo=None)<clock(15,32)
+        eod=EOD_START<=local.time().replace(tzinfo=None)<EOD_END
         for name in self.indices:
             for kind,do in (('wide',wide),('eod',eod)):
                 key=(day,name,kind,minute.isoformat() if kind=='wide' else day)
                 if not do or key in self.attempted:continue
                 self.attempted.add(key)
-                deadline=minute+timedelta(seconds=59) if kind=='wide' else local.replace(hour=15,minute=32,second=0,microsecond=0)
+                deadline=minute+timedelta(seconds=59) if kind=='wide' else local.replace(hour=EOD_END.hour,minute=EOD_END.minute,second=0,microsecond=0)
                 try:self.collect(name,local,deadline,kind=='eod')
                 except Exception as exc:
                     audit.log('forecast_chain_cycle_skipped',index=name,kind=kind,error_type=type(exc).__name__,
