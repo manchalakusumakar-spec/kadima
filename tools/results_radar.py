@@ -245,17 +245,30 @@ def last_year_quarter(sym, q_end, consolidated):
     except Exception:
         return None
     ly = q.replace(year=q.year - 1)
-    want_to = ly.strftime('%d-%b-%Y').upper()
-    want_cons = 'Consolidated' if consolidated else 'Non-Consolidated'
+    cand = []
+    # primary: integrated filings filed in the ~3 months after last year's quarter end (same XBRL format)
     try:
-        rows = fetch(API + 'corporates-financial-results?index=equities&symbol=%s&period=Quarterly'
-                     % urllib.parse.quote(sym))
+        d = fetch(API + 'integrated-filing-results?index=equities&symbol=%s&from_date=%s&to_date=%s'
+                  % (urllib.parse.quote(sym), nse_date(ly + dt.timedelta(days=1)), nse_date(ly + dt.timedelta(days=95))))
+        rows = d.get('data', []) if isinstance(d, dict) else d
+        want = 'Consolidated' if consolidated else 'Standalone'
+        cand += sorted([r for r in rows if r.get('symbol') == sym and r.get('xbrl')
+                        and 'financ' in (r.get('type') or '').lower()
+                        and (r.get('qe_Date') or '').upper() == ly.strftime('%d-%b-%Y').upper()],
+                       key=lambda r: r.get('consolidated') != want)
     except Exception as e:
-        log('ly list', sym, e)
-        return None
-    cand = [r for r in rows if isinstance(r, dict) and r.get('symbol') == sym
-            and (r.get('toDate') or '').upper() == want_to and r.get('xbrl')]
-    cand.sort(key=lambda r: (r.get('consolidated') != want_cons,))
+        log('ly integrated', sym, e)
+    # fallback: older financial-results feed
+    if not cand:
+        try:
+            rows = fetch(API + 'corporates-financial-results?index=equities&symbol=%s&period=Quarterly'
+                         % urllib.parse.quote(sym))
+            want = 'Consolidated' if consolidated else 'Non-Consolidated'
+            cand += sorted([r for r in rows if isinstance(r, dict) and r.get('symbol') == sym and r.get('xbrl')
+                            and (r.get('toDate') or '').upper() == ly.strftime('%d-%b-%Y').upper()],
+                           key=lambda r: r.get('consolidated') != want)
+        except Exception as e:
+            log('ly list', sym, e)
     for r in cand[:2]:
         try:
             n = xbrl_numbers(fetch(r['xbrl'], as_json=False))
@@ -330,8 +343,12 @@ def run():
         except Exception as e:
             errors.append('xbrl %s: %s' % (sym, e))
             continue
-        if sym not in st['ly'] and n.get('q_end'):
-            st['ly'][sym] = last_year_quarter(sym, n['q_end'], r['cons'] == 'Consolidated') or {}
+    for sym, r in chosen.items():                       # YoY base, once per company (retry failures after 2 h)
+        n = st['filings'].get(str(r.get('seq') or r.get('xbrl'))) or {}
+        have = st['ly'].get(sym)
+        if not n.get('q_end') or (have and (have.get('profit_q') is not None or time.time() - have.get('_fail', 0) < 7200)):
+            continue
+        st['ly'][sym] = last_year_quarter(sym, n['q_end'], r['cons'] == 'Consolidated') or {'_fail': time.time()}
 
     # 3. rows ----------------------------------------------------------------------------
     def build(sym, company, date_label, declared):
