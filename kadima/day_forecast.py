@@ -10,7 +10,14 @@ Same model and the same 5-minute style as the hourly slots, over the whole sessi
     5-minute candle (average high-low range of the last 12 closed bars), held between 10 and 20
     points, so a normal candle does not trigger one and a real break does.
 
-The original 09:15 rows are never changed and are the only thing scored at the close.
+13-Nov (Kusumakar's YES): the 09:15 path is PROVISIONAL. At the close of the first 5-minute
+candle (09:20) the day path is rebuilt from that close and becomes the OFFICIAL day forecast:
+it replaces the day_forecasts row and points (the 09:15 version is kept in
+day_forecast_provisional) and is the only thing scored at the close, from 09:25 on and with
+direction measured from the 09:20 close. If the 09:20 close is not verified by 09:25 (or the
+engine starts later), the 09:15 path stays official, as before.
+Also 13-Nov: until 10:15, one closed candle at least max(30 pts, half the 09:15 candle's range)
+away from the path in force reforecasts at once ('fast'); the 2-candle rule is unchanged.
 Reforecasts are kept with a receipt (hash of what was published) for review.
 
 Driven from the hourly forecaster's loop (no thread or process of its own). Never places,
@@ -35,7 +42,14 @@ DEV_MIN_PTS, DEV_MAX_PTS = 5.0, 5.0  # 04-Nov: Kusumakar's 5-pt reforecast rule 
 ATR_BARS = 12
 ON_TIME_SEC = 120
 GIVE_UP_SEC = 900                            # score by 15:45 with what is recorded
-MODEL_TAG = 'day-1.0'
+MODEL_TAG = 'day-1.1'
+ANCHOR_0920 = True                           # 13-Nov switches (False = the 05-Nov behaviour)
+FAST_REFORECAST = True
+OFFICIAL_K = 1                               # 13-Nov: official day path anchored on the 09:20 close
+OFFICIAL_WAIT_SEC = 300                      # keep the 09:15 path if 09:20 is not verified by 09:25
+FAST_UNTIL = (10, 15)                        # 13-Nov fast reforecast window (marks before 10:15)
+FAST_MIN_PTS = 30.0
+FAST_OPEN_RANGE_FRAC = 0.5
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS day_forecasts (
@@ -61,6 +75,12 @@ CREATE TABLE IF NOT EXISTS day_forecast_revisions (
     direction TEXT, prob_up REAL, published_at TEXT NOT NULL, points TEXT NOT NULL,
     receipt TEXT NOT NULL,
     PRIMARY KEY (day, index_name, rev)
+);
+CREATE TABLE IF NOT EXISTS day_forecast_provisional (
+    day TEXT NOT NULL, index_name TEXT NOT NULL, generated_at TEXT NOT NULL, late INTEGER,
+    anchor REAL, sigma REAL, direction TEXT, prob_up REAL, projected_pct REAL, projected_pts REAL,
+    band_pts REAL, inputs TEXT, points TEXT NOT NULL, official_at TEXT NOT NULL,
+    PRIMARY KEY (day, index_name)
 );
 """
 
@@ -94,6 +114,34 @@ def threshold_pts(token, until, db=None):
     rng = [h - lo for _, _, h, lo, _ in rows if M.finite(h) and M.finite(lo) and h >= lo]
     atr = sum(rng) / len(rng) if rng else DEV_MIN_PTS
     return round(M.clip(atr, DEV_MIN_PTS, DEV_MAX_PTS), 1)
+
+
+def anchor_k(row):
+    """Bar the scored day path starts from: 1 once re-anchored on the 09:20 close, else 0."""
+    try:
+        return int(json.loads(row['inputs'] or '{}').get('anchor_k', 0))
+    except (ValueError, TypeError, IndexError, KeyError):
+        return 0
+
+
+def official_state(row):
+    """'official_0920', 'kept_0915' or None (not decided yet)."""
+    try:
+        return json.loads(row['inputs'] or '{}').get('official')
+    except (ValueError, TypeError, IndexError, KeyError):
+        return None
+
+
+def fast_threshold(token, day):
+    """max(30 pts, half the 09:15 candle's high-low range)."""
+    rng = 0.0
+    try:
+        bar = HF.candle_bar(token, t0_of(day))
+        if bar and bar['closed']:
+            rng = bar['high'] - bar['low']
+    except Exception:                                # noqa: BLE001 - fall back to the floor
+        rng = 0.0
+    return round(max(FAST_MIN_PTS, FAST_OPEN_RANGE_FRAC * rng), 1)
 
 
 def revisions(day, name, db=None):
@@ -182,6 +230,10 @@ class DayForecaster:
         if row['status'] != 'live':
             return
         self.update_actuals(name, token, d, now)
+        if ANCHOR_0920 and official_state(row) is None:
+            if not self.officialize(name, st, token, day, row, now):
+                return                               # wait for the 09:20 close (at most until 09:25)
+            row = c.execute('SELECT * FROM day_forecasts WHERE day=? AND index_name=?', (d, name)).fetchone()
         pts = c.execute('SELECT * FROM day_forecast_points WHERE day=? AND index_name=? ORDER BY k',
                         (d, name)).fetchall()
         self.reforecast(name, st, token, day, pts, now)
@@ -241,6 +293,81 @@ class DayForecaster:
                   projected_pts=f.projected_pts, band_pts=f.band_pts)
         return f
 
+    def _set_official(self, c, row, state, extra=None):
+        try:
+            inp = json.loads(row['inputs'] or '{}')
+        except ValueError:
+            inp = {}
+        inp.update(official=state, **(extra or {}))
+        c.execute('UPDATE day_forecasts SET inputs=? WHERE day=? AND index_name=?',
+                  (json.dumps(inp, default=str), row['day'], row['index_name']))
+
+    def officialize(self, name, st, token, day, row, now, rows=None):
+        """13-Nov: rebuild the day path from the verified 09:20 close and make it the official one.
+
+        Returns True once decided (re-anchored, or the 09:15 path kept), False while waiting.
+        """
+        c = conn(self.db)
+        d = day.isoformat()
+        mark = ts_of(day, OFFICIAL_K)
+        if now < mark:
+            return False
+        p = c.execute('SELECT * FROM day_forecast_points WHERE day=? AND index_name=? AND k=?',
+                      (d, name, OFFICIAL_K)).fetchone()
+        late_start = HF._dt(row['generated_at']) > mark
+        if late_start or revisions(d, name, self.db):
+            with c:
+                self._set_official(c, row, 'kept_0915', dict(anchor_k=0, keep_reason='late_start'))
+            return True
+        if p is None or not HF.verified(p):
+            if (now - mark).total_seconds() < OFFICIAL_WAIT_SEC:
+                return False
+            with c:
+                self._set_official(c, row, 'kept_0915', dict(anchor_k=0, keep_reason='0920_not_verified'))
+            audit.log('day_forecast_official_kept', index=name, reason='0920_not_verified')
+            return True
+        anchor = p['actual']
+        iv = sd_ = ss = None
+        if st is not None and (now - mark).total_seconds() <= ON_TIME_SEC:
+            _, iv, sd_, ss = self.hourly._live_inputs(st, now)
+        f = self._model(name, token, day, OFFICIAL_K, anchor, atm_iv=iv, shield_dir=sd_, shield_score=ss, rows=rows)
+        if f is None:
+            with c:
+                self._set_official(c, row, 'kept_0915', dict(anchor_k=0, keep_reason='model_skipped'))
+            return True
+        old = c.execute('SELECT k, ts, forecast, upper, lower, swing FROM day_forecast_points WHERE day=? AND '
+                        'index_name=? ORDER BY k', (d, name)).fetchall()
+        swing = f.swing if len(f.swing) == len(f.points) else [None] * len(f.points)
+        try:
+            inp = json.loads(row['inputs'] or '{}')
+        except ValueError:
+            inp = {}
+        inp.update(official='official_0920', anchor_k=OFFICIAL_K, official_at=now.isoformat(),
+                   provisional_anchor=row['anchor'], provisional_direction=row['direction'],
+                   sd=f.inputs.get('sd'), mean=f.inputs.get('mean'), swing_from=f.inputs.get('swing_from'),
+                   n_eff=f.n_eff)
+        with c:
+            c.execute('INSERT OR IGNORE INTO day_forecast_provisional (day,index_name,generated_at,late,anchor,sigma,'
+                      'direction,prob_up,projected_pct,projected_pts,band_pts,inputs,points,official_at) '
+                      'VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)',
+                      (d, name, row['generated_at'], row['late'], row['anchor'], row['sigma'], row['direction'],
+                       row['prob_up'], row['projected_pct'], row['projected_pts'], row['band_pts'], row['inputs'],
+                       json.dumps([dict(x) for x in old]), now.isoformat()))
+            c.execute('UPDATE day_forecasts SET anchor=?, sigma=?, direction=?, prob_up=?, projected_pct=?, '
+                      'projected_pts=?, band_pts=?, model_version=?, inputs=? WHERE day=? AND index_name=?',
+                      (f.anchor, f.sigma, f.direction, f.prob_up, f.projected_pct, f.projected_pts, f.band_pts,
+                       f'{MODEL_TAG}/{M.MODEL_VERSION}', json.dumps(inp, default=str), d, name))
+            c.execute('UPDATE day_forecast_points SET forecast=?, upper=?, lower=?, swing=NULL WHERE day=? AND '
+                      'index_name=? AND k=?', (round(anchor, 2), round(anchor, 2), round(anchor, 2), d, name,
+                                               OFFICIAL_K))
+            c.executemany('UPDATE day_forecast_points SET forecast=?, upper=?, lower=?, swing=? WHERE day=? AND '
+                          'index_name=? AND k=?',
+                          [(round(m, 2), round(u, 2), round(lo, 2), sw, d, name, OFFICIAL_K + j)
+                           for (j, m, u, lo), sw in zip(f.points, swing)])
+        audit.log('day_forecast_official', index=name, anchor=f.anchor, provisional_anchor=row['anchor'],
+                  direction=f.direction, provisional_direction=row['direction'], projected_pts=f.projected_pts)
+        return True
+
     def update_actuals(self, name, token, d, now):
         c = conn(self.db)
         for p in c.execute('SELECT * FROM day_forecast_points WHERE day=? AND index_name=? ORDER BY k',
@@ -272,6 +399,8 @@ class DayForecaster:
         active = active_path(pts, revs)
         by_k = {p['k']: p for p in pts}
         mks = {k_of(m) for m in MILESTONES}
+        fast_until = k_of(FAST_UNTIL)
+        fast_thr = None
         prev_side = 0                                # +1 / -1 if the previous candle was beyond the limit
         for k in range(last_k + 1, STEPS):
             mark = ts_of(day, k)
@@ -293,6 +422,11 @@ class DayForecaster:
                 return None                  # candles are judged in order; wait for this one
             thr = threshold_pts(token, mark, self.db)
             dev = round(p['actual'] - active[k], 2)
+            if FAST_REFORECAST and k < fast_until:
+                fast_thr = fast_thr if fast_thr is not None else fast_threshold(token, day)
+                if abs(dev) >= fast_thr:
+                    return self._publish(name, st, token, day, k, 'fast', p['actual'], dev, fast_thr, now,
+                                         revs, rows)
             side = (1 if dev > 0 else -1) if abs(dev) >= thr else 0
             if side and side == prev_side:
                 return self._publish(name, st, token, day, k, 'deviation', p['actual'], dev, thr, now, revs, rows)
@@ -344,11 +478,12 @@ class DayForecaster:
                           "index_name=? AND status='live'", (datetime.now(IST).isoformat(), row['day'], row['index_name']))
             audit.log('day_forecast_incomplete', index=row['index_name'], day=row['day'])
             return None
-        use = [p for p in pts if HF.verified(p)]
+        ak = anchor_k(row)
+        use = [p for p in pts if HF.verified(p) and p['k'] > ak]
         points = [(p['k'], p['forecast'], p['upper'], p['lower']) for p in use]
         actual = [p['actual'] for p in use]
         sc = M.score(points, row['anchor'], actual, row['direction'], row['sigma'], 1.0) or {}
-        tags = M.deviation_reasons('09:15', None, sc.get('actual_pct'), sc.get('coverage'), row['direction'],
+        tags = M.deviation_reasons('09:15' if ak == 0 else '09:20', None, sc.get('actual_pct'), sc.get('coverage'), row['direction'],
                                    sc.get('dir_hit'), bool(row['late']))
         n_rev = len(revisions(row['day'], row['index_name'], self.db))
         with c:
@@ -356,7 +491,7 @@ class DayForecaster:
                       "actual_pct=?, actual_end=?, reasons=?, finalized_at=? WHERE day=? AND index_name=?",
                       (None if 'dir_hit' not in sc else int(sc['dir_hit']), sc.get('mae_pts'), sc.get('coverage'),
                        sc.get('end_error_pts'), sc.get('actual_pct'), actual[-1] if actual else None,
-                       json.dumps(dict(tags=tags, revisions=n_rev, scored_points=len(use))),
+                       json.dumps(dict(tags=tags, revisions=n_rev, scored_points=len(use), anchor_k=ak)),
                        datetime.now(IST).isoformat(), row['day'], row['index_name']))
         audit.log('day_forecast_scored', index=row['index_name'], day=row['day'], revisions=n_rev, **sc)
         return sc
@@ -403,6 +538,13 @@ def view(name, day, now, live=None, db=None):
             reasons = json.loads(r['reasons'])
         except ValueError:
             reasons = {}
+    prov = c.execute('SELECT anchor, direction, projected_pts, points FROM day_forecast_provisional '
+                     'WHERE day=? AND index_name=?', (d, name)).fetchone()
+    base.update(official=inp.get('official'), anchor_k=inp.get('anchor_k', 0),
+                provisional=(ANCHOR_0920 and inp.get('official') is None and r['status'] == 'live'),
+                provisional_0915=None if prov is None else dict(
+                    anchor=prov['anchor'], direction=prov['direction'], projected_pts=prov['projected_pts'],
+                    points=json.loads(prov['points'])))
     base.update(status=r['status'], generated_at=r['generated_at'], late=bool(r['late']), anchor=r['anchor'],
                 direction=r['direction'], prob_up=r['prob_up'], projected_pct=r['projected_pct'],
                 projected_pts=r['projected_pts'], band_pts=r['band_pts'], model_version=r['model_version'],

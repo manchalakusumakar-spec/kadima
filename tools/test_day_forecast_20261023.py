@@ -22,6 +22,10 @@ from kadima import hourly_forecast_model as M                          # noqa: E
 from kadima.config import IST                                         # noqa: E402
 from test_hourly_forecast import synthetic                            # noqa: E402
 
+# 13-Nov: this file checks the 05-Nov behaviour; the 09:20 anchor and fast rule have their own test.
+DF.ANCHOR_0920 = False
+DF.FAST_REFORECAST = False
+
 FAILS = []
 TOKEN = '99926000'
 
