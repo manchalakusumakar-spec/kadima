@@ -69,3 +69,13 @@ max 2/signal/day, 5-min cooldown, requires trend rules live), F (rejection alert
 shadow only; every feature has its own switch in `trend_rules.json`. Broker-stop live placement
 deliberately not built: an SL fill KADIMA does not reconcile could leave a phantom open position
 or trigger a second sell. Left for Codex with the reconciliation design and a 1-lot test.
+
+## 2026-11-13 — Day forecast anchored on the 09:20 close (installed)
+
+**Decision (trader):** "deploy". Installed 08:36 IST pre-market, after a 4-day replay that did not
+meet the agreed bar (path error 138 -> 95 better; end error 189 -> 223 and direction 1/4 -> 0/4
+worse). The trader chose to deploy anyway. The 09:15 day path is provisional; the verified 09:20 close re-anchors the
+official, scored path; fast reforecast (one candle >= max(30, half the 09:15 range)) until 10:15.
+Switches `ANCHOR_0920` / `FAST_REFORECAST` in `kadima/day_forecast.py`. PR #65. Backup and
+rollback: `deploy/release-20261113-day-anchor/deploy_day_anchor_20261113.sh --rollback`.
+Watch: end error and direction in the nightly report; the 09:15 copy is in `day_forecast_provisional`.
