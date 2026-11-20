@@ -20,6 +20,11 @@ Also 13-Nov: until 10:15, one closed candle at least max(30 pts, half the 09:15 
 away from the path in force reforecasts at once ('fast'); the 2-candle rule is unchanged.
 Reforecasts are kept with a receipt (hash of what was published) for review.
 
+20-Nov (Kusumakar's choice): a FLAT day call is 'no direction call'. It is not scored as a hit or a
+miss (dir_hit stays NULL), so the day hit rate counts UP/DOWN calls only. The old rule (FLAT hits
+only if the day moved < 0.10%) is still recorded in reasons as flat_rule_hit for comparison. Band,
+path error and end error are scored exactly as before. Switch: SCORE_FLAT_AS_NO_CALL.
+
 Driven from the hourly forecaster's loop (no thread or process of its own). Never places,
 sizes or recommends an order. Stops keep following the hourly band, not this one.
 """
@@ -50,6 +55,8 @@ OFFICIAL_WAIT_SEC = 300                      # keep the 09:15 path if 09:20 is n
 FAST_UNTIL = (10, 15)                        # 13-Nov fast reforecast window (marks before 10:15)
 FAST_MIN_PTS = 30.0
 FAST_OPEN_RANGE_FRAC = 0.5
+SCORE_FLAT_AS_NO_CALL = True                 # 20-Nov switch (False = FLAT scored by the 0.10% rule)
+DAY_REASONS = {'no_direction_call': 'Day forecast was FLAT: no direction call, so direction is not scored'}
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS day_forecasts (
@@ -483,18 +490,34 @@ class DayForecaster:
         points = [(p['k'], p['forecast'], p['upper'], p['lower']) for p in use]
         actual = [p['actual'] for p in use]
         sc = M.score(points, row['anchor'], actual, row['direction'], row['sigma'], 1.0) or {}
+        extra = {}
+        if SCORE_FLAT_AS_NO_CALL and row['direction'] == 'FLAT' and 'dir_hit' in sc:
+            extra = dict(direction_call='none', flat_rule_hit=bool(sc['dir_hit']))
+            sc['dir_hit'] = None
         tags = M.deviation_reasons('09:15' if ak == 0 else '09:20', None, sc.get('actual_pct'), sc.get('coverage'), row['direction'],
                                    sc.get('dir_hit'), bool(row['late']))
+        if extra:
+            tags.append('no_direction_call')
         n_rev = len(revisions(row['day'], row['index_name'], self.db))
         with c:
             c.execute("UPDATE day_forecasts SET status='final', dir_hit=?, mae_pts=?, coverage=?, end_error_pts=?, "
                       "actual_pct=?, actual_end=?, reasons=?, finalized_at=? WHERE day=? AND index_name=?",
-                      (None if 'dir_hit' not in sc else int(sc['dir_hit']), sc.get('mae_pts'), sc.get('coverage'),
+                      (None if sc.get('dir_hit') is None else int(sc['dir_hit']), sc.get('mae_pts'), sc.get('coverage'),
                        sc.get('end_error_pts'), sc.get('actual_pct'), actual[-1] if actual else None,
-                       json.dumps(dict(tags=tags, revisions=n_rev, scored_points=len(use), anchor_k=ak)),
+                       json.dumps(dict(tags=tags, revisions=n_rev, scored_points=len(use), anchor_k=ak, **extra)),
                        datetime.now(IST).isoformat(), row['day'], row['index_name']))
-        audit.log('day_forecast_scored', index=row['index_name'], day=row['day'], revisions=n_rev, **sc)
+        audit.log('day_forecast_scored', index=row['index_name'], day=row['day'], revisions=n_rev, **sc, **extra)
         return sc
+
+
+def record(name, since, db=None):
+    """Day direction record since a day (ISO): hit rate over UP/DOWN calls only; FLAT days are no-calls."""
+    rows = conn(db).execute("SELECT direction, dir_hit FROM day_forecasts WHERE index_name=? AND day>=? AND "
+                            "status='final'", (name, since)).fetchall()
+    calls = [r for r in rows if r['direction'] in ('UP', 'DOWN') and r['dir_hit'] is not None]
+    hits = sum(int(r['dir_hit']) for r in calls)
+    return dict(days=len(rows), calls=len(calls), hits=hits, no_calls=len(rows) - len(calls),
+                hit_rate=round(hits / len(calls), 3) if calls else None)
 
 
 # ---------------------------------------------------------------- read view
@@ -554,5 +577,6 @@ def view(name, day, now, live=None, db=None):
                 score=None if r['status'] != 'final' else dict(
                     dir_hit=None if r['dir_hit'] is None else bool(r['dir_hit']), mae_pts=r['mae_pts'],
                     coverage=r['coverage'], end_error_pts=r['end_error_pts'], actual_pct=r['actual_pct'],
-                    reasons=[M.REASONS.get(t, t) for t in reasons.get('tags', [])]))
+                    direction_call=reasons.get('direction_call', 'made'),
+                    reasons=[DAY_REASONS.get(t, M.REASONS.get(t, t)) for t in reasons.get('tags', [])]))
     return base
