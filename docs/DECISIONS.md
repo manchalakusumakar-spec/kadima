@@ -79,3 +79,17 @@ official, scored path; fast reforecast (one candle >= max(30, half the 09:15 ran
 Switches `ANCHOR_0920` / `FAST_REFORECAST` in `kadima/day_forecast.py`. PR #65. Backup and
 rollback: `deploy/release-20261113-day-anchor/deploy_day_anchor_20261113.sh --rollback`.
 Watch: end error and direction in the nightly report; the 09:15 copy is in `day_forecast_provisional`.
+
+## 2026-11-20 — Day forecast: FLAT is "no direction call" (prepared, NOT installed)
+
+**Trigger:** day forecast FLAT on 9 sessions in a row; 19-Nov (+315) and 20-Nov (+345) missed.
+**Check first (474 NIFTY days, Oct-2024 to 20-Nov):** the day move so far (09:20 ... 14:15), gap,
+first candle, previous day and previous 3 days do not predict the rest of the day (all |t| < 2,
+direction hits about 50%; recent months lean slightly to reversal). A trend-carry change was
+therefore NOT built: it would fit 19/20-Nov and lose on average.
+**Finding:** the live day model said FLAT on all 20 scored days; FLAT counted as a hit only when
+the day moved < 0.10% (2 of 20). The hourly model's UP/DOWN calls hit 35/54 (65%); FLAT 42/145.
+**Decision (trader):** "Score day FLAT fairly" - a FLAT day call is no direction call (dir_hit NULL),
+old rule kept as flat_rule_hit, band/path/end error unchanged. Switch `SCORE_FLAT_AS_NO_CALL`.
+Replay on a copy of forecast.db: 20 days re-scored, path/band/end error identical on all 20.
+Deploy: `deploy/release-20261120-day-flat/deploy_day_flat_no_call_20261120.sh` (install on YES).
