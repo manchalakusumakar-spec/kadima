@@ -10,10 +10,12 @@ each session this module stores, per trading day, in forecast.db table ``nse_dai
   adv, dec                   NSE advances / declines (archives/equities/mkt/MAddmmyy.csv)
 
 What feeds the forecast: only India VIX, and only for the 09:15 hourly slot, which is made at
-09:15:04 before any option-chain IV exists (tested 26-Nov: VIX predicts the day's range better
-than the previous day's range, r 0.41 vs 0.32 on 525 sessions; on 250 replayed sessions the 09:15
-slot with VIX scored better than today's fixed 1.4x widening in both halves). Later slots keep
-the ATM IV, and the day forecast is unchanged (VIX made its band too wide in the same replay).
+09:15:04 before any option-chain IV exists, scaled by VIX_IV_SCALE (0.9), in place of the fixed
+1.4x open widening. Tested 26-Nov: VIX predicts the day's range better than the previous day's
+range (r 0.41 vs 0.32, 525 sessions); replayed, the 09:15 slot scored better (interval score
+-4% on 250 sessions, both halves; -9% on 29 sessions through the live code) at the same hit rate
+with a ~10% narrower band. Later slots keep the ATM IV and the day forecast is unchanged (VIX
+made their bands too wide in the same replay).
 Participant OI, FII and advances/declines are stored for research only: none of them predicted
 direction reliably on the same 525 sessions, so they do not touch the forecast.
 
@@ -44,6 +46,9 @@ VIX_FALLBACK = os.environ.get('KADIMA_VIX_FALLBACK', '1') != '0'
 LIVE_VIX_FRESH_SEC = 600        # live VIX older than this is not used
 STORED_VIX_MAX_AGE_DAYS = 7     # a stored close older than this is not used
 VIX_MIN, VIX_MAX = 5.0, 90.0
+# VIX runs above the realised intraday volatility (variance premium): replayed on 250 sessions and
+# on 29 sessions through the live code, 0.9 x VIX kept the 09:15 band's hit rate and scored best.
+VIX_IV_SCALE = float(os.environ.get('KADIMA_VIX_IV_SCALE', '0.9'))
 
 SCHEMA = ('CREATE TABLE IF NOT EXISTS nse_daily (day TEXT NOT NULL, key TEXT NOT NULL, value REAL, '
           'source TEXT, fetched_at TEXT, PRIMARY KEY (day, key))')
@@ -210,15 +215,15 @@ def live_vix(now, path=None):
 
 
 def vix_for_forecast(now, db=None, snapshot=None):
-    """India VIX (percent) to stand in for a missing ATM IV, and where it came from."""
+    """VIX_IV_SCALE x India VIX (percent) to stand in for a missing ATM IV, and where it came from."""
     if not VIX_FALLBACK:
         return None, None
     v, src = live_vix(now, snapshot)
     if v is not None and VIX_MIN <= v <= VIX_MAX:
-        return v, src
+        return round(v * VIX_IV_SCALE, 4), src
     v, day = stored_vix(now.date(), db)
     if v is not None and VIX_MIN <= v <= VIX_MAX:
-        return v, 'india_vix_close_' + day
+        return round(v * VIX_IV_SCALE, 4), 'india_vix_close_' + day
     return None, None
 
 

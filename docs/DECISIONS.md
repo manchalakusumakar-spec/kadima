@@ -93,3 +93,22 @@ the day moved < 0.10% (2 of 20). The hourly model's UP/DOWN calls hit 35/54 (65%
 old rule kept as flat_rule_hit, band/path/end error unchanged. Switch `SCORE_FLAT_AS_NO_CALL`.
 Replay on a copy of forecast.db: 20 days re-scored, path/band/end error identical on all 20.
 Deploy: `deploy/release-20261120-day-flat/deploy_day_flat_no_call_20261120.sh` (install on YES).
+
+## 2026-11-26 — NSE data for the forecaster: India VIX sizes the 09:15 slot (installed)
+
+**Request (trader, 25-Nov night):** "use the data live from NSE and improve the accuracy"; data chosen:
+NSE option chain, India VIX + GIFT Nifty, breadth, FII/DII + participant OI; rollout: "install if replay is better".
+**Access:** NSE's live website APIs refuse the server (HTTP 403, cloud IPs blocked); NSE archives work.
+The live NSE option chain / FII-DII API therefore cannot be used from EC2 (needs the PC or a proxy).
+GIFT Nifty has no history to test on (live state file only).
+**Tested (525 sessions, Oct-2024..25-Nov):** India VIX predicts the day's range (r 0.41 vs 0.32 for the
+previous day's range). Participant OI (FII/DII/PRO/Client), FII options, advances/declines: no reliable
+direction signal (no |t| > 2.5 stable in both halves except noise) -> stored only, not used.
+**Change:** `kadima/nse_daily.py` stores NSE archive data nightly (table nse_daily). The 09:15 hourly slot
+(made at 09:15:04, no chain IV yet) uses 0.9 x India VIX as its IV instead of the fixed 1.4x widening.
+Replay: interval score -4% on 250 sessions (both halves), -9% on 29 sessions through the live code; hit
+rate of the band same (74.7% vs 73.9%), band ~10% narrower, direction 6 vs 5 of 29. 25-Nov alone was
+worse (band wider than needed). Day forecast and later slots unchanged (VIX widened them too much).
+Switches: `KADIMA_VIX_OPEN=0` (off), `KADIMA_VIX_IV_SCALE`. Rollback:
+`deploy/release-20261126-nse-vix/deploy_nse_vix_20261126.sh --rollback`.
+**Next candidate (not done):** later slots blend ATM IV 50/50 and over-cover (Nov live 76% vs ~69% target).

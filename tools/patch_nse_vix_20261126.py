@@ -9,7 +9,7 @@ written. Running it twice is a no-op (the marker is detected).
     python3 tools/patch_nse_vix_20261126.py ROOT --check    # report only
 
 What changes (hourly 09:15 slot only):
-  * if no ATM option IV exists when the 09:15 slot is made (always, at 09:15:04), India VIX is
+  * if no ATM option IV exists when the 09:15 slot is made (always, at 09:15:04), 0.9 x India VIX is
     used as the implied volatility (kadima.nse_daily.vix_for_forecast: live broker VIX, else the
     previous session's close), and the fixed 1.4x open-band widening is then not applied
     (VIX sizes the band). If no VIX is available the slot is made exactly as before (1.4x).

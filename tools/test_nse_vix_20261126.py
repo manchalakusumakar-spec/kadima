@@ -85,19 +85,21 @@ def main():
         c.execute("INSERT INTO nse_daily VALUES ('2026-11-23','vix_close',16.9,'ind_close_all','x')")
     now = datetime(2026, 11, 25, 9, 15, 4, tzinfo=IST)
     snap = snapshot(17.1, now - timedelta(seconds=30))
-    check('fresh live VIX used', N.vix_for_forecast(now, db=db, snapshot=snap) == (17.1, 'india_vix_live'))
+    K = N.VIX_IV_SCALE
+    check('scale is 0.9 by default', K == 0.9)
+    check('fresh live VIX used (x scale)', N.vix_for_forecast(now, db=db, snapshot=snap) == (round(17.1 * K, 4), 'india_vix_live'))
     snap = snapshot(17.7, datetime(2026, 11, 24, 15, 39, 10, tzinfo=IST))
     check('previous session last value used before the first poll',
-          N.vix_for_forecast(now, db=db, snapshot=snap) == (17.7, 'india_vix_last'))
+          N.vix_for_forecast(now, db=db, snapshot=snap) == (round(17.7 * K, 4), 'india_vix_last'))
     snap = snapshot(18.0, now - timedelta(minutes=30))
     check('stale same-day live VIX -> stored NSE close',
-          N.vix_for_forecast(now, db=db, snapshot=snap) == (16.9, 'india_vix_close_2026-11-23'))
+          N.vix_for_forecast(now, db=db, snapshot=snap) == (round(16.9 * K, 4), 'india_vix_close_2026-11-23'))
     missing = os.path.join(TMP, 'none.json')
-    check('no snapshot -> stored NSE close', N.vix_for_forecast(now, db=db, snapshot=missing)[0] == 16.9)
+    check('no snapshot -> stored NSE close', N.vix_for_forecast(now, db=db, snapshot=missing)[0] == round(16.9 * K, 4))
     late = datetime(2026, 12, 4, 9, 15, 4, tzinfo=IST)
     check('stored close older than 7 days not used', N.vix_for_forecast(late, db=db, snapshot=missing) == (None, None))
     snap = snapshot(250.0, now - timedelta(seconds=30))
-    check('absurd live value rejected, falls back', N.vix_for_forecast(now, db=db, snapshot=snap)[0] == 16.9)
+    check('absurd live value rejected, falls back', N.vix_for_forecast(now, db=db, snapshot=snap)[0] == round(16.9 * K, 4))
     with patch.object(N, 'VIX_FALLBACK', False):
         check('switch off -> None', N.vix_for_forecast(now, db=db, snapshot=missing) == (None, None))
 
