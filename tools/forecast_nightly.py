@@ -190,6 +190,11 @@ def main():
     forecast_bhavcopy.run_nightly(HF.conn(), now, args.date)
     if args.only == 'bhavcopy':
         return 0
+    try:                                                # NSE-VIX v1 26-Nov-2026: NSE archives (VIX, participant OI, A/D)
+        from kadima import nse_daily
+        log('nse_daily: ' + json.dumps(nse_daily.run_nightly(now)))
+    except Exception as exc:                            # noqa: BLE001 - never blocks the retune
+        log(f'nse_daily: failed {exc}')
     for name in HF.FORECAST_INDICES:
         if name not in INDICES:
             continue
